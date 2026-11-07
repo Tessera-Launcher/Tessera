@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 use crate::accounts::{self, Account as SavedAccount};
 use crate::discover::{self, LocalVersion};
 use crate::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
+use crate::launch;
 use crate::login::{Identity, LoginEvent};
 
 /// How many log lines to keep before dropping the oldest.
@@ -294,6 +295,8 @@ pub struct App {
     pub pending_install: Option<(String, Loader)>,
     /// Where files come from; shown in the picker title.
     pub source: crate::install::Source,
+    /// Launch tuning, applied to the next launch.
+    pub launch_options: launch::Options,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
     /// Filled by the renderer every frame; read by the mouse handler.
@@ -333,6 +336,7 @@ impl App {
             pending_versions: false,
             pending_install: None,
             source: crate::install::Source::default(),
+            launch_options: launch::Options::default(),
             pending_login: None,
             layout: Layout::default(),
             list_offset: 0,
@@ -484,14 +488,6 @@ impl App {
         self.log.push(line.into());
     }
 
-    pub fn not_implemented(&mut self, action: &str) {
-        let id = self
-            .selected_version()
-            .map_or("<无选择>".to_string(), |v| v.id.clone());
-        self.status = format!("{action}「{id}」：尚未实现");
-        self.log(self.status.clone());
-    }
-
     pub fn selected_paths(&self) -> Option<SelectedPaths> {
         let version = self.selected_version()?;
         let dir = self.root.join("versions").join(&version.id);
@@ -603,6 +599,93 @@ impl App {
         self.screen = self.login_return;
         if matches!(self.login.step, LoginStep::Waiting { .. }) {
             self.log("已取消登录（浏览器里仍可能显示旧代码）");
+        }
+    }
+
+    // ---- launching ----
+
+    /// Build the command for the selected version and start the game.
+    ///
+    /// All the deciding happens in [`launch::prepare`]; this only picks the
+    /// credentials, logs what was chosen and spawns the process. The child gets
+    /// `/dev/null` for output because its stdout would otherwise land in the
+    /// middle of the alternate screen — the game writes its own log file anyway.
+    pub fn launch_selected(&mut self) {
+        let Some(version) = self.selected_version().cloned() else {
+            self.log("没有选中的版本");
+            return;
+        };
+
+        let credentials = match &self.account {
+            Account::SignedIn { name, .. } => {
+                let name = name.clone();
+                let file = self
+                    .accounts
+                    .iter()
+                    .find(|account| account.player_name == name)
+                    .map(|account| account.file.clone());
+                match file {
+                    Some(path) => match launch::Credentials::from_account_file(&path) {
+                        Ok(credentials) => credentials,
+                        Err(error) => {
+                            self.log(format!("凭据不可用，改用离线模式：{error}"));
+                            launch::Credentials::offline(&name)
+                        }
+                    },
+                    None => launch::Credentials::offline(&name),
+                }
+            }
+            Account::SignedOut => launch::Credentials::offline("Player"),
+        };
+
+        let prepared =
+            match launch::prepare(&self.root, &version.id, &credentials, &self.launch_options) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.status = "启动失败".to_string();
+                    self.log(format!("启动失败：{error}"));
+                    return;
+                }
+            };
+
+        let session = if credentials.user_type == "msa" {
+            format!("正版会话（{}）", credentials.username)
+        } else {
+            format!("离线（{}）", credentials.username)
+        };
+        self.log(format!(
+            "启动 {} · {session} · Java {} · {} 个 classpath 条目 · 主类 {}",
+            version.id, prepared.java_major, prepared.classpath_entries, prepared.main_class
+        ));
+        self.log(format!(
+            "natives: {}",
+            prepared.natives.as_ref().map_or_else(
+                || "（无，1.19+ 不需要）".to_string(),
+                |path| path.display().to_string()
+            )
+        ));
+        if prepared.required_major > prepared.java_major {
+            self.log(format!(
+                "警告：这个版本需要 Java {}，用 Java {} 启动很可能失败",
+                prepared.required_major, prepared.java_major
+            ));
+        }
+
+        let mut command = std::process::Command::new(&prepared.command.exe);
+        command
+            .args(&prepared.command.args)
+            .current_dir(&prepared.command.cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match command.spawn() {
+            Ok(child) => {
+                self.status = format!("已启动 {}", version.id);
+                self.log(format!("游戏进程已启动（pid {}）", child.id()));
+            }
+            Err(error) => {
+                self.status = "启动失败".to_string();
+                self.log(format!("无法启动 Java：{error}"));
+            }
         }
     }
 

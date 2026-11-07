@@ -8,6 +8,7 @@ mod accounts;
 mod app;
 mod discover;
 mod install;
+mod launch;
 mod login;
 mod paths;
 mod ui;
@@ -58,6 +59,10 @@ fn main() -> std::process::ExitCode {
         accounts,
     );
     app.source = settings.source;
+    if let Some(java) = options.java.clone() {
+        app.launch_options.java = Some(java);
+    }
+    app.launch_options.memory_mb = options.memory;
     app.log(format!("数据目录 {}", data.root().display()));
     app.log(format!("凭据目录 {}", data.accounts().display()));
 
@@ -65,6 +70,10 @@ fn main() -> std::process::ExitCode {
         app.open_login();
     } else if options.accounts {
         app.open_accounts();
+    }
+
+    if let Some(version) = options.print_launch.clone() {
+        return print_launch(&app, &version);
     }
 
     if options.once {
@@ -227,7 +236,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         // Keyboard equivalent of the wheel, for terminals without mouse reporting.
         KeyCode::PageUp => app.scroll_log(5),
         KeyCode::PageDown => app.scroll_log_back(5),
-        KeyCode::Enter => app.not_implemented("安装/启动"),
+        KeyCode::Enter => app.launch_selected(),
         _ => {}
     }
 }
@@ -267,6 +276,38 @@ fn print_once(app: &mut App, width: u16, height: u16) {
     }
 }
 
+/// Build the launch command for one version and print it instead of running it.
+///
+/// A debugging aid: it shows exactly what the launcher would execute, including
+/// the classpath order and the Java it picked.
+fn print_launch(app: &App, version: &str) -> std::process::ExitCode {
+    let credentials = launch::Credentials::offline("Player");
+    match launch::prepare(&app.root, version, &credentials, &app.launch_options) {
+        Ok(prepared) => {
+            println!(
+                "# java {} (需要 {}), {} classpath entries, main class {}",
+                prepared.java_major,
+                prepared.required_major,
+                prepared.classpath_entries,
+                prepared.main_class
+            );
+            if let Some(natives) = &prepared.natives {
+                println!("# natives {}", natives.display());
+            }
+            println!("# cwd {}", prepared.command.cwd.display());
+            println!("{}", prepared.command.exe.display());
+            for arg in &prepared.command.args {
+                println!("{arg}");
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 /// Parsed command line.
 struct Options {
     /// `--dir`; `None` means `data/游戏`.
@@ -277,6 +318,12 @@ struct Options {
     /// Open the account manager immediately (likewise).
     accounts: bool,
     source: Source,
+    /// `--java`: skip discovery and use this executable.
+    java: Option<PathBuf>,
+    /// `--memory`: heap size in MiB.
+    memory: u32,
+    /// `--print-launch <version>`: build and print the command, then exit.
+    print_launch: Option<String>,
     width: u16,
     height: u16,
 }
@@ -289,6 +336,9 @@ impl Options {
         let mut login = false;
         let mut accounts = false;
         let mut source = Source::default();
+        let mut java = None;
+        let mut memory = 2048;
+        let mut print_launch = None;
         let mut width = 100;
         let mut height = 28;
 
@@ -304,6 +354,26 @@ impl Options {
                 "--once" => once = true,
                 "--login" => login = true,
                 "--accounts" => accounts = true,
+                "--java" => {
+                    java = Some(PathBuf::from(
+                        argv.next()
+                            .ok_or_else(|| "--java 需要一个路径".to_string())?,
+                    ));
+                }
+                "--print-launch" => {
+                    print_launch = Some(
+                        argv.next()
+                            .ok_or_else(|| "--print-launch 需要一个版本".to_string())?,
+                    );
+                }
+                "--memory" => {
+                    let value = argv
+                        .next()
+                        .ok_or_else(|| "--memory 需要 MiB 数".to_string())?;
+                    memory = value
+                        .parse()
+                        .map_err(|_| format!("--memory 需要数字，收到 {value:?}"))?;
+                }
                 "--mirror" => {
                     let value = argv
                         .next()
@@ -339,6 +409,9 @@ impl Options {
             login,
             accounts,
             source,
+            java,
+            memory,
+            print_launch,
             width,
             height,
         }))
@@ -357,6 +430,10 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   --login           启动时直接打开登录面板
   --accounts        启动时直接打开账户管理
   --mirror <源>     bmclapi（默认）或 mojang，决定从哪下载
+  --java <路径>     指定 Java（默认扫 JAVA_HOME 与 PATH，挑版本够新的）
+  --memory <MiB>    堆大小（默认 2048）
+  --print-launch <版本>
+                    只打印会执行的启动命令，不启动（调试用）
   --width <列数>    与 --once 搭配（默认 100）
   --height <行数>   与 --once 搭配（默认 28）
   -h, --help        显示本帮助

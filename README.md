@@ -33,6 +33,44 @@ cargo run -- --once --login                 # 一帧里直接展示登录面板
 按键：`↑/k ↓/j` 选择，`g/G` 首尾，`PgUp/PgDn` 滚动日志，`l` 登录，
 `r` 重新扫描，`q/Esc` 退出，`Enter` 安装/启动（未实现）。
 
+### 启动
+
+`Enter` 用选中版本启动游戏。命令由 `launch.rs` 纯函数拼装，`--print-launch` 可以只看不跑：
+
+```sh
+yaml --dir /path/to/游戏 --print-launch 1.26.3
+yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
+```
+
+做的事：
+
+- **版本链合并**：跟随 `inheritsFrom`（最多 8 层），子 profile 的 mainClass / libraries
+  优先，父的 `minecraftArguments`、`assetIndex`、`javaVersion` 兜底
+- **classpath**：按 `rules`（OS / arch / features）过滤，按 `downloads.artifact.path`
+  取路径，没有就按 Maven 坐标推导；子 profile 在前（Loader 才能覆盖）
+- 客户端 jar 找 `<id>.jar` → `<父id>.jar` → 目录里任意 jar（Loader 是复制父目录来的）
+- **natives**：找 `<id>-natives` 或 `<父id>-natives`（都是 MDT 安装时解压好的），
+  写进 `-Djava.library.path`；1.19+ 没有 natives 目录也不影响
+- **占位符**：`${auth_player_name}` `${auth_uuid}` `${auth_access_token}` `${assets_root}`
+  `${assets_index_name}` `${game_directory}` `${user_type}` `${classpath}`
+  `${library_directory}` `${resolution_width}` 等；未识别的占位符原样保留，便于排查
+- 老版本用 `minecraftArguments`（按空白切分），新版本用 `arguments.game/jvm` +
+  rules 求值；缺 `--width/--height` 时补上
+- 内存 `-Xmx`、`-Dminecraft.launcher.brand/version`，macOS 自动加 `-XstartOnFirstThread`
+- 启动失败不会静默：缺库、缺 jar、Java 版本不对都会在日志里说明原因
+
+**Java 选择**：扫 `JAVA_HOME` 再扫 `PATH`，逐个跑 `java -version` 解析主版本号。
+
+- 要求 Java 8 的版本（1.7–1.16）**只接受 8**——17/21 上会以 `NoSuchMethodError`
+  的形式崩在几十秒之后，给个明确的"需要 Java 8"比让它崩更好
+- 要求 17/21/25 的版本接受**同版本或更高**
+- 同版本优先；否则取满足条件的最小值；都不满足就把找到的版本列出来
+- `--java <路径>` 可以强制指定，跳过探测
+
+**凭据**：已登录账户从 `data/凭据/账户/<玩家名>.json` 直接取 `minecraft_token`，
+不做刷新（过期令牌单人可玩，进服务器会失败）；未登录或取不到就用离线身份
+（`user_type=legacy`、令牌 `0`、名字固定 UUID）。
+
 ### 下载
 
 `d` 打开选版本界面：
@@ -143,8 +181,8 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 1. **主界面** ✅
 2. **登录** ✅（官方 / 自定义 app id，一账户一 json；恢复会话待接）
 3. **下载** ✅（版本 + Loader 选择，进度条/速度/文件日志；镜像与并发可调）
-4. `launch.rs`：版本链合并、classpath、natives、`${}` 占位符替换、Java 选择
-5. 设置页、账户恢复、日志落盘
+4. **启动** ✅（版本链合并、classpath、natives、占位符、Java 探测；`--print-launch` 可预览）
+5. 设置页、令牌自动刷新、日志落盘
 
 ## 许可
 

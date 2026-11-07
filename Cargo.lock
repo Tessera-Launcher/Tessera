@@ -3693,11 +3693,14 @@ name = "yaml-launcher"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "hex",
  "mdt-minecraft",
  "minecraft-auth",
  "ratatui",
  "reqwest",
+ "serde",
  "serde_json",
+ "sha1",
  "tempfile",
  "tokio",
 ]
