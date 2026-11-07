@@ -336,11 +336,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
         Screen::Accounts => vec![
             ("l 登录".to_string(), KeyCode::Char('l')),
             ("d 移除".to_string(), KeyCode::Char('d')),
-            ("Esc 关闭".to_string(), KeyCode::Esc),
+            ("Esc/右键 关闭".to_string(), KeyCode::Esc),
         ],
-        Screen::Download => vec![("Esc 取消".to_string(), KeyCode::Esc)],
-        Screen::Installing => vec![("Esc 后台运行".to_string(), KeyCode::Esc)],
-        Screen::Login => vec![("Esc 取消".to_string(), KeyCode::Esc)],
+        Screen::Download => vec![("Esc/右键 取消".to_string(), KeyCode::Esc)],
+        Screen::Installing => vec![("Esc/右键 后台运行".to_string(), KeyCode::Esc)],
+        Screen::Login => vec![("Esc/右键 取消".to_string(), KeyCode::Esc)],
     };
 
     let sep = " · ";

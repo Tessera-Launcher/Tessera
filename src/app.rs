@@ -531,6 +531,16 @@ impl App {
     /// Hit testing lives here rather than in the renderer so that every click
     /// path is testable without a terminal: tests set [`Layout`] directly.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        // Right click is "back", the way Android's back gesture works. On the main
+        // screen there is nothing to go back to and Esc would quit, so a stray
+        // right click must not close the launcher.
+        if matches!(event.kind, MouseEventKind::Down(MouseButton::Right)) {
+            if self.screen != Screen::Main {
+                self.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+            }
+            return;
+        }
+
         // A footer hint is a button: replay its key instead of duplicating the
         // action, so the two can never drift apart.
         if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -1529,6 +1539,69 @@ mod tests {
         assert_eq!(app.selected, 3, "top visible row is index 3");
         app.handle_mouse(click(10, 6));
         assert_eq!(app.selected, 4);
+    }
+
+    fn right_click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn right_click_goes_back_from_every_screen_except_the_main_one() {
+        // Login overlay -> main screen (Esc semantics).
+        let mut app = laid_out();
+        app.open_login();
+        app.handle_mouse(right_click(10, 10));
+        assert_eq!(app.screen, Screen::Main);
+
+        // Account manager -> main screen.
+        let mut app = laid_out();
+        app.open_accounts();
+        app.handle_mouse(right_click(10, 10));
+        assert_eq!(app.screen, Screen::Main);
+
+        // Download picker -> main screen.
+        let mut app = laid_out();
+        app.open_download();
+        app.handle_mouse(right_click(10, 10));
+        assert_eq!(app.screen, Screen::Main);
+
+        // On the main screen Esc would quit, so right click must do nothing.
+        let mut app = laid_out();
+        app.handle_mouse(right_click(10, 10));
+        assert_eq!(app.screen, Screen::Main);
+        assert!(
+            !app.should_quit,
+            "a stray right click must not close the app"
+        );
+    }
+
+    #[test]
+    fn right_click_leaves_the_login_overlay_where_it_was_opened_from() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Login);
+        app.handle_mouse(right_click(10, 10));
+        assert_eq!(app.screen, Screen::Accounts, "back, not home");
+    }
+
+    #[test]
+    fn right_click_while_installing_returns_to_the_main_screen_not_the_picker() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Installing);
+        app.handle_mouse(right_click(10, 10));
+        assert_eq!(app.screen, Screen::Main);
+        assert_eq!(
+            app.download.stage,
+            DownloadStage::Installing,
+            "the download keeps running"
+        );
     }
 
     #[test]
