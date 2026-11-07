@@ -23,6 +23,12 @@ const LOG_CAPACITY: usize = 500;
 /// launcher has to measure them itself.
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Rows a single wheel notch moves in a list.
+///
+/// Terminals report notches, not lines, and one row per notch feels stuck on a
+/// list of thirty versions; three matches what the log already does.
+const WHEEL_STEP: i32 = 3;
+
 /// Which layer is on top.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -268,9 +274,11 @@ pub struct Layout {
     /// The account manager popup and its rows.
     pub accounts_popup: Area,
     pub account_rows: Vec<Area>,
-    /// The download picker's two panes.
+    /// The download picker's two panes, data rows only (no header, no border).
     pub download_versions: Area,
     pub download_loaders: Area,
+    /// First visible row of the picker's version list, as rendered.
+    pub download_offset: usize,
     /// Clickable key hints in the footer.
     pub buttons: Vec<Button>,
 }
@@ -466,6 +474,19 @@ impl App {
         }
     }
 
+    /// Move the selection without wrapping around.
+    ///
+    /// The keyboard wraps (`j` at the end starts over); the wheel does not,
+    /// because spinning past the bottom and landing at the top of a long list
+    /// reads as a bug.
+    pub fn select_by(&mut self, delta: i32) {
+        if self.versions.is_empty() {
+            return;
+        }
+        let last = self.versions.len() - 1;
+        self.selected = (self.selected as i32 + delta).clamp(0, last as i32) as usize;
+    }
+
     pub fn select_first(&mut self) {
         self.selected = 0;
     }
@@ -569,8 +590,9 @@ impl App {
             Screen::Main => self.handle_main_mouse(event),
             Screen::Login => self.handle_login_mouse(event),
             Screen::Accounts => self.handle_accounts_mouse(event),
-            // The picker and the progress screen are keyboard-driven for now.
-            Screen::Download | Screen::Installing => {}
+            Screen::Download => self.handle_download_mouse(event),
+            // Downloads run in the background; the progress screen has no targets.
+            Screen::Installing => {}
         }
     }
 
@@ -581,7 +603,7 @@ impl App {
                 if self.layout.log.contains(column, row) {
                     self.scroll_log(3);
                 } else if self.layout.list.contains(column, row) {
-                    self.select_prev();
+                    self.select_by(-WHEEL_STEP);
                 } else {
                     self.scroll_log(3);
                 }
@@ -590,7 +612,7 @@ impl App {
                 if self.layout.log.contains(column, row) {
                     self.scroll_log_back(3);
                 } else if self.layout.list.contains(column, row) {
-                    self.select_next();
+                    self.select_by(WHEEL_STEP);
                 } else {
                     self.scroll_log_back(3);
                 }
@@ -952,6 +974,77 @@ impl App {
                 let index = (self.download.loader_pick as i32 + delta).rem_euclid(count as i32);
                 self.download.loader_pick = index as usize;
             }
+        }
+    }
+
+    /// Scroll the picker without wrapping, the way the wheel should behave.
+    fn picker_scroll(&mut self, delta: i32) {
+        match self.download.focus {
+            PickerFocus::Versions => {
+                let count = self.download.versions.len();
+                if count == 0 {
+                    return;
+                }
+                let last = count - 1;
+                self.download.picked =
+                    (self.download.picked as i32 + delta).clamp(0, last as i32) as usize;
+                self.download.refresh_loaders();
+            }
+            PickerFocus::Loaders => {
+                let count = self.download.loaders.len();
+                if count == 0 {
+                    return;
+                }
+                let last = count - 1;
+                self.download.loader_pick =
+                    (self.download.loader_pick as i32 + delta).clamp(0, last as i32) as usize;
+            }
+        }
+    }
+
+    fn handle_download_mouse(&mut self, event: MouseEvent) {
+        if self.download.stage != DownloadStage::Picking {
+            return;
+        }
+        let (column, row) = (event.column, event.row);
+        let over_versions = self.layout.download_versions.contains(column, row);
+        let over_loaders = self.layout.download_loaders.contains(column, row);
+
+        match event.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
+                    -WHEEL_STEP
+                } else {
+                    WHEEL_STEP
+                };
+                // The pane under the pointer takes the focus, so the highlighted
+                // border always says which list the wheel is about to move.
+                if over_versions {
+                    self.download.focus = PickerFocus::Versions;
+                    self.picker_scroll(delta);
+                } else if over_loaders {
+                    self.download.focus = PickerFocus::Loaders;
+                    self.picker_scroll(delta);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if over_versions {
+                    self.download.focus = PickerFocus::Versions;
+                    let index = self.layout.download_offset
+                        + (row - self.layout.download_versions.y) as usize;
+                    if index < self.download.versions.len() {
+                        self.download.picked = index;
+                        self.download.refresh_loaders();
+                    }
+                } else if over_loaders {
+                    self.download.focus = PickerFocus::Loaders;
+                    let index = (row - self.layout.download_loaders.y) as usize;
+                    if index < self.download.loaders.len() {
+                        self.download.loader_pick = index;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1574,6 +1667,32 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_over_the_version_list_moves_by_a_few_rows() {
+        let mut app = laid_out();
+        app.handle_mouse(wheel(false, 10, 6));
+        assert_eq!(app.selected, 3, "one notch is three rows");
+        app.handle_mouse(wheel(true, 10, 6));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn the_wheel_stops_at_the_ends_instead_of_wrapping() {
+        let mut app = laid_out();
+        for _ in 0..5 {
+            app.handle_mouse(wheel(false, 10, 6));
+        }
+        assert_eq!(
+            app.selected,
+            app.versions.len() - 1,
+            "no jump back to the top"
+        );
+        for _ in 0..5 {
+            app.handle_mouse(wheel(true, 10, 6));
+        }
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
     fn double_clicking_a_row_launches_it() {
         let mut app = laid_out();
         app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
@@ -1870,7 +1989,7 @@ mod tests {
             app.log(format!("line {i}"));
         }
         app.handle_mouse(wheel(false, 10, 5));
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.selected, WHEEL_STEP as usize, "one notch is a few rows");
         assert_eq!(app.log_scroll, 0, "the log was not touched");
 
         app.handle_mouse(wheel(true, 10, 5));
@@ -1952,6 +2071,88 @@ mod tests {
             remote("1.8.9", "release"),
         ]));
         app
+    }
+
+    /// The picker with its two panes where the renderer would put them.
+    fn laid_out_picker() -> App {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            remote("1.20.1", "release"),
+            remote("1.19.2", "release"),
+            remote("1.16.5", "release"),
+            remote("1.12.2", "release"),
+            remote("1.8.9", "release"),
+        ]));
+        app.layout.download_offset = 0;
+        app.layout.download_versions = Area::new(1, 5, 40, 10);
+        app.layout.download_loaders = Area::new(45, 5, 20, 10);
+        app
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_picker_versions() {
+        let mut app = laid_out_picker();
+        app.handle_mouse(wheel(false, 10, 6));
+        assert_eq!(app.download.picked, 3);
+        assert_eq!(app.download.focus, PickerFocus::Versions);
+        app.handle_mouse(wheel(true, 10, 6));
+        assert_eq!(app.download.picked, 0, "the pane under the pointer moves");
+    }
+
+    #[test]
+    fn the_wheel_over_the_loader_pane_moves_the_loaders() {
+        let mut app = laid_out_picker();
+        assert!(app.download.loaders.len() >= 2, "1.20.1 offers loaders");
+        app.handle_mouse(wheel(false, 50, 6));
+        assert_eq!(app.download.focus, PickerFocus::Loaders);
+        assert_eq!(
+            app.download.loader_pick,
+            (WHEEL_STEP as usize).min(app.download.loaders.len() - 1),
+            "a notch is a few rows, clamped to the list"
+        );
+        assert_eq!(app.download.picked, 0, "the version choice is untouched");
+    }
+
+    #[test]
+    fn clicking_a_picker_version_selects_it() {
+        let mut app = laid_out_picker();
+        app.handle_mouse(click(10, 8));
+        assert_eq!(app.download.picked, 3, "row offset from the pane's top");
+        assert_eq!(app.download.focus, PickerFocus::Versions);
+        // 1.12.2 rules out Fabric and Quilt, so the loader list is rebuilt.
+        assert!(!app.download.loaders.contains(&Loader::Fabric));
+    }
+
+    #[test]
+    fn clicking_a_picker_row_below_the_last_one_does_nothing() {
+        let mut app = laid_out_picker();
+        app.handle_mouse(click(10, 14));
+        assert_eq!(app.download.picked, 0);
+    }
+
+    #[test]
+    fn clicking_a_loader_row_selects_that_loader() {
+        let mut app = laid_out_picker();
+        let forge = app
+            .download
+            .loaders
+            .iter()
+            .position(|loader| *loader == Loader::Forge)
+            .expect("forge offered for 1.20.1");
+        app.handle_mouse(click(50, 5 + forge as u16));
+        assert_eq!(app.download.focus, PickerFocus::Loaders);
+        assert_eq!(app.download.loader_pick, forge);
+    }
+
+    #[test]
+    fn the_picker_ignores_the_mouse_while_installing() {
+        let mut app = laid_out_picker();
+        app.download.picked = 1;
+        app.download.stage = DownloadStage::Installing;
+        app.handle_mouse(wheel(false, 10, 6));
+        app.handle_mouse(click(10, 5));
+        assert_eq!(app.download.picked, 1);
     }
 
     #[test]

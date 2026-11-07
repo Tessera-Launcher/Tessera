@@ -426,6 +426,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(block, area);
     app.layout.download_versions = Area::default();
     app.layout.download_loaders = Area::default();
+    app.layout.download_offset = 0;
 
     if download.stage == crate::app::DownloadStage::LoadingVersions {
         frame.render_widget(
@@ -453,15 +454,16 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let versions_inner = versions_block.inner(versions_area);
     frame.render_widget(versions_block, versions_area);
+    let visible = versions_inner.height.saturating_sub(1) as usize;
+    let offset = download.picked.saturating_sub(visible.saturating_sub(1));
+    // Data rows only: the header above them is not a clickable version.
+    app.layout.download_offset = offset;
     app.layout.download_versions = Area::new(
         versions_inner.x,
         versions_inner.y.saturating_add(1),
         versions_inner.width,
         versions_inner.height.saturating_sub(1),
     );
-
-    let visible = versions_inner.height.saturating_sub(1) as usize;
-    let offset = download.picked.saturating_sub(visible.saturating_sub(1));
     let rows: Vec<Row> = download
         .versions
         .iter()
@@ -520,9 +522,9 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(loaders_block, loaders_area);
     app.layout.download_loaders = Area::new(
         loaders_inner.x,
-        loaders_inner.y,
+        loaders_inner.y.saturating_add(1),
         loaders_inner.width,
-        loaders_inner.height,
+        loaders_inner.height.saturating_sub(1),
     );
 
     let rows: Vec<Row> = download
@@ -1025,6 +1027,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::discover::LocalVersion;
+    use crate::install::InstallEvent;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1317,6 +1320,37 @@ mod tests {
         assert!(screen.contains("Fabric"), "{screen}");
         assert!(screen.contains("仅安装原版"), "{screen}");
         assert!(app.layout.download_versions.height > 0);
+    }
+
+    #[test]
+    fn the_picker_records_data_rows_so_clicks_and_wheel_land_on_versions() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(
+            (0..60)
+                .map(|i| crate::install::RemoteVersion {
+                    id: format!("1.{i}"),
+                    kind: "release".into(),
+                    released: "2024-01-01T00:00:00+00:00".into(),
+                })
+                .collect(),
+        ));
+        render(&mut app, 100, 28);
+
+        let versions = app.layout.download_versions;
+        let loaders = app.layout.download_loaders;
+        assert!(versions.height > 0 && loaders.height > 0);
+        assert_eq!(app.layout.download_offset, 0, "nothing scrolled yet");
+
+        // Selecting the last version scrolls the pane and the offset follows.
+        app.download.picked = 59;
+        render(&mut app, 100, 28);
+        assert!(app.layout.download_offset > 0, "pane scrolled to the pick");
+        assert_eq!(
+            app.layout.download_offset + versions.height as usize,
+            60,
+            "the picked row sits at the bottom of the pane"
+        );
     }
 
     #[test]
