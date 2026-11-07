@@ -11,6 +11,7 @@ use crate::discover::{self, LocalVersion};
 use crate::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
 use crate::launch;
 use crate::login::{Identity, LoginEvent};
+use crate::session::SessionEvent;
 
 /// How many log lines to keep before dropping the oldest.
 const LOG_CAPACITY: usize = 500;
@@ -297,6 +298,12 @@ pub struct App {
     pub source: crate::install::Source,
     /// Launch tuning, applied to the next launch.
     pub launch_options: launch::Options,
+    /// Account file whose session should be refreshed before launching.
+    pub pending_refresh: Option<(String, PathBuf)>,
+    /// Credentials used by the most recent launch attempt (for tests/diagnostics).
+    pub last_credentials: Option<launch::Credentials>,
+    /// The command built by the most recent launch attempt.
+    pub last_launch: Option<launch::Launch>,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
     /// Filled by the renderer every frame; read by the mouse handler.
@@ -337,6 +344,9 @@ impl App {
             pending_install: None,
             source: crate::install::Source::default(),
             launch_options: launch::Options::default(),
+            pending_refresh: None,
+            last_credentials: None,
+            last_launch: None,
             pending_login: None,
             layout: Layout::default(),
             list_offset: 0,
@@ -604,39 +614,115 @@ impl App {
 
     // ---- launching ----
 
-    /// Build the command for the selected version and start the game.
+    /// Enter: launch the selected version.
     ///
-    /// All the deciding happens in [`launch::prepare`]; this only picks the
-    /// credentials, logs what was chosen and spawns the process. The child gets
-    /// `/dev/null` for output because its stdout would otherwise land in the
-    /// middle of the alternate screen — the game writes its own log file anyway.
-    pub fn launch_selected(&mut self) {
+    /// A signed-in account with a saved file is refreshed first — the refreshed
+    /// access token is what the game needs, and the rotated refresh token has to
+    /// be written back (see [`crate::session`]). Everything else goes straight to
+    /// [`App::start_game`] with offline credentials.
+    pub fn request_launch(&mut self) {
         let Some(version) = self.selected_version().cloned() else {
             self.log("没有选中的版本");
             return;
         };
 
-        let credentials = match &self.account {
-            Account::SignedIn { name, .. } => {
-                let name = name.clone();
-                let file = self
-                    .accounts
-                    .iter()
-                    .find(|account| account.player_name == name)
-                    .map(|account| account.file.clone());
-                match file {
-                    Some(path) => match launch::Credentials::from_account_file(&path) {
-                        Ok(credentials) => credentials,
-                        Err(error) => {
-                            self.log(format!("凭据不可用，改用离线模式：{error}"));
-                            launch::Credentials::offline(&name)
-                        }
-                    },
-                    None => launch::Credentials::offline(&name),
+        let account_file = match &self.account {
+            Account::SignedIn { name, .. } => self
+                .accounts
+                .iter()
+                .find(|account| &account.player_name == name)
+                .map(|account| account.file.clone()),
+            Account::SignedOut => None,
+        };
+
+        match account_file {
+            Some(file) => {
+                self.status = "刷新登录令牌…".to_string();
+                self.log(format!("启动前刷新 {} 的令牌", version.id));
+                self.pending_refresh = Some((version.id, file));
+            }
+            None => {
+                let name = match &self.account {
+                    Account::SignedIn { name, .. } => name.clone(),
+                    Account::SignedOut => "Player".to_string(),
+                };
+                self.log("未登录，使用离线身份（进服务器会被拒绝）");
+                self.start_game(launch::Credentials::offline(&name));
+            }
+        }
+    }
+
+    /// Apply the result of the refresh worker.
+    pub fn handle_session_event(&mut self, event: SessionEvent) {
+        let pending = self.pending_refresh.take();
+        match event {
+            SessionEvent::Ready {
+                username,
+                uuid,
+                access_token,
+                xuid,
+                refreshed,
+            } => {
+                if refreshed {
+                    self.log(format!("令牌已刷新并写回凭据（{username}）"));
+                } else {
+                    self.log(format!("登录状态仍然有效（{username}）"));
+                }
+                // Re-read the account list: the refresh rotated the stored token.
+                self.accounts = accounts::list(&self.accounts_dir);
+                self.start_game(launch::Credentials {
+                    username,
+                    uuid,
+                    access_token,
+                    user_type: "msa".to_string(),
+                    xuid,
+                });
+            }
+            SessionEvent::NeedsSignIn { username, reason } => {
+                self.status = "需要重新登录".to_string();
+                self.log(format!("登录已失效（{reason}）"));
+                self.log("按 l 重新登录；现在用离线身份启动".to_string());
+                self.start_game(launch::Credentials::offline(&username));
+            }
+            SessionEvent::Failed { username, reason } => {
+                // A network hiccup must not block playing: fall back to whatever
+                // token is already on disk.
+                self.log(format!("刷新失败（{reason}），使用已保存的令牌"));
+                let fallback = match &pending {
+                    Some((_, file)) => launch::Credentials::from_account_file(file),
+                    None => Err("没有账户文件".to_string()),
+                };
+                match fallback {
+                    Ok(credentials) => self.start_game(credentials),
+                    Err(error) => {
+                        self.log(format!("已保存的令牌不可用：{error}"));
+                        let username = if username.is_empty() {
+                            "Player".to_string()
+                        } else {
+                            username
+                        };
+                        self.start_game(launch::Credentials::offline(&username));
+                    }
                 }
             }
-            Account::SignedOut => launch::Credentials::offline("Player"),
+        }
+    }
+
+    /// Build the command for the selected version and start the game.
+    ///
+    /// All the deciding happens in [`launch::prepare`]; this picks the version,
+    /// logs what was chosen and spawns the process. The child gets no inherited
+    /// stdio because its output would land in the middle of the alternate screen —
+    /// the game writes its own log file anyway.
+    pub fn start_game(&mut self, credentials: launch::Credentials) {
+        let Some(version) = self.selected_version().cloned() else {
+            self.log("没有选中的版本");
+            return;
         };
+
+        // Record what we tried before anything can fail, so a failed build still
+        // tells the caller (and the tests) which credentials were used.
+        self.last_credentials = Some(credentials.clone());
 
         let prepared =
             match launch::prepare(&self.root, &version.id, &credentials, &self.launch_options) {
@@ -657,20 +743,17 @@ impl App {
             "启动 {} · {session} · Java {} · {} 个 classpath 条目 · 主类 {}",
             version.id, prepared.java_major, prepared.classpath_entries, prepared.main_class
         ));
-        self.log(format!(
-            "natives: {}",
-            prepared.natives.as_ref().map_or_else(
-                || "（无，1.19+ 不需要）".to_string(),
-                |path| path.display().to_string()
-            )
-        ));
         if prepared.required_major > prepared.java_major {
             self.log(format!(
                 "警告：这个版本需要 Java {}，用 Java {} 启动很可能失败",
                 prepared.required_major, prepared.java_major
             ));
         }
+        self.last_launch = Some(prepared);
 
+        let Some(prepared) = &self.last_launch else {
+            return;
+        };
         let mut command = std::process::Command::new(&prepared.command.exe);
         command
             .args(&prepared.command.args)
@@ -1834,6 +1917,126 @@ mod tests {
             DownloadStage::Installing,
             "the worker keeps going; only the screen was closed"
         );
+    }
+
+    // ---- session refresh ----
+
+    fn signed_in_app(account_file: PathBuf) -> App {
+        let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
+        app.accounts = vec![SavedAccount {
+            file: account_file,
+            player_name: "Steve".into(),
+            player_uuid: "uuid".into(),
+            application: "Minecraft Launcher".into(),
+            app_id: "id".into(),
+        }];
+        app.account = Account::SignedIn {
+            name: "Steve".into(),
+            application: "Minecraft Launcher".into(),
+        };
+        // An unusable Java keeps `start_game` from ever spawning a process.
+        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
+        app
+    }
+
+    #[test]
+    fn a_signed_in_launch_refreshes_before_building_anything() {
+        let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
+        app.request_launch();
+        assert_eq!(
+            app.pending_refresh,
+            Some(("1.20.1".to_string(), PathBuf::from("/acc/Steve.json")))
+        );
+        assert!(app.last_launch.is_none(), "nothing is built before refresh");
+        assert!(app.last_credentials.is_none());
+    }
+
+    #[test]
+    fn a_signed_out_launch_goes_straight_to_offline_credentials() {
+        let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
+        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
+        app.request_launch();
+        assert!(app.pending_refresh.is_none());
+        let credentials = app.last_credentials.expect("offline credentials are used");
+        assert_eq!(credentials.user_type, "legacy");
+        assert_eq!(credentials.access_token, "0");
+    }
+
+    #[test]
+    fn a_refreshed_token_is_what_gets_launched() {
+        let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
+        app.request_launch();
+        app.handle_session_event(SessionEvent::Ready {
+            username: "Steve".into(),
+            uuid: "uuid".into(),
+            access_token: "fresh-token".into(),
+            xuid: Some("42".into()),
+            refreshed: true,
+        });
+        assert!(app.pending_refresh.is_none());
+        let credentials = app.last_credentials.expect("credentials recorded");
+        assert_eq!(credentials.access_token, "fresh-token");
+        assert_eq!(credentials.user_type, "msa");
+        assert_eq!(credentials.xuid.as_deref(), Some("42"));
+        assert!(app
+            .log
+            .iter()
+            .any(|line| line.contains("令牌已刷新并写回凭据")));
+    }
+
+    #[test]
+    fn an_expired_session_falls_back_to_offline_with_a_clear_message() {
+        let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
+        app.request_launch();
+        app.handle_session_event(SessionEvent::NeedsSignIn {
+            username: "Steve".into(),
+            reason: "invalid_grant".into(),
+        });
+        let credentials = app.last_credentials.expect("falls back, does not refuse");
+        assert_eq!(credentials.user_type, "legacy");
+        assert_eq!(credentials.username, "Steve", "keeps the player name");
+        assert!(app.log.iter().any(|line| line.contains("登录已失效")));
+        // The follow-up line tells the user what to do about it.
+        assert!(app.log.iter().any(|line| line.contains("按 l 重新登录")));
+    }
+
+    #[test]
+    fn a_failed_refresh_uses_the_token_already_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("Steve.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({
+                "player": { "name": "Steve", "uuid": "uuid" },
+                "session": { "minecraft_token": { "access_token": "stored" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut app = signed_in_app(file.clone());
+        app.request_launch();
+        app.handle_session_event(SessionEvent::Failed {
+            username: "Steve".into(),
+            reason: "网络超时".into(),
+        });
+
+        let credentials = app.last_credentials.expect("falls back to the file");
+        assert_eq!(credentials.access_token, "stored");
+        assert_eq!(credentials.user_type, "msa");
+        assert!(app.log.iter().any(|line| line.contains("网络超时")));
+    }
+
+    #[test]
+    fn a_failed_refresh_without_a_usable_file_still_starts_offline() {
+        let mut app = signed_in_app(PathBuf::from("/acc/missing.json"));
+        app.request_launch();
+        app.handle_session_event(SessionEvent::Failed {
+            username: "Steve".into(),
+            reason: "读取失败".into(),
+        });
+        let credentials = app.last_credentials.expect("offline fallback");
+        assert_eq!(credentials.user_type, "legacy");
     }
 
     // ---- loader bases ----

@@ -11,6 +11,7 @@ mod install;
 mod launch;
 mod login;
 mod paths;
+mod session;
 mod ui;
 
 use std::io;
@@ -32,6 +33,7 @@ use crate::app::{App, Screen};
 use crate::install::{InstallEvent, Settings, Source};
 use crate::login::LoginEvent;
 use crate::paths::Paths;
+use crate::session::SessionEvent;
 
 fn main() -> std::process::ExitCode {
     let options = match Options::parse() {
@@ -106,6 +108,7 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
 
     let mut login_rx: Option<Receiver<LoginEvent>> = None;
     let mut install_rx: Option<Receiver<InstallEvent>> = None;
+    let mut session_rx: Option<Receiver<SessionEvent>> = None;
     let result = loop {
         // A login thread is requested by the state machine and spawned here, so
         // `app` never needs to know about threads or runtimes.
@@ -133,6 +136,30 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 version,
                 loader,
             ));
+        }
+
+        if let Some((_, file)) = app.pending_refresh.clone() {
+            // The state machine asked for a refresh; take the request and spawn it.
+            if session_rx.is_none() {
+                app.pending_refresh = None;
+                session_rx = Some(session::spawn_refresh(file));
+            }
+        }
+        let mut session_done = false;
+        if let Some(receiver) = &session_rx {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => app.handle_session_event(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        session_done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if session_done {
+            session_rx = None;
         }
 
         let mut install_done = false;
@@ -180,11 +207,12 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
 
         // A running download reports every 100 ms; poll faster than that so the
         // bar actually moves instead of stepping four times a second.
-        let tick = if app.screen == Screen::Installing || install_rx.is_some() {
-            Duration::from_millis(50)
-        } else {
-            Duration::from_millis(250)
-        };
+        let tick =
+            if app.screen == Screen::Installing || install_rx.is_some() || session_rx.is_some() {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_millis(250)
+            };
         match event::poll(tick) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
@@ -236,7 +264,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         // Keyboard equivalent of the wheel, for terminals without mouse reporting.
         KeyCode::PageUp => app.scroll_log(5),
         KeyCode::PageDown => app.scroll_log_back(5),
-        KeyCode::Enter => app.launch_selected(),
+        KeyCode::Enter => app.request_launch(),
         _ => {}
     }
 }
