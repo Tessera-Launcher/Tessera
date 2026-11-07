@@ -264,6 +264,21 @@ pub struct Layout {
     /// The download picker's two panes.
     pub download_versions: Area,
     pub download_loaders: Area,
+    /// Clickable key hints in the footer.
+    pub buttons: Vec<Button>,
+}
+
+/// One clickable hint in the footer: where it is and which key it stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Button {
+    pub area: Area,
+    pub code: KeyCode,
+}
+
+impl Button {
+    pub fn new(area: Area, code: KeyCode) -> Self {
+        Button { area, code }
+    }
 }
 
 /// The whole application state.
@@ -516,6 +531,20 @@ impl App {
     /// Hit testing lives here rather than in the renderer so that every click
     /// path is testable without a terminal: tests set [`Layout`] directly.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        // A footer hint is a button: replay its key instead of duplicating the
+        // action, so the two can never drift apart.
+        if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if let Some(button) = self
+                .layout
+                .buttons
+                .iter()
+                .find(|button| button.area.contains(event.column, event.row))
+                .copied()
+            {
+                self.handle_key(button.code, KeyModifiers::NONE);
+                return;
+            }
+        }
         match self.screen {
             Screen::Main => self.handle_main_mouse(event),
             Screen::Login => self.handle_login_mouse(event),
@@ -609,6 +638,47 @@ impl App {
         self.screen = self.login_return;
         if matches!(self.login.step, LoginStep::Waiting { .. }) {
             self.log("已取消登录（浏览器里仍可能显示旧代码）");
+        }
+    }
+
+    /// All keyboard handling, so a mouse click can replay a key and behave
+    /// identically to pressing it.
+    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        match self.screen {
+            Screen::Login => {
+                self.handle_login_key(code, modifiers);
+                return;
+            }
+            Screen::Accounts => {
+                self.handle_accounts_key(code, modifiers);
+                return;
+            }
+            Screen::Download | Screen::Installing => {
+                self.handle_download_key(code, modifiers);
+                return;
+            }
+            Screen::Main => {}
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
+            KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
+            KeyCode::Home | KeyCode::Char('g') => self.select_first(),
+            KeyCode::End | KeyCode::Char('G') => self.select_last(),
+            KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('h') => self.toggle_base_versions(),
+            KeyCode::Char('l') => self.open_login(),
+            KeyCode::Char('a') => self.open_accounts(),
+            KeyCode::Char('d') => self.open_download(),
+            // Keyboard equivalent of the wheel, for terminals without mouse reporting.
+            KeyCode::PageUp => self.scroll_log(5),
+            KeyCode::PageDown => self.scroll_log_back(5),
+            KeyCode::Enter => self.request_launch(),
+            _ => {}
         }
     }
 

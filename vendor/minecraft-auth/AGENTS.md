@@ -125,11 +125,15 @@ A launcher keeps one session per identity. The pieces are:
 | Title client id on `consumers` | known to fail (`AADSTS700016`), rejected before any request |
 | Official launcher identity (title id + device + SISU), sign-in | **verified** 2026-11-07: device code → SISU → `login_with_xbox` → profile all succeeded against a real account |
 | Official launcher identity, MSA refresh | **verified** 2026-11-07 on a second account: a freshly issued token refreshes, and the rotated token refreshes again |
-| Multiplayer, either identity | unverified — needs a real client joining an online-mode server |
+| Official launcher identity, online-mode multiplayer | **verified** 2026-11-08 (reported by the launcher project: a real client signed in with the title identity joined an online-mode server) |
+| Third-party identity, online-mode multiplayer | unverified — same test, not yet run with an Azure application id |
 
 Which identity a Minecraft access token belongs to is visible in its `aid` claim:
 `…402b5328` for the official launcher, the Azure application id for a third-party
 identity.
+
+Online-mode multiplayer was confirmed with the official launcher identity on
+2026-11-08: the token is accepted by a real server, not just by single-player.
 
 ### Refresh behaviour, and one misleading error
 
@@ -181,8 +185,9 @@ the signed `device/authenticate`, SISU, `login_with_xbox`, and refresh.
    `Error::ProfileNotFound` means authentication worked but the account has no
    Minecraft profile.
 4. **Prove the token, not just the process.** An invalid access token still
-   starts the game in single-player; it only fails when joining a server. So
-   launch a real client with
+   starts the game in single-player; it only fails when joining a server. This
+   step is done for the official launcher identity (2026-11-08) and still
+   outstanding for a third-party identity. So launch a real client with
    `--username/--uuid/--accessToken/--userType msa/--xuid` and join an online-mode
    server (or a Realm). That is the only end-to-end evidence that matters.
 5. Then record the date: `AuthApplication::official_launcher().verified("YYYY-MM-DD")`

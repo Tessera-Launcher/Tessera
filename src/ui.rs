@@ -1,5 +1,6 @@
 //! Drawing the main screen. Pure rendering: takes `&App`, touches no state.
 
+use crossterm::event::KeyCode;
 use ratatui::buffer::CellWidth;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -7,7 +8,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, Area, LoginStep, Screen};
+use crate::app::{App, Area, Button, LoginStep, Screen};
 use crate::discover::{self, LocalVersion};
 use crate::install::Loader;
 
@@ -319,29 +320,90 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let status = Span::styled(format!(" {} ", app.status), Style::new().fg(ACCENT));
-    let hints = match app.screen {
-        Screen::Login => match app.login.step {
-            LoginStep::Choose => "↑↓ 选择身份 · Enter 下一步 · Esc 取消 ",
-            LoginStep::EnterAppId => "输入 app id · Enter 开始 · Esc 返回 ",
-            LoginStep::Waiting { .. } => "等待浏览器确认 · Esc 取消 ",
-            LoginStep::Done { .. } | LoginStep::Failed(_) => "Enter/Esc 返回 ",
-        },
-        Screen::Accounts => "↑↓ 选择 · Enter 切换 · d 移除 · l 登录 · Esc 关闭 ",
-        Screen::Download => match app.download.stage {
-            crate::app::DownloadStage::LoadingVersions => "正在获取版本列表… Esc 取消 ",
-            crate::app::DownloadStage::Picking => "Tab 切换栏 · ↑↓ 选择 · Enter 安装 · Esc 取消 ",
-            _ => "Esc 返回 ",
-        },
-        Screen::Installing => "Esc 转为后台下载 ",
-        Screen::Main => {
-            "↑↓ 选择 · Enter 安装/启动 · a 账户 · d 下载 · h 基础版本 · r 刷新 · q 退出 "
-        }
+fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.layout.buttons.clear();
+
+    // (key, label) per screen: the label is what is drawn, the key is what a click
+    // replays, so the hint and the binding cannot drift apart.
+    let entries: Vec<(String, KeyCode)> = match app.screen {
+        Screen::Main => vec![
+            ("d 下载".to_string(), KeyCode::Char('d')),
+            ("a 账户".to_string(), KeyCode::Char('a')),
+            ("h 基础版本".to_string(), KeyCode::Char('h')),
+            ("r 刷新".to_string(), KeyCode::Char('r')),
+            ("q 退出".to_string(), KeyCode::Char('q')),
+        ],
+        Screen::Accounts => vec![
+            ("l 登录".to_string(), KeyCode::Char('l')),
+            ("d 移除".to_string(), KeyCode::Char('d')),
+            ("Esc 关闭".to_string(), KeyCode::Esc),
+        ],
+        Screen::Download => vec![("Esc 取消".to_string(), KeyCode::Esc)],
+        Screen::Installing => vec![("Esc 后台运行".to_string(), KeyCode::Esc)],
+        Screen::Login => vec![("Esc 取消".to_string(), KeyCode::Esc)],
     };
-    let keys = Span::styled(hints, Style::new().fg(DIM));
-    let line = Line::from(vec![status, keys]);
-    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), area);
+
+    let sep = " · ";
+    let buttons_width: usize = entries
+        .iter()
+        .map(|(text, _)| cell_width_of(sep) + cell_width_of(text))
+        .sum();
+
+    // Status first; it gives up whatever room the buttons need.
+    let room = (area.width as usize).saturating_sub(buttons_width);
+    let status = truncate_to_width(&format!(" {}", app.status), room);
+
+    let mut spans = vec![Span::styled(status.clone(), Style::new().fg(ACCENT))];
+    let mut placed: Vec<(usize, usize, KeyCode)> = Vec::new();
+    let mut column = cell_width_of(&status);
+    for (text, code) in &entries {
+        spans.push(Span::styled(sep, Style::new().fg(DIM)));
+        column += cell_width_of(sep);
+        placed.push((column, cell_width_of(text), *code));
+        spans.push(Span::styled(
+            text.clone(),
+            Style::new()
+                .fg(Color::White)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
+        column += cell_width_of(text);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false }),
+        area,
+    );
+
+    // Record the clickable spans; anything past the edge is dropped.
+    for (start, width, code) in placed {
+        let x = area.x as usize + start;
+        if x + width > area.x as usize + area.width as usize || width == 0 {
+            continue;
+        }
+        app.layout.buttons.push(Button::new(
+            Area::new(x as u16, area.y, width as u16, 1),
+            code,
+        ));
+    }
+}
+
+/// Cut `text` to at most `max` display cells, counting CJK as two.
+fn truncate_to_width(text: &str, max: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let width = ch.to_string().cell_width() as usize;
+        if used + width > max {
+            break;
+        }
+        used += width;
+        out.push(ch);
+    }
+    out
+}
+
+/// Display width of a string (CJK counts as two cells).
+fn cell_width_of(text: &str) -> usize {
+    text.cell_width() as usize
 }
 
 /// The version + loader picker.
@@ -1009,7 +1071,14 @@ mod tests {
         );
         assert!(screen.contains("详情"), "details missing:\n{screen}");
         assert!(screen.contains("日志"), "log missing:\n{screen}");
-        assert!(screen.contains("↑↓ 选择"), "keys missing:\n{screen}");
+        assert!(
+            screen.contains("d 下载"),
+            "footer buttons missing:\n{screen}"
+        );
+        assert!(
+            screen.contains("q 退出"),
+            "footer buttons missing:\n{screen}"
+        );
         assert!(screen.contains("▶"), "selection marker missing:\n{screen}");
     }
 
@@ -1140,6 +1209,76 @@ mod tests {
         app.accounts_ui.confirm_delete = true;
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("再按一次 d 确认移除"), "{screen}");
+    }
+
+    #[test]
+    fn footer_hints_are_buttons_and_replay_their_key() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let click = |column: u16, row: u16| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![version("1.20.1", "release", 17, None)],
+            vec![],
+        );
+        render(&mut app, 100, 28);
+
+        let find = |app: &App, code: KeyCode| {
+            app.layout
+                .buttons
+                .iter()
+                .find(|button| button.code == code)
+                .copied()
+                .unwrap_or_else(|| panic!("no footer button for {code:?}"))
+        };
+
+        // d 下载
+        let button = find(&app, KeyCode::Char('d'));
+        app.handle_mouse(click(button.area.x, button.area.y));
+        assert_eq!(app.screen, Screen::Download);
+
+        // Back to the main screen and try the toggle.
+        app.handle_key(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Main);
+        render(&mut app, 100, 28);
+        let button = find(&app, KeyCode::Char('h'));
+        app.handle_mouse(click(button.area.x, button.area.y));
+        assert!(app.show_base_versions, "h button must toggle bases");
+
+        // q 退出
+        let button = find(&app, KeyCode::Char('q'));
+        app.handle_mouse(click(button.area.x, button.area.y));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn the_account_manager_footer_offers_a_clickable_login() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_accounts();
+        render(&mut app, 100, 28);
+
+        let button = app
+            .layout
+            .buttons
+            .iter()
+            .find(|button| button.code == crossterm::event::KeyCode::Char('l'))
+            .copied()
+            .expect("login button");
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: button.area.x,
+            row: button.area.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        assert_eq!(app.screen, Screen::Login);
     }
 
     #[test]

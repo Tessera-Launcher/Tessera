@@ -56,9 +56,9 @@ impl AuthApplication {
     /// `MBI_SSL` scope and the device-token + SISU chain.
     ///
     /// Sign-in and refresh were verified against the live services on
-    /// 2026-11-07 with two accounts (see `known_applications` and `AGENTS.md`).
-    /// Not verified: a real client joining an online-mode server with the
-    /// resulting token.
+    /// 2026-11-07 with two accounts, and the resulting token was accepted by an
+    /// online-mode server from a real client on 2026-11-08 (see
+    /// `known_applications` and `AGENTS.md`).
     pub fn official_launcher() -> Self {
         Self::new("Minecraft Launcher", MsaApplicationConfig::java_default())
     }
@@ -93,7 +93,7 @@ impl From<AuthApplication> for MsaApplicationConfig {
 pub fn known_applications() -> Vec<AuthApplication> {
     // Sign-in and refresh both checked against the live services; the date is
     // the last time that happened, not the last time the code changed.
-    vec![AuthApplication::official_launcher().verified("2026-11-07")]
+    vec![AuthApplication::official_launcher().verified("2026-11-08")]
 }
 
 #[cfg(test)]

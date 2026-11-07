@@ -19,9 +19,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -216,7 +214,7 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
         match event::poll(tick) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                    handle_key(app, key.code, key.modifiers)
+                    app.handle_key(key.code, key.modifiers)
                 }
                 Ok(Event::Mouse(mouse)) => app.handle_mouse(mouse),
                 Ok(_) => {}
@@ -228,45 +226,6 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
     };
     leave()?;
     result
-}
-
-fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
-        app.should_quit = true;
-        return;
-    }
-    match app.screen {
-        Screen::Login => {
-            app.handle_login_key(code, modifiers);
-            return;
-        }
-        Screen::Accounts => {
-            app.handle_accounts_key(code, modifiers);
-            return;
-        }
-        Screen::Download | Screen::Installing => {
-            app.handle_download_key(code, modifiers);
-            return;
-        }
-        Screen::Main => {}
-    }
-    match code {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-        KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
-        KeyCode::Home | KeyCode::Char('g') => app.select_first(),
-        KeyCode::End | KeyCode::Char('G') => app.select_last(),
-        KeyCode::Char('r') => app.reload(),
-        KeyCode::Char('h') => app.toggle_base_versions(),
-        KeyCode::Char('l') => app.open_login(),
-        KeyCode::Char('a') => app.open_accounts(),
-        KeyCode::Char('d') => app.open_download(),
-        // Keyboard equivalent of the wheel, for terminals without mouse reporting.
-        KeyCode::PageUp => app.scroll_log(5),
-        KeyCode::PageDown => app.scroll_log_back(5),
-        KeyCode::Enter => app.request_launch(),
-        _ => {}
-    }
 }
 
 fn enter() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
