@@ -16,7 +16,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -129,6 +131,7 @@ fn run(app: &mut App) -> io::Result<()> {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                     handle_key(app, key.code, key.modifiers)
                 }
+                Ok(Event::Mouse(mouse)) => app.handle_mouse(mouse),
                 Ok(_) => {}
                 Err(error) => break Err(error),
             },
@@ -157,6 +160,9 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::End | KeyCode::Char('G') => app.select_last(),
         KeyCode::Char('r') => app.reload(),
         KeyCode::Char('l') => app.open_login(),
+        // Keyboard equivalent of the wheel, for terminals without mouse reporting.
+        KeyCode::PageUp => app.scroll_log(5),
+        KeyCode::PageDown => app.scroll_log_back(5),
         KeyCode::Enter => app.not_implemented("安装/启动"),
         _ => {}
     }
@@ -165,14 +171,14 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 fn enter() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
     // A panic inside a raw-mode alternate screen leaves the terminal unusable,
     // so restore it before the default hook prints anything.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
         default_hook(info);
     }));
 
@@ -181,7 +187,7 @@ fn enter() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
 
 fn leave() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
 }
 
@@ -280,5 +286,12 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   data/日志/
 
 按键（主界面）:
-  ↑/k ↓/j 选择   g/G 首尾   l 登录   r 刷新   q/Esc 退出
-  Enter 安装/启动（未实现）";
+  ↑/k ↓/j 选择   g/G 首尾   PgUp/PgDn 滚动日志
+  l 或点击右上角账户  登录
+  r 刷新   q/Esc 退出   Enter 安装/启动（未实现）
+
+鼠标:
+  滚轮            日志区滚动日志，版本区切换选择
+  点击版本行       选中它
+  点击右上角账户   打开登录
+  登录面板内点击   选择身份；点击面板外取消";

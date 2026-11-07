@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::accounts::{self, Account as SavedAccount};
 use crate::discover::{self, LocalVersion};
@@ -87,6 +87,50 @@ impl LoginUi {
     }
 }
 
+/// A rectangle in terminal cells, independent of the widget library.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Area {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl Area {
+    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+        Area {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Whether a mouse cell falls inside (half-open, like every other rect).
+    pub fn contains(&self, column: u16, row: u16) -> bool {
+        column >= self.x
+            && column < self.x.saturating_add(self.width)
+            && row >= self.y
+            && row < self.y.saturating_add(self.height)
+    }
+}
+
+/// Where the last frame put things. The renderer fills this in so mouse hits can
+/// be resolved without duplicating the layout maths.
+#[derive(Debug, Clone, Default)]
+pub struct Layout {
+    /// Data rows of the version list (no header, no border).
+    pub list: Area,
+    /// Inner area of the log panel.
+    pub log: Area,
+    /// The account label in the header, which opens the login overlay.
+    pub account: Area,
+    /// The login popup.
+    pub overlay: Area,
+    /// Clickable option rows inside the overlay, in order.
+    pub overlay_options: Vec<Area>,
+}
+
 /// The whole application state.
 #[derive(Debug)]
 pub struct App {
@@ -103,6 +147,12 @@ pub struct App {
     pub login: LoginUi,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
+    /// Filled by the renderer every frame; read by the mouse handler.
+    pub layout: Layout,
+    /// First visible row of the version list.
+    list_offset: usize,
+    /// Lines scrolled back from the newest log line; `0` follows the tail.
+    pub log_scroll: usize,
 }
 
 impl App {
@@ -127,6 +177,9 @@ impl App {
             screen: Screen::Main,
             login: LoginUi::default(),
             pending_login: None,
+            layout: Layout::default(),
+            list_offset: 0,
+            log_scroll: 0,
         };
 
         let status = app.status.clone();
@@ -182,6 +235,48 @@ impl App {
         self.selected = self.versions.len().saturating_sub(1);
     }
 
+    /// First visible row, for the renderer.
+    pub fn list_offset(&self) -> usize {
+        self.list_offset
+    }
+
+    /// Keep the selection inside a `visible`-row viewport.
+    pub fn clamp_list(&mut self, visible: usize) {
+        if visible == 0 {
+            return;
+        }
+        if self.selected < self.list_offset {
+            self.list_offset = self.selected;
+        }
+        if self.selected >= self.list_offset + visible {
+            self.list_offset = self.selected + 1 - visible;
+        }
+        let last_page = self.versions.len().saturating_sub(visible);
+        if self.list_offset > last_page {
+            self.list_offset = last_page;
+        }
+    }
+
+    /// Scroll the log back by `lines` (saturating at the oldest retained line).
+    pub fn scroll_log(&mut self, lines: usize) {
+        self.log_scroll = self.log_scroll.saturating_add(lines);
+        // Clamping to the buffer length keeps repeated wheel events cheap; the
+        // renderer clamps again to what actually fits.
+        self.log_scroll = self.log_scroll.min(self.log.len());
+    }
+
+    /// Cap the scrollback once the renderer knows how many lines fit.
+    pub fn clamp_log_scroll(&mut self, maximum: usize) {
+        if self.log_scroll > maximum {
+            self.log_scroll = maximum;
+        }
+    }
+
+    /// Scroll the log towards the newest line.
+    pub fn scroll_log_back(&mut self, lines: usize) {
+        self.log_scroll = self.log_scroll.saturating_sub(lines);
+    }
+
     pub fn log(&mut self, line: impl Into<String>) {
         if self.log.len() == LOG_CAPACITY {
             self.log.remove(0);
@@ -206,6 +301,86 @@ impl App {
             natives: dir.join(format!("{}-natives", version.id)),
             dir,
         })
+    }
+
+    // ---- mouse ----
+
+    /// Resolve a mouse event against the layout of the last frame.
+    ///
+    /// Hit testing lives here rather than in the renderer so that every click
+    /// path is testable without a terminal: tests set [`Layout`] directly.
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        match self.screen {
+            Screen::Main => self.handle_main_mouse(event),
+            Screen::Login => self.handle_login_mouse(event),
+        }
+    }
+
+    fn handle_main_mouse(&mut self, event: MouseEvent) {
+        let (column, row) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::ScrollUp => {
+                if self.layout.log.contains(column, row) {
+                    self.scroll_log(3);
+                } else if self.layout.list.contains(column, row) {
+                    self.select_prev();
+                } else {
+                    self.scroll_log(3);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.layout.log.contains(column, row) {
+                    self.scroll_log_back(3);
+                } else if self.layout.list.contains(column, row) {
+                    self.select_next();
+                } else {
+                    self.scroll_log_back(3);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.layout.account.contains(column, row) {
+                    self.open_login();
+                    return;
+                }
+                if self.layout.list.contains(column, row) {
+                    let index = self.list_offset + (row - self.layout.list.y) as usize;
+                    if index < self.versions.len() {
+                        self.selected = index;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_login_mouse(&mut self, event: MouseEvent) {
+        let (column, row) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A click on an identity row both selects and confirms it, the way a
+                // menu behaves; a click outside the popup cancels.
+                if let Some(index) = self
+                    .layout
+                    .overlay_options
+                    .iter()
+                    .position(|area| area.contains(column, row))
+                {
+                    self.login.choice = index;
+                    self.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+                    return;
+                }
+                if !self.layout.overlay.contains(column, row) {
+                    self.close_login();
+                }
+            }
+            MouseEventKind::ScrollUp if self.layout.overlay.contains(column, row) => {
+                self.login.choice = self.login.choice.saturating_sub(1);
+            }
+            MouseEventKind::ScrollDown if self.layout.overlay.contains(column, row) => {
+                self.login.choice = (self.login.choice + 1).min(1);
+            }
+            _ => {}
+        }
     }
 
     // ---- login overlay ----
@@ -500,6 +675,208 @@ mod tests {
             other => panic!("unexpected step: {other:?}"),
         }
         assert!(app.log.iter().any(|line| line.contains("网络不可达")));
+    }
+
+    // ---- mouse ----
+
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    fn click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn wheel(up: bool, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: if up {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::ScrollDown
+            },
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// A 100x28 frame, laid out like the renderer does.
+    fn laid_out() -> App {
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![
+                version("a"),
+                version("b"),
+                version("c"),
+                version("d"),
+                version("e"),
+            ],
+            Vec::new(),
+        );
+        app.layout.list = Area::new(1, 5, 40, 4);
+        app.layout.log = Area::new(45, 5, 50, 10);
+        app.layout.account = Area::new(70, 1, 20, 1);
+        app
+    }
+
+    #[test]
+    fn area_contains_uses_half_open_bounds() {
+        let area = Area::new(2, 3, 4, 5);
+        assert!(area.contains(2, 3));
+        assert!(area.contains(5, 7));
+        assert!(!area.contains(6, 3), "right edge is exclusive");
+        assert!(!area.contains(2, 8), "bottom edge is exclusive");
+        assert!(!area.contains(1, 3));
+    }
+
+    #[test]
+    fn clicking_a_row_selects_it() {
+        let mut app = laid_out();
+        app.handle_mouse(click(10, 5));
+        assert_eq!(app.selected, 0);
+        app.handle_mouse(click(10, 7));
+        assert_eq!(app.selected, 2, "row offset maps to the third version");
+    }
+
+    #[test]
+    fn clicking_below_the_last_row_does_not_overflow_the_selection() {
+        let mut app = laid_out();
+        app.layout.list = Area::new(1, 5, 40, 20); // taller than the list
+        app.handle_mouse(click(10, 5 + 15));
+        assert_eq!(app.selected, 0, "out-of-range rows are ignored");
+    }
+
+    #[test]
+    fn clicks_respect_the_scroll_offset() {
+        let mut app = laid_out();
+        app.layout.list = Area::new(1, 5, 40, 2); // only two rows on screen
+        app.selected = 4;
+        app.clamp_list(2);
+        assert_eq!(app.list_offset(), 3, "viewport follows the selection");
+
+        app.handle_mouse(click(10, 5));
+        assert_eq!(app.selected, 3, "top visible row is index 3");
+        app.handle_mouse(click(10, 6));
+        assert_eq!(app.selected, 4);
+    }
+
+    #[test]
+    fn clicking_the_account_label_opens_login() {
+        let mut app = laid_out();
+        app.handle_mouse(click(75, 1));
+        assert_eq!(app.screen, Screen::Login);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_log_and_clamps_at_both_ends() {
+        let mut app = laid_out();
+        for i in 0..100 {
+            app.log(format!("line {i}"));
+        }
+
+        // Over the log: three lines per notch, away from the tail.
+        app.handle_mouse(wheel(true, 50, 6));
+        assert_eq!(app.log_scroll, 3);
+        app.handle_mouse(wheel(true, 50, 6));
+        assert_eq!(app.log_scroll, 6);
+
+        app.handle_mouse(wheel(false, 50, 6));
+        assert_eq!(app.log_scroll, 3);
+
+        // Never negative, never past the oldest retained line.
+        for _ in 0..10 {
+            app.handle_mouse(wheel(false, 50, 6));
+        }
+        assert_eq!(app.log_scroll, 0);
+        for _ in 0..200 {
+            app.handle_mouse(wheel(true, 50, 6));
+        }
+        // App::new already logged a few lines, so the bound is the buffer, not 100.
+        assert_eq!(
+            app.log_scroll,
+            app.log.len(),
+            "clamped to the buffer length"
+        );
+        // The renderer clamps further, to `len - visible`; that is where the panel
+        // scrolls to the oldest line instead of past it.
+        let max_scroll = app.log.len().saturating_sub(10);
+        app.clamp_log_scroll(max_scroll);
+        assert_eq!(app.log_scroll, max_scroll);
+    }
+
+    #[test]
+    fn the_wheel_over_the_list_moves_the_selection_instead_of_the_log() {
+        let mut app = laid_out();
+        for i in 0..50 {
+            app.log(format!("line {i}"));
+        }
+        app.handle_mouse(wheel(false, 10, 5));
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.log_scroll, 0, "the log was not touched");
+
+        app.handle_mouse(wheel(true, 10, 5));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn clicking_an_overlay_option_selects_and_confirms_it() {
+        let mut app = laid_out();
+        app.open_login();
+        app.layout.overlay = Area::new(20, 8, 60, 10);
+        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2), Area::new(21, 11, 58, 2)];
+
+        // Second option: the custom identity asks for an app id.
+        app.handle_mouse(click(30, 11));
+        assert_eq!(app.login.choice, 1);
+        assert_eq!(app.login.step, LoginStep::EnterAppId);
+
+        // And it must not start a login by itself while the id is empty.
+        assert!(app.pending_login.is_none());
+    }
+
+    #[test]
+    fn clicking_the_official_option_starts_the_flow() {
+        let mut app = laid_out();
+        app.open_login();
+        app.layout.overlay = Area::new(20, 8, 60, 10);
+        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2), Area::new(21, 11, 58, 2)];
+
+        app.handle_mouse(click(30, 9));
+        assert_eq!(app.pending_login, Some(Identity::Official));
+    }
+
+    #[test]
+    fn clicking_outside_the_overlay_cancels_it() {
+        let mut app = laid_out();
+        app.open_login();
+        app.layout.overlay = Area::new(20, 8, 60, 10);
+        app.handle_mouse(click(2, 2));
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn a_click_inside_the_overlay_but_outside_any_option_keeps_it_open() {
+        let mut app = laid_out();
+        app.open_login();
+        app.layout.overlay = Area::new(20, 8, 60, 10);
+        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2)];
+        app.handle_mouse(click(30, 16));
+        assert_eq!(app.screen, Screen::Login);
+    }
+
+    #[test]
+    fn scrolling_the_overlay_moves_the_identity_choice() {
+        let mut app = laid_out();
+        app.open_login();
+        app.layout.overlay = Area::new(20, 8, 60, 10);
+        app.handle_mouse(wheel(false, 30, 12));
+        assert_eq!(app.login.choice, 1);
+        app.handle_mouse(wheel(true, 30, 12));
+        assert_eq!(app.login.choice, 0);
     }
 
     #[test]

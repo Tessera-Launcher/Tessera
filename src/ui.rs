@@ -4,10 +4,10 @@ use ratatui::buffer::CellWidth;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, LoginStep, Screen};
+use crate::app::{App, Area, LoginStep, Screen};
 use crate::discover::{self, LocalVersion};
 
 const ACCENT: Color = Color::Rgb(0x6c, 0xd6, 0x7a);
@@ -41,13 +41,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let title = Line::from(vec![
         Span::styled(" yaml ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
         Span::styled(" Minecraft Java 版启动器 ", Style::new().fg(Color::White)),
     ]);
+    // The account line doubles as the login button, so the hint says so.
+    let account_text = match &app.account {
+        crate::app::Account::SignedOut => "未登录 · 点此登录".to_string(),
+        signed_in => signed_in.label(),
+    };
     let account = Line::from(Span::styled(
-        format!(" {} ", app.account.label()),
+        format!(" {account_text} "),
         Style::new().fg(DIM),
     ));
     let block = Block::bordered()
@@ -56,6 +61,11 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::new().fg(DIM));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Record the clickable span: right-aligned, width taken from the rendered text
+    // so CJK characters count as two cells.
+    let width = account_text.cell_width().saturating_add(2).min(inner.width);
+    app.layout.account = Area::new(inner.x + inner.width - width, inner.y, width, 1);
 
     let info = Line::from(vec![
         Span::styled(" 目录 ", Style::new().fg(DIM)),
@@ -79,6 +89,16 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Data rows start below the table header; that is the region clicks address.
+    let rows_visible = inner.height.saturating_sub(1) as usize;
+    app.layout.list = Area::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        rows_visible as u16,
+    );
+    app.clamp_list(rows_visible);
+
     if app.versions.is_empty() {
         let hint = Text::from(vec![
             Line::from(Span::styled(
@@ -99,16 +119,33 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let rows: Vec<Row> = app
-        .versions
+    // Only the visible slice is built: the list is the one panel that can hold
+    // hundreds of rows.
+    let offset = app.list_offset();
+    let end = (offset + rows_visible).min(app.versions.len());
+    let selected = app.selected;
+    let rows: Vec<Row> = app.versions[offset..end]
         .iter()
-        .map(|version| {
-            let mut id = Span::styled(version.id.clone(), Style::new().fg(Color::White));
+        .enumerate()
+        .map(|(visible_index, version)| {
+            let is_selected = offset + visible_index == selected;
+            let mut id = Span::styled(
+                version.id.clone(),
+                if is_selected {
+                    Style::new().fg(ACCENT)
+                } else {
+                    Style::new().fg(Color::White)
+                },
+            );
             if !version.has_jar && version.inherits.is_none() {
                 id = id.fg(BROKEN);
             }
-            Row::new(vec![
-                Cell::from(Line::from(id)),
+            let marker = if is_selected { "▶ " } else { "  " };
+            let mut row = Row::new(vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(marker, Style::new().fg(ACCENT)),
+                    id,
+                ])),
                 Cell::from(Line::from(Span::styled(
                     kind_label(version),
                     Style::new().fg(kind_color(&version.kind)),
@@ -119,7 +156,11 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
                         .map_or_else(|| "-".to_string(), |j| format!("{j}")),
                     Style::new().fg(DIM),
                 ))),
-            ])
+            ]);
+            if is_selected {
+                row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
+            }
+            row
         })
         .collect();
 
@@ -131,13 +172,10 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Length(4),
         ],
     )
-    .header(Row::new(vec!["版本", "类型", "Java"]).style(Style::new().fg(DIM).bold()))
-    .column_spacing(1)
-    .highlight_symbol("▶ ")
-    .row_highlight_style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)).fg(ACCENT));
+    .header(Row::new(vec!["  版本", "类型", "Java"]).style(Style::new().fg(DIM).bold()))
+    .column_spacing(1);
 
-    let mut state = TableState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(table, inner, &mut state);
+    frame.render_widget(table, inner);
 }
 
 fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
@@ -194,20 +232,43 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(table, inner);
 }
 
-fn draw_log(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .title(Line::from(" 日志 "))
         .border_style(Style::new().fg(DIM));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Show the tail: a launcher's log grows downward and the newest line matters.
+    app.layout.log = Area::new(inner.x, inner.y, inner.width, inner.height);
+
+    // The log follows the tail until the user scrolls back; `log_scroll` counts
+    // lines away from the newest one.
     let height = inner.height as usize;
-    let skip = app.log.len().saturating_sub(height);
-    let lines: Vec<Line> = app
-        .log
+    let total = app.log.len();
+    let max_scroll = total.saturating_sub(height);
+    app.clamp_log_scroll(max_scroll);
+
+    let scroll = app.log_scroll.min(max_scroll);
+    let end = total - scroll;
+    let start = end.saturating_sub(height);
+
+    let title = if scroll > 0 {
+        format!(" 日志 ({scroll} 行之前，滚轮向下回到底部) ")
+    } else {
+        " 日志 ".to_string()
+    };
+    let block = Block::bordered()
+        .title(Line::from(Span::styled(
+            title,
+            Style::new().fg(if scroll > 0 { ACCENT } else { DIM }),
+        )))
+        .border_style(Style::new().fg(if scroll > 0 { ACCENT } else { DIM }));
+    // Redraw the frame so the title reflects the scroll position.
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let lines: Vec<Line> = app.log[start..end]
         .iter()
-        .skip(skip)
         .map(|line| {
             Line::from(Span::styled(
                 format!("  {line}"),
@@ -236,7 +297,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The login overlay, drawn over the main screen.
-fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
     let width = area.width.saturating_sub(4).clamp(36, 68);
     let height = match &app.login.step {
         LoginStep::Choose => 9,
@@ -253,6 +314,8 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
         height,
     };
     frame.render_widget(Clear, popup);
+    app.layout.overlay = Area::new(popup.x, popup.y, popup.width, popup.height);
+    app.layout.overlay_options.clear();
 
     let title = match &app.login.step {
         LoginStep::Choose => " 登录 · 选择身份 ",
@@ -281,6 +344,13 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
             ];
             let mut lines = Vec::new();
             for (index, (name, hint)) in options.iter().enumerate() {
+                // Two clickable rows per option: the name and its hint.
+                app.layout.overlay_options.push(Area::new(
+                    inner.x,
+                    inner.y.saturating_add((index as u16) * 2),
+                    inner.width,
+                    2,
+                ));
                 let chosen = app.login.choice == index;
                 lines.push(Line::from(vec![
                     Span::styled(if chosen { " ▶ " } else { "   " }, Style::new().fg(ACCENT)),
@@ -539,6 +609,38 @@ mod tests {
         assert!(screen.contains("ABCD-EFGH"), "{screen}");
         assert!(screen.contains("microsoft.com/link"), "{screen}");
         assert!(screen.contains("等待"), "{screen}");
+    }
+
+    #[test]
+    fn a_scrolled_log_shows_older_lines_and_says_how_far_back() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        for i in 0..200 {
+            app.log(format!("entry-{i:03}"));
+        }
+        app.scroll_log(5);
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        assert!(
+            screen.contains("日志 (5 行之前"),
+            "no scrollback hint:\n{screen}"
+        );
+        assert!(
+            !screen.contains("entry-199"),
+            "newest line should be off-screen"
+        );
+        assert!(
+            screen.contains("entry-194"),
+            "the scrolled window is wrong:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn the_log_records_its_area_so_the_wheel_can_target_it() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        render(&mut app, 100, 28);
+        assert!(app.layout.log.width > 0 && app.layout.log.height > 0);
+        assert!(app.layout.list.width > 0, "list area recorded");
+        assert!(app.layout.account.width > 0, "account button recorded");
     }
 
     #[test]
