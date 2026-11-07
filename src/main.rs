@@ -7,6 +7,7 @@
 mod accounts;
 mod app;
 mod discover;
+mod install;
 mod login;
 mod paths;
 mod ui;
@@ -27,6 +28,7 @@ use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 
 use crate::app::{App, Screen};
+use crate::install::{InstallEvent, Settings, Source};
 use crate::login::LoginEvent;
 use crate::paths::Paths;
 
@@ -48,12 +50,14 @@ fn main() -> std::process::ExitCode {
 
     let root = options.root.clone().unwrap_or_else(|| data.game());
     let accounts = accounts::list(&data.accounts());
+    let settings = Settings::default().with_source(options.source);
     let mut app = App::new(
         root.clone(),
         data.accounts(),
         discover::scan(&root),
         accounts,
     );
+    app.source = settings.source;
     app.log(format!("数据目录 {}", data.root().display()));
     app.log(format!("凭据目录 {}", data.accounts().display()));
 
@@ -68,7 +72,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
-    match run(&mut app) {
+    match run(&mut app, settings) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("终端错误: {error}");
@@ -78,7 +82,7 @@ fn main() -> std::process::ExitCode {
 }
 
 /// Interactive loop: collect events, then draw.
-fn run(app: &mut App) -> io::Result<()> {
+fn run(app: &mut App, settings: Settings) -> io::Result<()> {
     let mut terminal = enter()?;
     let client = match reqwest::Client::builder()
         .user_agent(concat!("yaml-launcher/", env!("CARGO_PKG_VERSION")))
@@ -92,6 +96,7 @@ fn run(app: &mut App) -> io::Result<()> {
     };
 
     let mut login_rx: Option<Receiver<LoginEvent>> = None;
+    let mut install_rx: Option<Receiver<InstallEvent>> = None;
     let result = loop {
         // A login thread is requested by the state machine and spawned here, so
         // `app` never needs to know about threads or runtimes.
@@ -102,6 +107,42 @@ fn run(app: &mut App) -> io::Result<()> {
                 app.accounts_dir.clone(),
             ));
         }
+
+        // Download work, same shape: the state machine asks, the loop spawns.
+        if std::mem::take(&mut app.pending_versions) {
+            install_rx = Some(install::spawn_versions(
+                app.root.clone(),
+                settings.source,
+                settings.asset_concurrency,
+            ));
+        }
+        if let Some((version, loader)) = app.pending_install.take() {
+            install_rx = Some(install::spawn_install(
+                app.root.clone(),
+                settings.source,
+                settings.asset_concurrency,
+                version,
+                loader,
+            ));
+        }
+
+        let mut install_done = false;
+        if let Some(receiver) = &install_rx {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => app.handle_install_event(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        install_done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if install_done {
+            install_rx = None;
+        }
+        app.tick();
 
         // Drain whatever the login thread has reported since the last frame.
         let mut disconnected = false;
@@ -159,6 +200,10 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.handle_accounts_key(code, modifiers);
             return;
         }
+        Screen::Download | Screen::Installing => {
+            app.handle_download_key(code, modifiers);
+            return;
+        }
         Screen::Main => {}
     }
     match code {
@@ -170,6 +215,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('r') => app.reload(),
         KeyCode::Char('l') => app.open_login(),
         KeyCode::Char('a') => app.open_accounts(),
+        KeyCode::Char('d') => app.open_download(),
         // Keyboard equivalent of the wheel, for terminals without mouse reporting.
         KeyCode::PageUp => app.scroll_log(5),
         KeyCode::PageDown => app.scroll_log_back(5),
@@ -222,6 +268,7 @@ struct Options {
     login: bool,
     /// Open the account manager immediately (likewise).
     accounts: bool,
+    source: Source,
     width: u16,
     height: u16,
 }
@@ -233,6 +280,7 @@ impl Options {
         let mut once = false;
         let mut login = false;
         let mut accounts = false;
+        let mut source = Source::default();
         let mut width = 100;
         let mut height = 28;
 
@@ -248,6 +296,16 @@ impl Options {
                 "--once" => once = true,
                 "--login" => login = true,
                 "--accounts" => accounts = true,
+                "--mirror" => {
+                    let value = argv
+                        .next()
+                        .ok_or_else(|| "--mirror 需要 bmclapi 或 mojang".to_string())?;
+                    source = match value.as_str() {
+                        "bmclapi" => Source::Bmclapi,
+                        "mojang" => Source::Mojang,
+                        other => return Err(format!("未知镜像 {other:?}（bmclapi | mojang）")),
+                    };
+                }
                 "--width" | "--height" => {
                     let value = argv.next().ok_or_else(|| format!("{arg} 需要一个数字"))?;
                     let parsed: u16 = value
@@ -272,6 +330,7 @@ impl Options {
             once,
             login,
             accounts,
+            source,
             width,
             height,
         }))
@@ -289,6 +348,7 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   --once            渲染一帧后退出，不需要 TTY
   --login           启动时直接打开登录面板
   --accounts        启动时直接打开账户管理
+  --mirror <源>     bmclapi（默认）或 mojang，决定从哪下载
   --width <列数>    与 --once 搭配（默认 100）
   --height <行数>   与 --once 搭配（默认 28）
   -h, --help        显示本帮助
@@ -304,6 +364,7 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
 按键（主界面）:
   ↑/k ↓/j 选择   g/G 首尾   PgUp/PgDn 滚动日志
   a 或点击右上角账户  账户管理（登录 / 切换 / 移除）
+  d 下载：选版本 + Loader，Enter 开始
   r 刷新   q/Esc 退出   Enter 安装/启动（未实现）
 
 鼠标:

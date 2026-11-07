@@ -9,6 +9,7 @@ use ratatui::Frame;
 
 use crate::app::{App, Area, LoginStep, Screen};
 use crate::discover::{self, LocalVersion};
+use crate::install::Loader;
 
 const ACCENT: Color = Color::Rgb(0x6c, 0xd6, 0x7a);
 const SNAPSHOT: Color = Color::Rgb(0xe8, 0xc9, 0x6a);
@@ -39,6 +40,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Login => draw_login(frame, frame.area(), app),
         Screen::Accounts => draw_accounts(frame, frame.area(), app),
+        Screen::Download => draw_download(frame, frame.area(), app),
+        Screen::Installing => draw_installing(frame, frame.area(), app),
         Screen::Main => {}
     }
 }
@@ -317,11 +320,283 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             LoginStep::Done { .. } | LoginStep::Failed(_) => "Enter/Esc 返回 ",
         },
         Screen::Accounts => "↑↓ 选择 · Enter 切换 · d 移除 · l 登录 · Esc 关闭 ",
-        Screen::Main => "↑↓ 选择 · Enter 安装/启动 · a 账户 · r 刷新 · q 退出 ",
+        Screen::Download => match app.download.stage {
+            crate::app::DownloadStage::LoadingVersions => "正在获取版本列表… Esc 取消 ",
+            crate::app::DownloadStage::Picking => "Tab 切换栏 · ↑↓ 选择 · Enter 安装 · Esc 取消 ",
+            _ => "Esc 返回 ",
+        },
+        Screen::Installing => "Esc 转为后台下载 ",
+        Screen::Main => "↑↓ 选择 · Enter 安装/启动 · a 账户 · d 下载 · r 刷新 · q 退出 ",
     };
     let keys = Span::styled(hints, Style::new().fg(DIM));
     let line = Line::from(vec![status, keys]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), area);
+}
+
+/// The version + loader picker.
+fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Full-screen pane: wipe whatever the main screen left behind, otherwise the
+    // empty parts of the picker show stale rows.
+    frame.render_widget(Clear, area);
+    let download = &app.download;
+    let title = Line::from(vec![
+        Span::styled(" 下载 ", Style::new().fg(ACCENT).bold()),
+        Span::styled(
+            format!("{} · {} ", app.source_label(), download.versions.len()),
+            Style::new().fg(DIM),
+        ),
+    ]);
+    let block = Block::bordered()
+        .title(title)
+        .border_style(Style::new().fg(ACCENT));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.layout.download_versions = Area::default();
+    app.layout.download_loaders = Area::default();
+
+    if download.stage == crate::app::DownloadStage::LoadingVersions {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "正在获取版本列表…",
+                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled("首次可能需要几秒", Style::new().fg(DIM))),
+            ])
+            .alignment(Alignment::Center),
+            inner,
+        );
+        return;
+    }
+
+    let [versions_area, loaders_area] =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Min(20)]).areas(inner);
+
+    // ---- versions ----
+    let focused = download.focus == crate::app::PickerFocus::Versions;
+    let versions_block = Block::bordered()
+        .title(Line::from(" 版本 "))
+        .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
+    let versions_inner = versions_block.inner(versions_area);
+    frame.render_widget(versions_block, versions_area);
+    app.layout.download_versions = Area::new(
+        versions_inner.x,
+        versions_inner.y.saturating_add(1),
+        versions_inner.width,
+        versions_inner.height.saturating_sub(1),
+    );
+
+    let visible = versions_inner.height.saturating_sub(1) as usize;
+    let offset = download.picked.saturating_sub(visible.saturating_sub(1));
+    let rows: Vec<Row> = download
+        .versions
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible)
+        .map(|(index, version)| {
+            let selected = index == download.picked;
+            let mut row = Row::new(vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
+                    Span::styled(
+                        version.id.clone(),
+                        if selected {
+                            Style::new().fg(ACCENT)
+                        } else {
+                            Style::new().fg(Color::White)
+                        },
+                    ),
+                ])),
+                Cell::from(Line::from(Span::styled(
+                    version.kind.clone(),
+                    Style::new().fg(kind_color(&version.kind)),
+                ))),
+                Cell::from(Line::from(Span::styled(
+                    version.released.chars().take(10).collect::<String>(),
+                    Style::new().fg(DIM),
+                ))),
+            ]);
+            if selected {
+                row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
+            }
+            row
+        })
+        .collect();
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Min(12),
+                Constraint::Length(10),
+                Constraint::Length(10),
+            ],
+        )
+        .header(Row::new(vec!["  版本", "类型", "发布"]).style(Style::new().fg(DIM).bold()))
+        .column_spacing(1),
+        versions_inner,
+    );
+
+    // ---- loaders ----
+    let focused = download.focus == crate::app::PickerFocus::Loaders;
+    let loaders_block = Block::bordered()
+        .title(Line::from(" 安装内容 "))
+        .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
+    let loaders_inner = loaders_block.inner(loaders_area);
+    frame.render_widget(loaders_block, loaders_area);
+    app.layout.download_loaders = Area::new(
+        loaders_inner.x,
+        loaders_inner.y,
+        loaders_inner.width,
+        loaders_inner.height,
+    );
+
+    let rows: Vec<Row> = download
+        .loaders
+        .iter()
+        .enumerate()
+        .map(|(index, loader)| {
+            let selected = index == download.loader_pick;
+            let mut row = Row::new(vec![Cell::from(Line::from(vec![
+                Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
+                Span::styled(
+                    loader.label(),
+                    if selected {
+                        Style::new().fg(ACCENT)
+                    } else {
+                        Style::new().fg(Color::White)
+                    },
+                ),
+            ]))]);
+            if selected {
+                row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
+            }
+            row
+        })
+        .collect();
+    frame.render_widget(Table::new(rows, [Constraint::Min(10)]), loaders_inner);
+
+    // A hint under the loader list: what Enter will do.
+    if loaders_inner.height > download.loaders.len() as u16 + 1 {
+        let hint_area = Rect {
+            y: loaders_inner.y + download.loaders.len() as u16 + 1,
+            height: loaders_inner
+                .height
+                .saturating_sub(download.loaders.len() as u16 + 1),
+            ..loaders_inner
+        };
+        let loader = download.picked_loader();
+        let text = if loader == Loader::None {
+            "仅安装原版".to_string()
+        } else {
+            format!("{} · 自动选最新版本", loader.label())
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::new().fg(DIM))))
+                .wrap(Wrap { trim: true }),
+            hint_area,
+        );
+    }
+}
+
+/// The running install: log in the middle, progress pinned at the bottom.
+fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
+    frame.render_widget(Clear, area);
+    let [log_area, progress_area] =
+        Layout::vertical([Constraint::Min(6), Constraint::Length(5)]).areas(area);
+
+    draw_log(frame, log_area, app);
+
+    let download = &app.download;
+    let (title, border, gauge_color) = match download.stage {
+        crate::app::DownloadStage::Done => (" 安装完成 ", ACCENT, ACCENT),
+        crate::app::DownloadStage::Failed => (" 安装失败 ", BROKEN, BROKEN),
+        _ => (" 安装进度 ", ACCENT, ACCENT),
+    };
+    let block = Block::bordered()
+        .title(Line::from(title).style(Style::new().fg(border).bold()))
+        .border_style(Style::new().fg(border));
+    let inner = block.inner(progress_area);
+    frame.render_widget(block, progress_area);
+
+    match download.stage {
+        crate::app::DownloadStage::Failed => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        download.error.clone().unwrap_or_else(|| "未知错误".into()),
+                        Style::new().fg(BROKEN),
+                    )),
+                    Line::from(Span::styled("Esc 返回", Style::new().fg(DIM))),
+                ]),
+                inner,
+            );
+            return;
+        }
+        crate::app::DownloadStage::Done => {
+            let (version, loader) = download
+                .installed
+                .clone()
+                .unwrap_or_else(|| ("?".to_string(), None));
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        format!(
+                            "{version}{} 已安装",
+                            loader.map_or_else(String::new, |l| format!(" + {l}"))
+                        ),
+                        Style::new().fg(ACCENT),
+                    )),
+                    Line::from(Span::styled("Esc 返回列表", Style::new().fg(DIM))),
+                ]),
+                inner,
+            );
+            return;
+        }
+        _ => {}
+    }
+
+    let percent = download.percent();
+    let gauge = ratatui::widgets::Gauge::default()
+        .gauge_style(
+            Style::new()
+                .fg(gauge_color)
+                .bg(Color::Rgb(0x26, 0x28, 0x2e)),
+        )
+        .ratio(download.fraction())
+        .label(Span::styled(
+            format!(
+                "{percent}%  {}/s",
+                discover::human_size(download.speed as u64)
+            ),
+            Style::new().fg(Color::White),
+        ));
+    let [gauge_area, stats_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    frame.render_widget(gauge, gauge_area);
+
+    let stats = Line::from(vec![
+        Span::styled(
+            format!(" {} / {} 个文件", download.done, download.total),
+            Style::new().fg(Color::White),
+        ),
+        Span::styled("   ·   ", Style::new().fg(DIM)),
+        Span::styled(
+            format!("剩余 {}", discover::human_size(download.remaining_bytes)),
+            Style::new().fg(DIM),
+        ),
+        Span::styled("   ·   ", Style::new().fg(DIM)),
+        Span::styled(
+            if download.batch_total_bytes > 0 {
+                format!("本批 {}", discover::human_size(download.batch_total_bytes))
+            } else {
+                "本批大小未知".to_string()
+            },
+            Style::new().fg(DIM),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(stats), stats_area);
 }
 
 /// The account manager, drawn over the main screen.
@@ -864,6 +1139,111 @@ mod tests {
         assert_eq!(app.layout.account.y, 1, "{:?}", app.layout.account);
         assert!(app.layout.account.height == 1);
         assert!(app.layout.account.x + app.layout.account.width <= 99);
+    }
+
+    #[test]
+    fn the_picker_shows_versions_loaders_and_the_source() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(crate::install::InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.21.11".into(),
+                kind: "release".into(),
+                released: "2025-12-09T00:00:00+00:00".into(),
+            },
+            crate::install::RemoteVersion {
+                id: "1.8.9".into(),
+                kind: "release".into(),
+                released: "2015-12-03T00:00:00+00:00".into(),
+            },
+        ]));
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        assert!(screen.contains("下载"), "{screen}");
+        assert!(screen.contains("BMCLAPI"), "source missing:\n{screen}");
+        assert!(screen.contains("1.21.11"), "{screen}");
+        assert!(screen.contains("安装内容"), "{screen}");
+        assert!(screen.contains("Fabric"), "{screen}");
+        assert!(screen.contains("仅安装原版"), "{screen}");
+        assert!(app.layout.download_versions.height > 0);
+    }
+
+    #[test]
+    fn the_loading_state_is_not_an_empty_picker() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("正在获取版本列表"), "{screen}");
+    }
+
+    #[test]
+    fn the_install_screen_shows_a_gauge_percentage_speed_and_counts() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(crate::install::InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+        ]));
+        app.handle_download_key(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_install_event(crate::install::InstallEvent::Progress {
+            done: 0,
+            total: 40,
+            remaining_bytes: 10 * 1024 * 1024,
+            total_bytes: 10 * 1024 * 1024,
+        });
+        app.handle_install_event(crate::install::InstallEvent::Progress {
+            done: 10,
+            total: 40,
+            remaining_bytes: 5 * 1024 * 1024,
+            total_bytes: 0,
+        });
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        assert!(screen.contains("安装进度"), "{screen}");
+        assert!(screen.contains("50%"), "percentage missing:\n{screen}");
+        assert!(
+            screen.contains("10 / 40 个文件"),
+            "counts missing:\n{screen}"
+        );
+        assert!(screen.contains("剩余"), "{screen}");
+        // The bar itself: the gauge fills half the row.
+        assert!(screen.contains("█"), "no gauge bar:\n{screen}");
+    }
+
+    #[test]
+    fn the_install_screen_reports_completion_and_failure() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(crate::install::InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+        ]));
+        app.handle_download_key(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        app.handle_install_event(crate::install::InstallEvent::Failed("镜像超时".into()));
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("安装失败"), "{screen}");
+        assert!(screen.contains("镜像超时"), "{screen}");
+
+        app.handle_install_event(crate::install::InstallEvent::Finished {
+            version: "1.20.1".into(),
+            loader: Some("Fabric 0.16.0".into()),
+        });
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("安装完成"), "{screen}");
+        assert!(screen.contains("Fabric 0.16.0"), "{screen}");
     }
 
     #[test]

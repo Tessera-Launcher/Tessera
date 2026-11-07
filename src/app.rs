@@ -2,10 +2,13 @@
 
 use std::path::PathBuf;
 
+use std::time::Instant;
+
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::accounts::{self, Account as SavedAccount};
 use crate::discover::{self, LocalVersion};
+use crate::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
 use crate::login::{Identity, LoginEvent};
 
 /// How many log lines to keep before dropping the oldest.
@@ -17,6 +20,10 @@ pub enum Screen {
     Main,
     Login,
     Accounts,
+    /// Version + loader picker.
+    Download,
+    /// A download is running.
+    Installing,
 }
 
 /// Who is signed in, for the header.
@@ -52,6 +59,117 @@ pub enum LoginStep {
     Done { player: String, application: String },
     /// Finished with an error.
     Failed(String),
+}
+
+/// Which pane of the download picker has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerFocus {
+    Versions,
+    Loaders,
+}
+
+/// Where the download screen is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStage {
+    /// Waiting for the mirror's version list.
+    LoadingVersions,
+    Picking,
+    Installing,
+    Done,
+    Failed,
+}
+
+/// The download picker and the progress screen share this state.
+#[derive(Debug)]
+pub struct DownloadUi {
+    pub stage: DownloadStage,
+    pub versions: Vec<RemoteVersion>,
+    pub picked: usize,
+    /// Loaders compatible with the picked version, in [`LOADERS`] order.
+    pub loaders: Vec<Loader>,
+    pub loader_pick: usize,
+    pub focus: PickerFocus,
+    /// Files finished / total in the current batch.
+    pub done: usize,
+    pub total: usize,
+    /// Full size of the current batch, from the batch's opening event.
+    pub batch_total_bytes: u64,
+    pub remaining_bytes: u64,
+    /// Smoothed bytes per second.
+    pub speed: f64,
+    sample: Option<(Instant, u64)>,
+    pub error: Option<String>,
+    pub installed: Option<(String, Option<String>)>,
+}
+
+impl Default for DownloadUi {
+    fn default() -> Self {
+        DownloadUi {
+            stage: DownloadStage::LoadingVersions,
+            versions: Vec::new(),
+            picked: 0,
+            loaders: vec![Loader::None],
+            loader_pick: 0,
+            focus: PickerFocus::Versions,
+            done: 0,
+            total: 0,
+            batch_total_bytes: 0,
+            remaining_bytes: 0,
+            speed: 0.0,
+            sample: None,
+            error: None,
+            installed: None,
+        }
+    }
+}
+
+impl DownloadUi {
+    /// `0.0..=1.0` for the progress bar.
+    pub fn fraction(&self) -> f64 {
+        if self.batch_total_bytes > 0 && self.remaining_bytes <= self.batch_total_bytes {
+            let done_bytes = self.batch_total_bytes - self.remaining_bytes;
+            return (done_bytes as f64 / self.batch_total_bytes as f64).clamp(0.0, 1.0);
+        }
+        if self.total > 0 {
+            return (self.done as f64 / self.total as f64).clamp(0.0, 1.0);
+        }
+        0.0
+    }
+
+    pub fn percent(&self) -> u16 {
+        (self.fraction() * 100.0).round() as u16
+    }
+
+    pub fn picked_version(&self) -> Option<&RemoteVersion> {
+        self.versions.get(self.picked)
+    }
+
+    pub fn picked_loader(&self) -> Loader {
+        self.loaders
+            .get(self.loader_pick)
+            .copied()
+            .unwrap_or(Loader::None)
+    }
+
+    /// Rebuild the loader list for the newly picked version, keeping the choice
+    /// when that loader still exists.
+    fn refresh_loaders(&mut self) {
+        let Some(version) = self.picked_version() else {
+            self.loaders = vec![Loader::None];
+            self.loader_pick = 0;
+            return;
+        };
+        let previous = self.picked_loader();
+        self.loaders = LOADERS
+            .into_iter()
+            .filter(|loader| loader.compatible(&version.id))
+            .collect();
+        self.loader_pick = self
+            .loaders
+            .iter()
+            .position(|loader| *loader == previous)
+            .unwrap_or(0);
+    }
 }
 
 /// The account manager's own state.
@@ -141,6 +259,9 @@ pub struct Layout {
     /// The account manager popup and its rows.
     pub accounts_popup: Area,
     pub account_rows: Vec<Area>,
+    /// The download picker's two panes.
+    pub download_versions: Area,
+    pub download_loaders: Area,
 }
 
 /// The whole application state.
@@ -160,6 +281,13 @@ pub struct App {
     login_return: Screen,
     pub login: LoginUi,
     pub accounts_ui: AccountsUi,
+    pub download: DownloadUi,
+    /// Set when the UI wants the version list fetched.
+    pub pending_versions: bool,
+    /// Set when the UI wants an install started.
+    pub pending_install: Option<(String, Loader)>,
+    /// Where files come from; shown in the picker title.
+    pub source: crate::install::Source,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
     /// Filled by the renderer every frame; read by the mouse handler.
@@ -193,6 +321,10 @@ impl App {
             login_return: Screen::Main,
             login: LoginUi::default(),
             accounts_ui: AccountsUi::default(),
+            download: DownloadUi::default(),
+            pending_versions: false,
+            pending_install: None,
+            source: crate::install::Source::default(),
             pending_login: None,
             layout: Layout::default(),
             list_offset: 0,
@@ -331,6 +463,8 @@ impl App {
             Screen::Main => self.handle_main_mouse(event),
             Screen::Login => self.handle_login_mouse(event),
             Screen::Accounts => self.handle_accounts_mouse(event),
+            // The picker and the progress screen are keyboard-driven for now.
+            Screen::Download | Screen::Installing => {}
         }
     }
 
@@ -418,6 +552,178 @@ impl App {
         self.screen = self.login_return;
         if matches!(self.login.step, LoginStep::Waiting { .. }) {
             self.log("已取消登录（浏览器里仍可能显示旧代码）");
+        }
+    }
+
+    // ---- download ----
+
+    /// Label for the active download source.
+    pub fn source_label(&self) -> &'static str {
+        self.source.label()
+    }
+
+    /// Open the picker and ask the main loop to fetch the version list.
+    pub fn open_download(&mut self) {
+        self.download = DownloadUi::default();
+        self.screen = Screen::Download;
+        self.pending_versions = true;
+        self.status = "下载：正在获取版本列表".to_string();
+        self.log("打开下载界面");
+    }
+
+    pub fn close_download(&mut self) {
+        self.screen = Screen::Main;
+        self.download.stage = DownloadStage::Picking;
+    }
+
+    pub fn handle_download_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let _ = modifiers;
+        match self.download.stage {
+            DownloadStage::LoadingVersions => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.close_download();
+                }
+            }
+            DownloadStage::Picking => match code {
+                KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
+                KeyCode::Tab => {
+                    self.download.focus = match self.download.focus {
+                        PickerFocus::Versions => PickerFocus::Loaders,
+                        PickerFocus::Loaders => PickerFocus::Versions,
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.picker_move(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.picker_move(1),
+                KeyCode::Enter => self.start_install(),
+                _ => {}
+            },
+            DownloadStage::Installing => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.screen = Screen::Main;
+                    self.log("下载转为后台进行，完成后会重新扫描版本");
+                }
+            }
+            DownloadStage::Done | DownloadStage::Failed => {
+                if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                    self.reload();
+                    self.screen = Screen::Main;
+                }
+            }
+        }
+        true
+    }
+
+    fn picker_move(&mut self, delta: i32) {
+        match self.download.focus {
+            PickerFocus::Versions => {
+                let count = self.download.versions.len();
+                if count == 0 {
+                    return;
+                }
+                let index = (self.download.picked as i32 + delta).rem_euclid(count as i32);
+                self.download.picked = index as usize;
+                self.download.refresh_loaders();
+            }
+            PickerFocus::Loaders => {
+                let count = self.download.loaders.len();
+                if count == 0 {
+                    return;
+                }
+                let index = (self.download.loader_pick as i32 + delta).rem_euclid(count as i32);
+                self.download.loader_pick = index as usize;
+            }
+        }
+    }
+
+    fn start_install(&mut self) {
+        let Some(version) = self.download.picked_version() else {
+            return;
+        };
+        let version = version.id.clone();
+        let loader = self.download.picked_loader();
+        self.download.stage = DownloadStage::Installing;
+        self.download.done = 0;
+        self.download.total = 0;
+        self.download.batch_total_bytes = 0;
+        self.download.remaining_bytes = 0;
+        self.download.speed = 0.0;
+        self.download.sample = None;
+        self.screen = Screen::Installing;
+        self.status = format!("安装 {version} · {}", loader.label());
+        self.log(format!("开始安装 {version}（{}）", loader.label()));
+        self.pending_install = Some((version, loader));
+    }
+
+    /// Apply an event from the download worker.
+    pub fn handle_install_event(&mut self, event: InstallEvent) {
+        match event {
+            InstallEvent::Versions(versions) => {
+                self.log(format!("版本列表：{} 个", versions.len()));
+                self.download.versions = versions;
+                self.download.stage = DownloadStage::Picking;
+                self.download.picked = 0;
+                self.download.refresh_loaders();
+                self.status = "下载：选择版本与 Loader".to_string();
+            }
+            InstallEvent::Log(line) => {
+                self.log(line);
+                self.download.stage = DownloadStage::Installing;
+            }
+            InstallEvent::Progress {
+                done,
+                total,
+                remaining_bytes,
+                total_bytes,
+            } => {
+                let now = Instant::now();
+                if total_bytes > 0 {
+                    self.download.batch_total_bytes = total_bytes;
+                }
+                // Bytes per second, smoothed so the number does not flicker.
+                if let Some((previous_at, previous_remaining)) = self.download.sample {
+                    let seconds = now.duration_since(previous_at).as_secs_f64();
+                    if seconds > 0.01 {
+                        let moved = previous_remaining.saturating_sub(remaining_bytes);
+                        if moved > 0 {
+                            let instant = moved as f64 / seconds;
+                            self.download.speed = if self.download.speed > 0.0 {
+                                self.download.speed * 0.6 + instant * 0.4
+                            } else {
+                                instant
+                            };
+                        }
+                    }
+                }
+                self.download.sample = Some((now, remaining_bytes));
+                self.download.done = done;
+                self.download.total = total;
+                self.download.remaining_bytes = remaining_bytes;
+            }
+            InstallEvent::Finished { version, loader } => {
+                self.download.stage = DownloadStage::Done;
+                self.download.installed = Some((version.clone(), loader.clone()));
+                self.status = format!("安装完成：{version}");
+                self.log(format!(
+                    "安装完成：{version}{}",
+                    loader.map_or_else(String::new, |l| format!(" + {l}"))
+                ));
+                self.reload();
+            }
+            InstallEvent::Failed(message) => {
+                self.download.stage = DownloadStage::Failed;
+                self.download.error = Some(message.clone());
+                self.status = "下载失败".to_string();
+                self.log(format!("下载失败：{message}"));
+            }
+        }
+    }
+
+    /// Called on every loop iteration: drop the speed reading when updates stop.
+    pub fn tick(&mut self) {
+        if let Some((at, _)) = self.download.sample {
+            if at.elapsed().as_secs_f64() > 2.0 {
+                self.download.speed = 0.0;
+            }
         }
     }
 
@@ -1189,6 +1495,210 @@ mod tests {
         assert_eq!(app.login.choice, 1);
         app.handle_mouse(wheel(true, 30, 12));
         assert_eq!(app.login.choice, 0);
+    }
+
+    // ---- download ----
+
+    fn remote(id: &str, kind: &str) -> RemoteVersion {
+        RemoteVersion {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            released: "2024-01-01T00:00:00+00:00".to_string(),
+        }
+    }
+
+    fn downloader() -> App {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            remote("1.20.1", "release"),
+            remote("1.8.9", "release"),
+        ]));
+        app
+    }
+
+    #[test]
+    fn opening_the_picker_asks_for_the_version_list() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        assert_eq!(app.screen, Screen::Download);
+        assert_eq!(app.download.stage, DownloadStage::LoadingVersions);
+        assert!(app.pending_versions);
+    }
+
+    #[test]
+    fn the_version_list_arrives_and_loaders_are_filtered_per_version() {
+        let mut app = downloader();
+        assert_eq!(app.download.stage, DownloadStage::Picking);
+        assert_eq!(app.download.versions.len(), 2);
+        // 1.20.1: Fabric, Quilt and Forge. NeoForge starts at 1.21 and LiteLoader
+        // stopped at 1.12.2, so neither is offered here.
+        assert!(app.download.loaders.contains(&Loader::Fabric));
+        assert!(app.download.loaders.contains(&Loader::Quilt));
+        assert!(!app.download.loaders.contains(&Loader::NeoForge));
+        assert!(!app.download.loaders.contains(&Loader::Lite));
+
+        // Move to 1.8.9: Fabric/Quilt/NeoForge disappear, Forge and LiteLoader stay.
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked, 1);
+        assert!(!app.download.loaders.contains(&Loader::Fabric));
+        assert!(app.download.loaders.contains(&Loader::Forge));
+        assert!(app.download.loaders.contains(&Loader::Lite));
+        assert!(app.download.loaders.contains(&Loader::None));
+    }
+
+    #[test]
+    fn tab_moves_between_the_two_panes_and_the_loader_choice_sticks() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.download.focus, PickerFocus::Loaders);
+
+        let quilt = app
+            .download
+            .loaders
+            .iter()
+            .position(|l| *l == Loader::Quilt)
+            .expect("quilt listed for 1.20.1");
+        app.download.loader_pick = quilt;
+
+        // Switching panes does not forget the loader.
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.download.focus, PickerFocus::Versions);
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_loader(), Loader::Quilt);
+
+        // Dropping to 1.8.9 loses Quilt, so the choice falls back to the first entry.
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked, 1);
+        assert_eq!(app.download.picked_loader(), Loader::None);
+    }
+
+    #[test]
+    fn enter_starts_the_install_and_switches_to_the_progress_screen() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Installing);
+        assert_eq!(app.download.stage, DownloadStage::Installing);
+        assert_eq!(
+            app.pending_install,
+            Some(("1.20.1".to_string(), Loader::None))
+        );
+    }
+
+    #[test]
+    fn progress_uses_bytes_when_the_batch_size_is_known() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        // A batch announces its full size with done == 0.
+        app.handle_install_event(InstallEvent::Progress {
+            done: 0,
+            total: 100,
+            remaining_bytes: 1000,
+            total_bytes: 1000,
+        });
+        assert_eq!(app.download.percent(), 0);
+
+        app.handle_install_event(InstallEvent::Progress {
+            done: 50,
+            total: 100,
+            remaining_bytes: 250,
+            total_bytes: 0,
+        });
+        assert_eq!(app.download.percent(), 75, "bytes beat file counts");
+        assert_eq!(app.download.done, 50);
+    }
+
+    #[test]
+    fn progress_falls_back_to_file_counts_without_a_byte_total() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_install_event(InstallEvent::Progress {
+            done: 3,
+            total: 4,
+            remaining_bytes: 0,
+            total_bytes: 0,
+        });
+        assert_eq!(app.download.percent(), 75);
+    }
+
+    #[test]
+    fn speed_is_derived_from_successive_samples_and_decays_when_idle() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_install_event(InstallEvent::Progress {
+            done: 0,
+            total: 10,
+            remaining_bytes: 1_000_000,
+            total_bytes: 1_000_000,
+        });
+        // Pretend a second passed between two samples.
+        let sampled_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        app.download.sample = Some((sampled_at, 1_000_000));
+        app.handle_install_event(InstallEvent::Progress {
+            done: 2,
+            total: 10,
+            remaining_bytes: 500_000,
+            total_bytes: 0,
+        });
+        assert!(
+            (app.download.speed - 500_000.0).abs() < 60_000.0,
+            "speed was {}",
+            app.download.speed
+        );
+
+        // No further samples: the reading must not stay frozen forever.
+        app.download.sample = Some((
+            std::time::Instant::now() - std::time::Duration::from_secs(5),
+            0,
+        ));
+        app.tick();
+        assert_eq!(app.download.speed, 0.0);
+    }
+
+    #[test]
+    fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_install_event(InstallEvent::Finished {
+            version: "1.20.1".to_string(),
+            loader: Some("Fabric 0.16.0".to_string()),
+        });
+        assert_eq!(app.download.stage, DownloadStage::Done);
+        assert_eq!(
+            app.download.installed,
+            Some(("1.20.1".to_string(), Some("Fabric 0.16.0".to_string())))
+        );
+
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn a_failure_is_shown_and_can_be_dismissed() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_install_event(InstallEvent::Failed("镜像超时".to_string()));
+        assert_eq!(app.download.stage, DownloadStage::Failed);
+        assert_eq!(app.download.error.as_deref(), Some("镜像超时"));
+        assert!(app.log.iter().any(|line| line.contains("镜像超时")));
+
+        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn escape_while_installing_leaves_the_download_running() {
+        let mut app = downloader();
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Main);
+        assert_eq!(
+            app.download.stage,
+            DownloadStage::Installing,
+            "the worker keeps going; only the screen was closed"
+        );
     }
 
     #[test]

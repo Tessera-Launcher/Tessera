@@ -21,6 +21,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 serde_json = "1"
 minecraft-auth = { path = "vendor/minecraft-auth" }
+mdt-minecraft = { path = "vendor/mdt-minecraft" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tokio = { version = "1", features = ["rt", "time", "sync"] }
 
