@@ -36,8 +36,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_footer(frame, footer, app);
 
-    if app.screen == Screen::Login {
-        draw_login(frame, frame.area(), app);
+    match app.screen {
+        Screen::Login => draw_login(frame, frame.area(), app),
+        Screen::Accounts => draw_accounts(frame, frame.area(), app),
+        Screen::Main => {}
     }
 }
 
@@ -46,27 +48,22 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(" yaml ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
         Span::styled(" Minecraft Java 版启动器 ", Style::new().fg(Color::White)),
     ]);
-    // The account line doubles as the login button, so the hint says so.
-    let account_text = match &app.account {
-        crate::app::Account::SignedOut => "未登录 · 点此登录".to_string(),
-        signed_in => signed_in.label(),
-    };
-    let account = Line::from(Span::styled(
-        format!(" {account_text} "),
-        Style::new().fg(DIM),
-    ));
     let block = Block::bordered()
         .title(title)
-        .title_top(account.right_aligned())
         .border_style(Style::new().fg(DIM));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Record the clickable span: right-aligned, width taken from the rendered text
-    // so CJK characters count as two cells.
-    let width = account_text.cell_width().saturating_add(2).min(inner.width);
-    app.layout.account = Area::new(inner.x + inner.width - width, inner.y, width, 1);
+    // The account line doubles as a button. It is rendered as its own widget in a
+    // measured rect instead of as a block title: a title lives on the border row,
+    // which is where a click on it has to be hit-tested.
+    let account_text = match &app.account {
+        crate::app::Account::SignedOut => "未登录 · 点此登录".to_string(),
+        signed_in => signed_in.label(),
+    };
+    let account_width = account_text.cell_width().saturating_add(2).min(inner.width);
 
+    let info_width = inner.width.saturating_sub(account_width);
     let info = Line::from(vec![
         Span::styled(" 目录 ", Style::new().fg(DIM)),
         Span::styled(
@@ -78,8 +75,39 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
             format!("{} 个版本", app.versions.len()),
             Style::new().fg(ACCENT),
         ),
+        Span::styled("   ·   ", Style::new().fg(DIM)),
+        Span::styled(
+            format!("{} 个账户", app.accounts.len()),
+            Style::new().fg(ACCENT),
+        ),
     ]);
-    frame.render_widget(Paragraph::new(info), inner);
+    frame.render_widget(
+        Paragraph::new(info),
+        Rect {
+            width: info_width,
+            ..inner
+        },
+    );
+
+    let account_area = Rect {
+        x: inner.x + info_width,
+        y: inner.y,
+        width: account_width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {account_text}"),
+            Style::new().fg(ACCENT),
+        ))),
+        account_area,
+    );
+    app.layout.account = Area::new(
+        account_area.x,
+        account_area.y,
+        account_area.width,
+        account_area.height,
+    );
 }
 
 fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -281,19 +309,147 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let status = Span::styled(format!(" {} ", app.status), Style::new().fg(ACCENT));
-    let hints = if app.screen == Screen::Login {
-        match app.login.step {
+    let hints = match app.screen {
+        Screen::Login => match app.login.step {
             LoginStep::Choose => "↑↓ 选择身份 · Enter 下一步 · Esc 取消 ",
             LoginStep::EnterAppId => "输入 app id · Enter 开始 · Esc 返回 ",
             LoginStep::Waiting { .. } => "等待浏览器确认 · Esc 取消 ",
             LoginStep::Done { .. } | LoginStep::Failed(_) => "Enter/Esc 返回 ",
-        }
-    } else {
-        "↑↓ 选择 · Enter 安装/启动 · l 登录 · r 刷新 · q 退出 "
+        },
+        Screen::Accounts => "↑↓ 选择 · Enter 切换 · d 移除 · l 登录 · Esc 关闭 ",
+        Screen::Main => "↑↓ 选择 · Enter 安装/启动 · a 账户 · r 刷新 · q 退出 ",
     };
     let keys = Span::styled(hints, Style::new().fg(DIM));
     let line = Line::from(vec![status, keys]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), area);
+}
+
+/// The account manager, drawn over the main screen.
+fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
+    let width = area.width.saturating_sub(6).clamp(40, 72);
+    let rows = app.accounts.len().clamp(1, 10) as u16;
+    let height = (rows + 4).min(area.height);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    app.layout.accounts_popup = Area::new(popup.x, popup.y, popup.width, popup.height);
+    app.layout.account_rows.clear();
+
+    let block = Block::bordered()
+        .title(
+            Line::from(format!(" 账户 ({}) ", app.accounts.len()))
+                .style(Style::new().fg(ACCENT).bold()),
+        )
+        .border_style(Style::new().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if app.accounts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled("还没有账户", Style::new().fg(DIM).bold())),
+                Line::from(Span::styled("按 l 登录一个", Style::new().fg(DIM))),
+            ])
+            .alignment(Alignment::Center),
+            inner,
+        );
+        return;
+    }
+
+    let visible = inner.height.saturating_sub(1) as usize;
+    let offset = app
+        .accounts_ui
+        .selected
+        .saturating_sub(visible.saturating_sub(1));
+    let active = match &app.account {
+        crate::app::Account::SignedIn { name, .. } => Some(name.clone()),
+        crate::app::Account::SignedOut => None,
+    };
+
+    let rows: Vec<Row> = app
+        .accounts
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible)
+        .map(|(index, account)| {
+            let is_selected = index == app.accounts_ui.selected;
+            let is_active = active.as_deref() == Some(account.player_name.as_str());
+            app.layout.account_rows.push(Area::new(
+                inner.x,
+                inner.y + (index - offset) as u16,
+                inner.width,
+                1,
+            ));
+            let mut row = Row::new(vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(
+                        if is_selected { "▶ " } else { "  " },
+                        Style::new().fg(ACCENT),
+                    ),
+                    Span::styled(
+                        account.player_name.clone(),
+                        if is_selected {
+                            Style::new().fg(ACCENT)
+                        } else {
+                            Style::new().fg(Color::White)
+                        },
+                    ),
+                ])),
+                Cell::from(Line::from(Span::styled(
+                    account.application.clone(),
+                    Style::new().fg(DIM),
+                ))),
+                Cell::from(Line::from(Span::styled(
+                    if is_active { "当前" } else { "" },
+                    Style::new().fg(ACCENT),
+                ))),
+            ]);
+            if is_selected {
+                row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
+            }
+            row
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(14),
+            Constraint::Min(10),
+            Constraint::Length(4),
+        ],
+    )
+    .column_spacing(1);
+    frame.render_widget(table, inner);
+
+    let hint = if app.accounts_ui.confirm_delete {
+        " 再按一次 d 确认移除 · Esc 取消".to_string()
+    } else {
+        " Enter 切换 · d 移除 · l 登录新账户 · Esc 关闭".to_string()
+    };
+    let hint_area = Rect {
+        y: inner.y + inner.height.saturating_sub(1),
+        height: 1,
+        ..inner
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::new().fg(if app.accounts_ui.confirm_delete {
+                BROKEN
+            } else {
+                DIM
+            }),
+        ))),
+        hint_area,
+    );
 }
 
 /// The login overlay, drawn over the main screen.
@@ -641,6 +797,73 @@ mod tests {
         assert!(app.layout.log.width > 0 && app.layout.log.height > 0);
         assert!(app.layout.list.width > 0, "list area recorded");
         assert!(app.layout.account.width > 0, "account button recorded");
+    }
+
+    #[test]
+    fn the_account_manager_lists_accounts_and_marks_the_active_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["Alex", "Steve"] {
+            crate::accounts::save(
+                tmp.path(),
+                "Minecraft Launcher",
+                "id",
+                name,
+                "uuid",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        }
+        let saved = crate::accounts::list(tmp.path());
+        let mut app = App::new("/mc", tmp.path(), vec![], saved);
+        app.open_accounts();
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        assert!(screen.contains("账户 (2)"), "{screen}");
+        assert!(screen.contains("Alex"), "{screen}");
+        assert!(screen.contains("Steve"), "{screen}");
+        assert!(screen.contains("Enter 切换"), "{screen}");
+        // Rows are recorded for hit testing.
+        assert_eq!(app.layout.account_rows.len(), 2, "{screen}");
+    }
+
+    #[test]
+    fn the_account_manager_empty_state_points_at_login() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_accounts();
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("还没有账户"), "{screen}");
+        assert!(screen.contains("按 l 登录"), "{screen}");
+    }
+
+    #[test]
+    fn the_pending_delete_is_announced_in_the_manager() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::accounts::save(
+            tmp.path(),
+            "Minecraft Launcher",
+            "id",
+            "Steve",
+            "uuid",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        let saved = crate::accounts::list(tmp.path());
+        let mut app = App::new("/mc", tmp.path(), vec![], saved);
+        app.open_accounts();
+        app.accounts_ui.confirm_delete = true;
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("再按一次 d 确认移除"), "{screen}");
+    }
+
+    #[test]
+    fn the_header_account_button_records_the_row_it_is_drawn_on() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        render(&mut app, 100, 28);
+        // The label sits inside the header block's inner row, and the recorded area
+        // has to match it or a click lands one row off.
+        assert_eq!(app.layout.account.y, 1, "{:?}", app.layout.account);
+        assert!(app.layout.account.height == 1);
+        assert!(app.layout.account.x + app.layout.account.width <= 99);
     }
 
     #[test]

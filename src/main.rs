@@ -59,6 +59,8 @@ fn main() -> std::process::ExitCode {
 
     if options.login {
         app.open_login();
+    } else if options.accounts {
+        app.open_accounts();
     }
 
     if options.once {
@@ -148,9 +150,16 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         app.should_quit = true;
         return;
     }
-    if app.screen == Screen::Login {
-        app.handle_login_key(code, modifiers);
-        return;
+    match app.screen {
+        Screen::Login => {
+            app.handle_login_key(code, modifiers);
+            return;
+        }
+        Screen::Accounts => {
+            app.handle_accounts_key(code, modifiers);
+            return;
+        }
+        Screen::Main => {}
     }
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -160,6 +169,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::End | KeyCode::Char('G') => app.select_last(),
         KeyCode::Char('r') => app.reload(),
         KeyCode::Char('l') => app.open_login(),
+        KeyCode::Char('a') => app.open_accounts(),
         // Keyboard equivalent of the wheel, for terminals without mouse reporting.
         KeyCode::PageUp => app.scroll_log(5),
         KeyCode::PageDown => app.scroll_log_back(5),
@@ -210,6 +220,8 @@ struct Options {
     once: bool,
     /// Open the login overlay immediately (useful with `--once` for screenshots).
     login: bool,
+    /// Open the account manager immediately (likewise).
+    accounts: bool,
     width: u16,
     height: u16,
 }
@@ -220,6 +232,7 @@ impl Options {
         let mut root = None;
         let mut once = false;
         let mut login = false;
+        let mut accounts = false;
         let mut width = 100;
         let mut height = 28;
 
@@ -234,6 +247,7 @@ impl Options {
                 }
                 "--once" => once = true,
                 "--login" => login = true,
+                "--accounts" => accounts = true,
                 "--width" | "--height" => {
                     let value = argv.next().ok_or_else(|| format!("{arg} 需要一个数字"))?;
                     let parsed: u16 = value
@@ -257,6 +271,7 @@ impl Options {
             root,
             once,
             login,
+            accounts,
             width,
             height,
         }))
@@ -273,6 +288,7 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   --dir <路径>      .minecraft 目录（默认 <exe>/data/游戏）
   --once            渲染一帧后退出，不需要 TTY
   --login           启动时直接打开登录面板
+  --accounts        启动时直接打开账户管理
   --width <列数>    与 --once 搭配（默认 100）
   --height <行数>   与 --once 搭配（默认 28）
   -h, --help        显示本帮助
@@ -287,11 +303,11 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
 
 按键（主界面）:
   ↑/k ↓/j 选择   g/G 首尾   PgUp/PgDn 滚动日志
-  l 或点击右上角账户  登录
+  a 或点击右上角账户  账户管理（登录 / 切换 / 移除）
   r 刷新   q/Esc 退出   Enter 安装/启动（未实现）
 
 鼠标:
   滚轮            日志区滚动日志，版本区切换选择
   点击版本行       选中它
-  点击右上角账户   打开登录
+  点击右上角账户   打开账户管理
   登录面板内点击   选择身份；点击面板外取消";

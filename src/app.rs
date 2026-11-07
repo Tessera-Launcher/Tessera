@@ -16,6 +16,7 @@ const LOG_CAPACITY: usize = 500;
 pub enum Screen {
     Main,
     Login,
+    Accounts,
 }
 
 /// Who is signed in, for the header.
@@ -51,6 +52,14 @@ pub enum LoginStep {
     Done { player: String, application: String },
     /// Finished with an error.
     Failed(String),
+}
+
+/// The account manager's own state.
+#[derive(Debug, Clone, Default)]
+pub struct AccountsUi {
+    pub selected: usize,
+    /// Set after the first `d`; a second `d` deletes the file.
+    pub confirm_delete: bool,
 }
 
 /// The login overlay's own state.
@@ -129,6 +138,9 @@ pub struct Layout {
     pub overlay: Area,
     /// Clickable option rows inside the overlay, in order.
     pub overlay_options: Vec<Area>,
+    /// The account manager popup and its rows.
+    pub accounts_popup: Area,
+    pub account_rows: Vec<Area>,
 }
 
 /// The whole application state.
@@ -144,7 +156,10 @@ pub struct App {
     pub should_quit: bool,
     pub account: Account,
     pub screen: Screen,
+    /// Where the login overlay returns to when it closes.
+    login_return: Screen,
     pub login: LoginUi,
+    pub accounts_ui: AccountsUi,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
     /// Filled by the renderer every frame; read by the mouse handler.
@@ -175,7 +190,9 @@ impl App {
             should_quit: false,
             account: Account::SignedOut,
             screen: Screen::Main,
+            login_return: Screen::Main,
             login: LoginUi::default(),
+            accounts_ui: AccountsUi::default(),
             pending_login: None,
             layout: Layout::default(),
             list_offset: 0,
@@ -313,6 +330,7 @@ impl App {
         match self.screen {
             Screen::Main => self.handle_main_mouse(event),
             Screen::Login => self.handle_login_mouse(event),
+            Screen::Accounts => self.handle_accounts_mouse(event),
         }
     }
 
@@ -339,7 +357,7 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.layout.account.contains(column, row) {
-                    self.open_login();
+                    self.open_accounts();
                     return;
                 }
                 if self.layout.list.contains(column, row) {
@@ -386,15 +404,163 @@ impl App {
     // ---- login overlay ----
 
     pub fn open_login(&mut self) {
+        // Coming from the account manager must return there, not to the main screen.
+        self.login_return = match self.screen {
+            Screen::Accounts => Screen::Accounts,
+            _ => Screen::Main,
+        };
         self.login = LoginUi::default();
         self.screen = Screen::Login;
         self.status = "登录：选择身份".to_string();
     }
 
     pub fn close_login(&mut self) {
-        self.screen = Screen::Main;
+        self.screen = self.login_return;
         if matches!(self.login.step, LoginStep::Waiting { .. }) {
             self.log("已取消登录（浏览器里仍可能显示旧代码）");
+        }
+    }
+
+    // ---- account manager ----
+
+    pub fn open_accounts(&mut self) {
+        self.accounts = accounts::list(&self.accounts_dir);
+        self.accounts_ui = AccountsUi::default();
+        if let Account::SignedIn { name, .. } = &self.account {
+            if let Some(index) = self.accounts.iter().position(|a| &a.player_name == name) {
+                self.accounts_ui.selected = index;
+            }
+        }
+        self.screen = Screen::Accounts;
+        self.status = format!("账户 {} 个", self.accounts.len());
+    }
+
+    pub fn close_accounts(&mut self) {
+        self.screen = Screen::Main;
+        self.accounts_ui.confirm_delete = false;
+    }
+
+    /// Keys while the account manager is open.
+    pub fn handle_accounts_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let count = self.accounts.len();
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_accounts(),
+            KeyCode::Up | KeyCode::Char('k') if count > 0 => {
+                self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
+                self.accounts_ui.confirm_delete = false;
+            }
+            KeyCode::Down | KeyCode::Char('j') if count > 0 => {
+                self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
+                self.accounts_ui.confirm_delete = false;
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.accounts_ui.selected = 0;
+                self.accounts_ui.confirm_delete = false;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.accounts_ui.selected = count.saturating_sub(1);
+                self.accounts_ui.confirm_delete = false;
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_account(),
+            KeyCode::Char('d') | KeyCode::Delete => self.remove_selected_account(),
+            KeyCode::Char('l') => self.open_login(),
+            _ => {}
+        }
+        let _ = modifiers;
+        true
+    }
+
+    /// Make the highlighted account the active one.
+    pub fn activate_selected_account(&mut self) {
+        let Some(account) = self.accounts.get(self.accounts_ui.selected) else {
+            return;
+        };
+        self.account = Account::SignedIn {
+            name: account.player_name.clone(),
+            application: account.application.clone(),
+        };
+        let label = self.account.label();
+        self.status = format!("当前账户 {label}");
+        self.log(format!("切换账户：{label}"));
+        self.accounts_ui.confirm_delete = false;
+    }
+
+    /// Remove the highlighted account: first press asks, second press deletes.
+    pub fn remove_selected_account(&mut self) {
+        let Some(account) = self.accounts.get(self.accounts_ui.selected).cloned() else {
+            return;
+        };
+        if !self.accounts_ui.confirm_delete {
+            self.accounts_ui.confirm_delete = true;
+            self.status = format!("再按一次 d 移除 {}（会删除凭据文件）", account.player_name);
+            return;
+        }
+
+        match std::fs::remove_file(&account.file) {
+            Ok(()) => {
+                self.log(format!(
+                    "已移除账户 {}（{}）",
+                    account.player_name, account.application
+                ));
+                self.status = format!("已移除 {}", account.player_name);
+            }
+            Err(error) => {
+                self.log(format!("移除失败：{error}"));
+                self.status = "移除失败".to_string();
+                self.accounts_ui.confirm_delete = false;
+                return;
+            }
+        }
+
+        let was_active = matches!(
+            &self.account,
+            Account::SignedIn { name, .. } if name == &account.player_name
+        );
+        self.accounts = accounts::list(&self.accounts_dir);
+        if was_active {
+            self.account = Account::SignedOut;
+        }
+        if self.accounts_ui.selected >= self.accounts.len() {
+            self.accounts_ui.selected = self.accounts.len().saturating_sub(1);
+        }
+        self.accounts_ui.confirm_delete = false;
+    }
+
+    /// Mouse handling for the account manager.
+    fn handle_accounts_mouse(&mut self, event: MouseEvent) {
+        let (column, row) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(index) = self
+                    .layout
+                    .account_rows
+                    .iter()
+                    .position(|area| area.contains(column, row))
+                {
+                    self.accounts_ui.selected = index;
+                    self.accounts_ui.confirm_delete = false;
+                    self.activate_selected_account();
+                    return;
+                }
+                if !self.layout.accounts_popup.contains(column, row) {
+                    self.close_accounts();
+                }
+            }
+            MouseEventKind::ScrollUp if self.layout.accounts_popup.contains(column, row) => {
+                let count = self.accounts.len();
+                if count > 0 {
+                    self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
+                    self.accounts_ui.confirm_delete = false;
+                }
+            }
+            MouseEventKind::ScrollDown if self.layout.accounts_popup.contains(column, row) => {
+                let count = self.accounts.len();
+                if count > 0 {
+                    self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
+                    self.accounts_ui.confirm_delete = false;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -494,6 +660,13 @@ impl App {
                 self.log(format!("凭据已保存到 {}", file.display()));
                 // Re-read the directory instead of appending, so the list matches disk.
                 self.accounts = accounts::list(&self.accounts_dir);
+                if let Some(index) = self
+                    .accounts
+                    .iter()
+                    .position(|account| account.player_name == player_name)
+                {
+                    self.accounts_ui.selected = index;
+                }
             }
             LoginEvent::Failed(message) => {
                 self.status = "登录失败".to_string();
@@ -765,10 +938,149 @@ mod tests {
     }
 
     #[test]
-    fn clicking_the_account_label_opens_login() {
+    fn clicking_the_account_label_opens_the_account_manager() {
         let mut app = laid_out();
         app.handle_mouse(click(75, 1));
+        assert_eq!(app.screen, Screen::Accounts);
+    }
+
+    // ---- account manager ----
+
+    /// Two saved accounts on disk, the second one active.
+    fn with_accounts() -> (tempfile::TempDir, App) {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, app_id) in [("Alex", "app-2"), ("Steve", "app-1")] {
+            accounts::save(
+                tmp.path(),
+                "Minecraft Launcher",
+                app_id,
+                name,
+                "uuid",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        }
+        let saved = accounts::list(tmp.path());
+        let mut app = App::new("/mc", tmp.path(), vec![], saved);
+        app.account = Account::SignedIn {
+            name: "Steve".into(),
+            application: "Minecraft Launcher".into(),
+        };
+        (tmp, app)
+    }
+
+    #[test]
+    fn opening_the_manager_selects_the_active_account() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        assert_eq!(app.screen, Screen::Accounts);
+        // list() sorts by player name: Alex, Steve.
+        assert_eq!(app.accounts[app.accounts_ui.selected].player_name, "Steve");
+    }
+
+    #[test]
+    fn enter_switches_the_active_account() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::Home, KeyModifiers::NONE);
+        app.handle_accounts_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
+        assert!(app.log.iter().any(|line| line.contains("切换账户")));
+    }
+
+    #[test]
+    fn deleting_needs_two_presses_and_updates_the_list_and_the_header() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::Home, KeyModifiers::NONE); // Alex
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.accounts_ui.confirm_delete);
+        assert_eq!(app.accounts.len(), 2, "first press only asks");
+
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(app.accounts.len(), 1, "second press deletes");
+        assert!(!app.accounts_ui.confirm_delete);
+        assert_eq!(app.accounts[0].player_name, "Steve");
+        // Alex was not the active account, so the header keeps Steve.
+        assert_eq!(app.account.label(), "Steve · Minecraft Launcher");
+    }
+
+    #[test]
+    fn deleting_the_active_account_signs_out() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::End, KeyModifiers::NONE); // Steve, active
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+
+        assert_eq!(app.account, Account::SignedOut);
+        assert_eq!(app.accounts.len(), 1);
+        assert_eq!(
+            app.accounts_ui.selected, 0,
+            "selection is clamped after removal"
+        );
+    }
+
+    #[test]
+    fn moving_the_selection_cancels_a_pending_delete() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.accounts_ui.confirm_delete);
+        app.handle_accounts_key(KeyCode::Down, KeyModifiers::NONE);
+        assert!(!app.accounts_ui.confirm_delete);
+    }
+
+    #[test]
+    fn deleting_an_empty_list_is_a_no_op() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.accounts.is_empty());
+        assert!(!app.accounts_ui.confirm_delete);
+    }
+
+    #[test]
+    fn login_opened_from_the_manager_returns_to_it() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Login);
+        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Accounts, "not the main screen");
+    }
+
+    #[test]
+    fn clicking_an_account_row_selects_and_activates_it() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.layout.accounts_popup = Area::new(20, 8, 60, 10);
+        app.layout.account_rows = vec![Area::new(21, 9, 58, 1), Area::new(21, 10, 58, 1)];
+
+        app.handle_mouse(click(30, 9));
+        assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
+        assert_eq!(app.accounts_ui.selected, 0);
+    }
+
+    #[test]
+    fn clicking_outside_the_manager_closes_it() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.layout.accounts_popup = Area::new(20, 8, 60, 10);
+        app.handle_mouse(click(2, 2));
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn scrolling_the_manager_moves_the_selection() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.layout.accounts_popup = Area::new(20, 8, 60, 10);
+        app.accounts_ui.selected = 0;
+        app.handle_mouse(wheel(false, 30, 12));
+        assert_eq!(app.accounts_ui.selected, 1);
+        app.handle_mouse(wheel(true, 30, 12));
+        assert_eq!(app.accounts_ui.selected, 0);
     }
 
     #[test]
