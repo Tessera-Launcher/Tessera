@@ -4,6 +4,7 @@
 //! JSON, so a profile written by a loader installer (which may carry
 //! `inheritsFrom` instead of a client JAR) still lists correctly.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// One installed version directory.
@@ -23,6 +24,12 @@ pub struct LocalVersion {
     pub has_jar: bool,
     /// `releaseTime` as written, used only for ordering.
     pub release_time: Option<String>,
+    /// True when this version only exists as the parent of a loader profile.
+    ///
+    /// A loader install copies the vanilla directory and writes a profile with
+    /// `inheritsFrom`, so the vanilla version must stay on disk — but showing it
+    /// next to the loader as if it were a second, independent install is noise.
+    pub is_base_only: bool,
 }
 
 impl LocalVersion {
@@ -77,6 +84,7 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
                 main_class: None,
                 has_jar,
                 release_time: None,
+                is_base_only: false,
             },
         });
     }
@@ -88,6 +96,19 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
             .cmp(&a.release_time)
             .then_with(|| a.id.cmp(&b.id))
     });
+
+    // Anything another profile inherits from is a base, not an install of its own:
+    // `26.3+Fabric0.20.1` inherits `26.3`, so the vanilla directory must stay on
+    // disk but does not deserve its own row.
+    let bases: HashSet<String> = found
+        .iter()
+        .filter(|version| version.inherits.is_some() || version.id.contains('+'))
+        .map(|version| version.base_version().to_string())
+        .collect();
+    for version in &mut found {
+        version.is_base_only = bases.contains(&version.id);
+    }
+
     found
 }
 
@@ -109,6 +130,8 @@ fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
         main_class: string("mainClass"),
         has_jar: dir.join(format!("{id}.jar")).is_file(),
         release_time: string("releaseTime"),
+        // Filled in by `scan` once every profile is known.
+        is_base_only: false,
     })
 }
 
@@ -185,6 +208,39 @@ mod tests {
         assert_eq!(versions[1].loader_label(), Some("Fabric0.15.11"));
         assert_eq!(versions[1].base_version(), "1.20.1");
         assert!(!versions[1].has_jar);
+    }
+
+    #[test]
+    fn a_loader_base_is_marked_and_a_lone_vanilla_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "26.3",
+            r#"{"id":"26.3","type":"release","releaseTime":"2026-09-15T00:00:00+00:00"}"#,
+        );
+        write(
+            root,
+            "26.3+Fabric0.20.1",
+            r#"{"id":"26.3+Fabric0.20.1","inheritsFrom":"26.3",
+                "releaseTime":"2026-09-16T00:00:00+00:00"}"#,
+        );
+        write(root, "1.20.1", r#"{"id":"1.20.1","type":"release"}"#);
+
+        let versions = scan(root);
+        let by_id = |id: &str| versions.iter().find(|v| v.id == id).unwrap();
+        assert!(
+            by_id("26.3").is_base_only,
+            "26.3 is only the parent of the Fabric profile"
+        );
+        assert!(
+            !by_id("26.3+Fabric0.20.1").is_base_only,
+            "the loader profile is a real install"
+        );
+        assert!(
+            !by_id("1.20.1").is_base_only,
+            "a vanilla install nobody inherits from stays visible"
+        );
     }
 
     #[test]

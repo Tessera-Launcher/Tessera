@@ -220,6 +220,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Home | KeyCode::Char('g') => app.select_first(),
         KeyCode::End | KeyCode::Char('G') => app.select_last(),
         KeyCode::Char('r') => app.reload(),
+        KeyCode::Char('h') => app.toggle_base_versions(),
         KeyCode::Char('l') => app.open_login(),
         KeyCode::Char('a') => app.open_accounts(),
         KeyCode::Char('d') => app.open_download(),
@@ -372,7 +373,8 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   ↑/k ↓/j 选择   g/G 首尾   PgUp/PgDn 滚动日志
   a 或点击右上角账户  账户管理（登录 / 切换 / 移除）
   d 下载：选版本 + Loader，Enter 开始
-  r 刷新   q/Esc 退出   Enter 安装/启动（未实现）
+  r 刷新   h 显示/隐藏基础版本   q/Esc 退出
+  Enter 安装/启动（未实现）
 
 鼠标:
   滚轮            日志区滚动日志，版本区切换选择

@@ -114,8 +114,17 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    let hidden = app.hidden_base_count();
+    let title = if hidden > 0 {
+        format!(
+            " 版本 ({}) · 已隐藏 {hidden} 个基础版本 · h 显示 ",
+            app.versions.len()
+        )
+    } else {
+        format!(" 版本 ({}) ", app.versions.len())
+    };
     let block = Block::bordered()
-        .title(Line::from(format!(" 版本 ({}) ", app.versions.len())))
+        .title(Line::from(title))
         .border_style(Style::new().fg(DIM));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -326,7 +335,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             _ => "Esc 返回 ",
         },
         Screen::Installing => "Esc 转为后台下载 ",
-        Screen::Main => "↑↓ 选择 · Enter 安装/启动 · a 账户 · d 下载 · r 刷新 · q 退出 ",
+        Screen::Main => {
+            "↑↓ 选择 · Enter 安装/启动 · a 账户 · d 下载 · h 基础版本 · r 刷新 · q 退出 "
+        }
     };
     let keys = Span::styled(hints, Style::new().fg(DIM));
     let line = Line::from(vec![status, keys]);
@@ -964,6 +975,7 @@ mod tests {
             main_class: Some("net.minecraft.client.main.Main".to_string()),
             has_jar: true,
             release_time: None,
+            is_base_only: false,
         }
     }
 

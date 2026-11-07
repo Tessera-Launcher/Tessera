@@ -269,7 +269,13 @@ pub struct Layout {
 pub struct App {
     pub root: PathBuf,
     pub accounts_dir: PathBuf,
+    /// Every version on disk, including loader bases.
+    pub all_versions: Vec<LocalVersion>,
+    /// What the list shows: `all_versions` without base-only entries unless
+    /// [`App::show_base_versions`] is on.
     pub versions: Vec<LocalVersion>,
+    /// Whether loader bases get their own row (toggled with `h`).
+    pub show_base_versions: bool,
     pub accounts: Vec<SavedAccount>,
     pub selected: usize,
     pub status: String,
@@ -311,7 +317,9 @@ impl App {
             status: format!("扫描 {}", root.display()),
             root,
             accounts_dir,
-            versions,
+            all_versions: versions,
+            versions: Vec::new(),
+            show_base_versions: false,
             accounts,
             selected: 0,
             log: Vec::new(),
@@ -330,6 +338,9 @@ impl App {
             list_offset: 0,
             log_scroll: 0,
         };
+
+        // Callers pass a raw scan; the base-version filter decides what is listed.
+        app.apply_version_filter();
 
         let status = app.status.clone();
         app.log(status);
@@ -352,11 +363,51 @@ impl App {
 
     pub fn reload(&mut self) {
         let keep = self.selected_version().map(|v| v.id.clone());
-        self.versions = discover::scan(&self.root);
+        self.all_versions = discover::scan(&self.root);
+        self.apply_version_filter();
         self.selected = keep
             .and_then(|id| self.versions.iter().position(|v| v.id == id))
             .unwrap_or(0);
         self.status = format!("已刷新：{} 个版本", self.versions.len());
+        self.log(self.status.clone());
+    }
+
+    /// Recompute the visible list from `all_versions` and the base-version toggle.
+    fn apply_version_filter(&mut self) {
+        self.versions = self
+            .all_versions
+            .iter()
+            .filter(|version| self.show_base_versions || !version.is_base_only)
+            .cloned()
+            .collect();
+        if self.selected >= self.versions.len() {
+            self.selected = self.versions.len().saturating_sub(1);
+        }
+        self.list_offset = 0;
+    }
+
+    /// Number of versions hidden because a loader profile inherits from them.
+    pub fn hidden_base_count(&self) -> usize {
+        if self.show_base_versions {
+            0
+        } else {
+            self.all_versions.iter().filter(|v| v.is_base_only).count()
+        }
+    }
+
+    /// Show or hide loader bases (`h`).
+    pub fn toggle_base_versions(&mut self) {
+        self.show_base_versions = !self.show_base_versions;
+        let keep = self.selected_version().map(|v| v.id.clone());
+        self.apply_version_filter();
+        if let Some(id) = keep {
+            self.selected = self.versions.iter().position(|v| v.id == id).unwrap_or(0);
+        }
+        self.status = if self.show_base_versions {
+            format!("显示全部 {} 个版本（含基础版本）", self.versions.len())
+        } else {
+            format!("{} 个版本（已隐藏基础版本）", self.versions.len())
+        };
         self.log(self.status.clone());
     }
 
@@ -1006,6 +1057,7 @@ mod tests {
             main_class: Some("net.minecraft.client.main.Main".to_string()),
             has_jar: true,
             release_time: None,
+            is_base_only: false,
         }
     }
 
@@ -1699,6 +1751,77 @@ mod tests {
             DownloadStage::Installing,
             "the worker keeps going; only the screen was closed"
         );
+    }
+
+    // ---- loader bases ----
+
+    fn base_only(id: &str) -> LocalVersion {
+        LocalVersion {
+            is_base_only: true,
+            ..version(id)
+        }
+    }
+
+    #[test]
+    fn loader_bases_are_hidden_by_default_and_reappear_on_demand() {
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![version("26.3+Fabric0.20.1"), base_only("26.3")],
+            vec![],
+        );
+        assert_eq!(app.versions.len(), 1, "only the loader install is listed");
+        assert_eq!(app.versions[0].id, "26.3+Fabric0.20.1");
+        assert_eq!(app.hidden_base_count(), 1);
+
+        app.toggle_base_versions();
+        assert_eq!(app.versions.len(), 2);
+        assert!(app.show_base_versions);
+        assert_eq!(app.hidden_base_count(), 0);
+
+        app.toggle_base_versions();
+        assert_eq!(app.versions.len(), 1, "hidden again");
+    }
+
+    #[test]
+    fn hiding_a_base_keeps_the_selection_on_a_real_version() {
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![version("26.3+Fabric0.20.1"), base_only("26.3")],
+            vec![],
+        );
+        // Show everything and select the base, then hide again.
+        app.toggle_base_versions();
+        app.select_next();
+        assert_eq!(app.selected_version().map(|v| v.id.as_str()), Some("26.3"));
+        app.toggle_base_versions();
+        assert_eq!(app.versions.len(), 1);
+        assert_eq!(app.selected, 0, "clamped to the remaining row");
+    }
+
+    #[test]
+    fn reload_rescans_and_reapplies_the_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let write = |id: &str, json: &str| {
+            let dir = root.join("versions").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{id}.json")), json).unwrap();
+        };
+        let mut app = App::new(root, "/acc", vec![], vec![]);
+        write("26.3", r#"{"id":"26.3"}"#);
+        app.reload();
+        assert_eq!(app.versions.len(), 1, "plain vanilla is visible");
+
+        write(
+            "26.3+Fabric0.20.1",
+            r#"{"id":"26.3+Fabric0.20.1","inheritsFrom":"26.3"}"#,
+        );
+        app.reload();
+        assert_eq!(app.versions.len(), 1, "the base is hidden after reload");
+        assert_eq!(app.versions[0].id, "26.3+Fabric0.20.1");
+        assert_eq!(app.hidden_base_count(), 1);
     }
 
     #[test]
