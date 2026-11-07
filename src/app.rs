@@ -81,6 +81,64 @@ pub enum LoginStep {
 pub enum PickerFocus {
     Versions,
     Loaders,
+    Search,
+}
+
+impl PickerFocus {
+    /// Tab order: versions → loaders → the filter bar → back.
+    fn next(self) -> Self {
+        match self {
+            PickerFocus::Versions => PickerFocus::Loaders,
+            PickerFocus::Loaders => PickerFocus::Search,
+            PickerFocus::Search => PickerFocus::Versions,
+        }
+    }
+}
+
+/// The kind-of-release filter above the version list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionFilter {
+    All,
+    Release,
+    Snapshot,
+    Old,
+}
+
+impl VersionFilter {
+    pub const ALL: [VersionFilter; 4] = [
+        VersionFilter::All,
+        VersionFilter::Release,
+        VersionFilter::Snapshot,
+        VersionFilter::Old,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VersionFilter::All => "全部",
+            VersionFilter::Release => "正式版",
+            VersionFilter::Snapshot => "快照",
+            VersionFilter::Old => "旧版",
+        }
+    }
+
+    /// Cycles the way `f` does; the mouse picks one directly.
+    fn next(self) -> Self {
+        match self {
+            VersionFilter::All => VersionFilter::Release,
+            VersionFilter::Release => VersionFilter::Snapshot,
+            VersionFilter::Snapshot => VersionFilter::Old,
+            VersionFilter::Old => VersionFilter::All,
+        }
+    }
+
+    fn matches(self, kind: &str) -> bool {
+        match self {
+            VersionFilter::All => true,
+            VersionFilter::Release => kind == "release",
+            VersionFilter::Snapshot => kind == "snapshot",
+            VersionFilter::Old => kind.starts_with("old_"),
+        }
+    }
 }
 
 /// Where the download screen is.
@@ -98,7 +156,13 @@ pub enum DownloadStage {
 #[derive(Debug)]
 pub struct DownloadUi {
     pub stage: DownloadStage,
+    /// Every version the mirror listed.
+    pub all: Vec<RemoteVersion>,
+    /// The filtered view that is actually drawn and picked from.
     pub versions: Vec<RemoteVersion>,
+    /// Search text, matched against the version id.
+    pub query: String,
+    pub filter: VersionFilter,
     pub picked: usize,
     /// Loaders compatible with the picked version, in [`LOADERS`] order.
     pub loaders: Vec<Loader>,
@@ -121,7 +185,10 @@ impl Default for DownloadUi {
     fn default() -> Self {
         DownloadUi {
             stage: DownloadStage::LoadingVersions,
+            all: Vec::new(),
             versions: Vec::new(),
+            query: String::new(),
+            filter: VersionFilter::All,
             picked: 0,
             loaders: vec![Loader::None],
             loader_pick: 0,
@@ -164,6 +231,26 @@ impl DownloadUi {
             .get(self.loader_pick)
             .copied()
             .unwrap_or(Loader::None)
+    }
+
+    /// Rebuild the visible list from `all`, keeping the picked id when it survives.
+    fn apply_filter(&mut self) {
+        let keep = self.picked_version().map(|version| version.id.clone());
+        let query = self.query.trim().to_lowercase();
+        let filter = self.filter;
+        self.versions = self
+            .all
+            .iter()
+            .filter(|version| filter.matches(&version.kind))
+            .filter(|version| query.is_empty() || version.id.to_lowercase().contains(&query))
+            .cloned()
+            .collect();
+
+        self.picked = keep
+            .and_then(|id| self.versions.iter().position(|version| version.id == id))
+            .unwrap_or(0)
+            .min(self.versions.len().saturating_sub(1));
+        self.refresh_loaders();
     }
 
     /// Rebuild the loader list for the newly picked version, keeping the choice
@@ -279,6 +366,9 @@ pub struct Layout {
     pub download_loaders: Area,
     /// First visible row of the picker's version list, as rendered.
     pub download_offset: usize,
+    /// The picker's search box and one area per kind filter, in `VersionFilter::ALL` order.
+    pub download_search: Area,
+    pub download_filters: Vec<Area>,
     /// Clickable key hints in the footer.
     pub buttons: Vec<Button>,
 }
@@ -582,6 +672,11 @@ impl App {
                 .find(|button| button.area.contains(event.column, event.row))
                 .copied()
             {
+                // A footer click means "stop typing": otherwise the replayed key
+                // would land in the search box as text.
+                if self.screen == Screen::Download {
+                    self.download.focus = PickerFocus::Versions;
+                }
                 self.handle_key(button.code, KeyModifiers::NONE);
                 return;
             }
@@ -926,19 +1021,51 @@ impl App {
                     self.close_download();
                 }
             }
-            DownloadStage::Picking => match code {
-                KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
-                KeyCode::Tab => {
-                    self.download.focus = match self.download.focus {
-                        PickerFocus::Versions => PickerFocus::Loaders,
-                        PickerFocus::Loaders => PickerFocus::Versions,
+            DownloadStage::Picking => {
+                // The search box swallows printable keys, so it gets first say.
+                if self.download.focus == PickerFocus::Search {
+                    match code {
+                        KeyCode::Esc => {
+                            if self.download.query.is_empty() {
+                                self.download.focus = PickerFocus::Versions;
+                            } else {
+                                self.download.query.clear();
+                                self.download.apply_filter();
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if self.download.query.pop().is_some() {
+                                self.download.apply_filter();
+                            }
+                        }
+                        KeyCode::Tab => self.download.focus = self.download.focus.next(),
+                        // Arrows still walk the list while the caret is in the box.
+                        KeyCode::Up => self.picker_move(-1),
+                        KeyCode::Down => self.picker_move(1),
+                        KeyCode::Enter => self.start_install(),
+                        KeyCode::Char(c) if !c.is_control() => {
+                            self.download.query.push(c);
+                            self.download.apply_filter();
+                        }
+                        _ => {}
                     }
+                    return true;
                 }
-                KeyCode::Up | KeyCode::Char('k') => self.picker_move(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.picker_move(1),
-                KeyCode::Enter => self.start_install(),
-                _ => {}
-            },
+                match code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
+                    KeyCode::Tab => self.download.focus = self.download.focus.next(),
+                    KeyCode::Char('/') => self.download.focus = PickerFocus::Search,
+                    KeyCode::Char('f') => {
+                        self.download.filter = self.download.filter.next();
+                        self.download.apply_filter();
+                        self.status = format!("下载：{} 版本", self.download.filter.label());
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.picker_move(-1),
+                    KeyCode::Down | KeyCode::Char('j') => self.picker_move(1),
+                    KeyCode::Enter => self.start_install(),
+                    _ => {}
+                }
+            }
             DownloadStage::Installing => {
                 if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                     self.screen = Screen::Main;
@@ -957,7 +1084,7 @@ impl App {
 
     fn picker_move(&mut self, delta: i32) {
         match self.download.focus {
-            PickerFocus::Versions => {
+            PickerFocus::Versions | PickerFocus::Search => {
                 let count = self.download.versions.len();
                 if count == 0 {
                     return;
@@ -980,7 +1107,8 @@ impl App {
     /// Scroll the picker without wrapping, the way the wheel should behave.
     fn picker_scroll(&mut self, delta: i32) {
         match self.download.focus {
-            PickerFocus::Versions => {
+            // The wheel over the filter bar is not a thing; treat it as versions.
+            PickerFocus::Versions | PickerFocus::Search => {
                 let count = self.download.versions.len();
                 if count == 0 {
                     return;
@@ -1009,6 +1137,12 @@ impl App {
         let (column, row) = (event.column, event.row);
         let over_versions = self.layout.download_versions.contains(column, row);
         let over_loaders = self.layout.download_loaders.contains(column, row);
+        let over_search = self.layout.download_search.contains(column, row);
+        let chip = self
+            .layout
+            .download_filters
+            .iter()
+            .position(|area| area.contains(column, row));
 
         match event.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -1028,7 +1162,12 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if over_versions {
+                if over_search {
+                    self.download.focus = PickerFocus::Search;
+                } else if let Some(index) = chip {
+                    self.download.filter = VersionFilter::ALL[index];
+                    self.download.apply_filter();
+                } else if over_versions {
                     self.download.focus = PickerFocus::Versions;
                     let index = self.layout.download_offset
                         + (row - self.layout.download_versions.y) as usize;
@@ -1072,10 +1211,9 @@ impl App {
         match event {
             InstallEvent::Versions(versions) => {
                 self.log(format!("版本列表：{} 个", versions.len()));
-                self.download.versions = versions;
+                self.download.all = versions;
                 self.download.stage = DownloadStage::Picking;
-                self.download.picked = 0;
-                self.download.refresh_loaders();
+                self.download.apply_filter();
                 self.status = "下载：选择版本与 Loader".to_string();
             }
             InstallEvent::Log(line) => {
@@ -2185,11 +2323,184 @@ mod tests {
         assert!(app.download.loaders.contains(&Loader::None));
     }
 
+    /// A picker with one of each kind: release, snapshot and old alpha.
+    fn mixed_picker() -> App {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            remote("1.20.1", "release"),
+            remote("1.19.2", "release"),
+            remote("23w31a", "snapshot"),
+            remote("a1.2.6", "old_alpha"),
+        ]));
+        app.layout.download_search = Area::new(1, 2, 40, 1);
+        app.layout.download_filters = (0..4).map(|i| Area::new(45 + i * 8, 2, 7, 1)).collect();
+        app
+    }
+
+    fn type_search(app: &mut App, text: &str) {
+        app.handle_download_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(app.download.focus, PickerFocus::Search);
+        for c in text.chars() {
+            app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+    }
+
     #[test]
-    fn tab_moves_between_the_two_panes_and_the_loader_choice_sticks() {
+    fn typing_in_the_search_box_filters_the_versions() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "1.19");
+        assert_eq!(app.download.all.len(), 4, "the mirror list is untouched");
+        assert_eq!(app.download.versions.len(), 1);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
+    }
+
+    #[test]
+    fn the_search_is_case_insensitive_and_matches_inside_the_id() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "w31");
+        assert_eq!(app.download.picked_version().unwrap().id, "23w31a");
+    }
+
+    #[test]
+    fn esc_clears_the_search_before_it_leaves_the_screen() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "1.20");
+        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Download, "still here");
+        assert!(app.download.query.is_empty());
+        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.focus, PickerFocus::Search, "caret stays put");
+
+        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            app.download.focus,
+            PickerFocus::Versions,
+            "second Esc leaves"
+        );
+        assert_eq!(app.screen, Screen::Download);
+
+        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_ne!(app.screen, Screen::Download, "third Esc closes");
+    }
+
+    #[test]
+    fn backspace_widens_the_search_again() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "1.19");
+        app.handle_download_key(KeyCode::Backspace, KeyModifiers::NONE);
+        // "1.1" still matches only 1.19.2 ... until the dot goes.
+        assert_eq!(app.download.versions.len(), 1);
+        for _ in 0..2 {
+            app.handle_download_key(KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        assert_eq!(app.download.query, "1");
+        // A single digit matches any id containing it: "1" is in all four.
+        assert_eq!(app.download.versions.len(), 4);
+    }
+
+    #[test]
+    fn f_cycles_the_kind_filter() {
+        let mut app = mixed_picker();
+        assert_eq!(app.download.versions.len(), 4);
+
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.download.filter, VersionFilter::Release);
+        assert_eq!(app.download.versions.len(), 2);
+        assert!(app.download.versions.iter().all(|v| v.kind == "release"));
+
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.download.filter, VersionFilter::Snapshot);
+        assert_eq!(app.download.picked_version().unwrap().id, "23w31a");
+
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.download.filter, VersionFilter::Old);
+        assert_eq!(app.download.picked_version().unwrap().id, "a1.2.6");
+
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.download.filter, VersionFilter::All);
+        assert_eq!(app.download.versions.len(), 4);
+    }
+
+    #[test]
+    fn filtering_keeps_the_picked_version_when_it_survives() {
+        let mut app = mixed_picker();
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
+
+        type_search(&mut app, "1.19");
+        assert_eq!(
+            app.download.picked_version().unwrap().id,
+            "1.19.2",
+            "the same version stays picked, at its new index"
+        );
+        assert_eq!(app.download.picked, 0);
+
+        // Clearing the search restores the full list and re-finds it.
+        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.picked, 1);
+    }
+
+    #[test]
+    fn filtering_rebuilds_the_loader_list() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "1.20");
+        assert!(app.download.loaders.contains(&Loader::Fabric));
+        // Nothing left to pick: the loader list collapses to vanilla.
+        app.handle_download_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(app.download.versions.is_empty());
+        assert_eq!(app.download.loaders, vec![Loader::None]);
+    }
+
+    #[test]
+    fn enter_with_no_match_does_not_start_an_install() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "zzz");
+        assert!(app.download.versions.is_empty());
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.pending_install.is_none());
+        assert_eq!(app.screen, Screen::Download);
+    }
+
+    #[test]
+    fn clicking_a_kind_chip_sets_that_filter() {
+        let mut app = mixed_picker();
+        // Chip row starts at x=45, eight cells apart.
+        app.handle_mouse(click(45 + 8 * 2 + 1, 2));
+        assert_eq!(app.download.filter, VersionFilter::Snapshot);
+        assert_eq!(app.download.picked_version().unwrap().id, "23w31a");
+    }
+
+    #[test]
+    fn clicking_the_search_box_moves_the_caret_there() {
+        let mut app = mixed_picker();
+        app.handle_mouse(click(5, 2));
+        assert_eq!(app.download.focus, PickerFocus::Search);
+        app.handle_download_key(KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(app.download.query, "2");
+    }
+
+    #[test]
+    fn a_footer_click_leaves_the_search_box_first() {
+        let mut app = mixed_picker();
+        type_search(&mut app, "1");
+        // The footer replays the key, which must not become search text.
+        app.layout.buttons = vec![Button::new(Area::new(0, 27, 8, 1), KeyCode::Char('f'))];
+        app.handle_mouse(click(2, 27));
+        assert_eq!(app.download.query, "1");
+        assert_eq!(app.download.filter, VersionFilter::Release);
+    }
+
+    #[test]
+    fn tab_cycles_versions_loaders_and_the_search_box() {
         let mut app = downloader();
         app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.download.focus, PickerFocus::Loaders);
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.download.focus, PickerFocus::Search);
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.download.focus, PickerFocus::Versions);
 
         let quilt = app
             .download
@@ -2201,11 +2512,11 @@ mod tests {
 
         // Switching panes does not forget the loader.
         app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.download.focus, PickerFocus::Versions);
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.download.focus, PickerFocus::Loaders);
         assert_eq!(app.download.picked_loader(), Loader::Quilt);
 
         // Dropping to 1.8.9 loses Quilt, so the choice falls back to the first entry.
+        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
         app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
         app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(app.download.picked, 1);

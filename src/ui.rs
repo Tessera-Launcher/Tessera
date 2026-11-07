@@ -338,7 +338,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
             ("d 移除".to_string(), KeyCode::Char('d')),
             ("Esc/右键 关闭".to_string(), KeyCode::Esc),
         ],
-        Screen::Download => vec![("Esc/右键 取消".to_string(), KeyCode::Esc)],
+        Screen::Download => vec![
+            ("/ 搜索".to_string(), KeyCode::Char('/')),
+            ("f 类型".to_string(), KeyCode::Char('f')),
+            ("Esc/右键 取消".to_string(), KeyCode::Esc),
+        ],
         Screen::Installing => vec![("Esc/右键 后台运行".to_string(), KeyCode::Esc)],
         Screen::Login => vec![("Esc/右键 取消".to_string(), KeyCode::Esc)],
     };
@@ -411,11 +415,20 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
     // Full-screen pane: wipe whatever the main screen left behind, otherwise the
     // empty parts of the picker show stale rows.
     frame.render_widget(Clear, area);
-    let download = &app.download;
     let title = Line::from(vec![
         Span::styled(" 下载 ", Style::new().fg(ACCENT).bold()),
         Span::styled(
-            format!("{} · {} ", app.source_label(), download.versions.len()),
+            // Total, and how much of it the filter lets through.
+            if app.download.versions.len() == app.download.all.len() {
+                format!("{} · {} ", app.source_label(), app.download.all.len())
+            } else {
+                format!(
+                    "{} · {} / {} ",
+                    app.source_label(),
+                    app.download.versions.len(),
+                    app.download.all.len()
+                )
+            },
             Style::new().fg(DIM),
         ),
     ]);
@@ -427,8 +440,10 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
     app.layout.download_versions = Area::default();
     app.layout.download_loaders = Area::default();
     app.layout.download_offset = 0;
+    app.layout.download_search = Area::default();
+    app.layout.download_filters.clear();
 
-    if download.stage == crate::app::DownloadStage::LoadingVersions {
+    if app.download.stage == crate::app::DownloadStage::LoadingVersions {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(""),
@@ -444,25 +459,217 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // The filter bar takes the top of the body, so both panes start below it.
+    let [filter_area, body] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(6)]).areas(inner);
+    // The chips are a fixed row of four; the search box takes the rest.
+    let [search_area, chips_area] =
+        Layout::horizontal([Constraint::Min(20), Constraint::Length(30)]).areas(filter_area);
     let [versions_area, loaders_area] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Min(20)]).areas(inner);
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Min(20)]).areas(body);
+
+    let (search_hit, chips) = draw_filter_bar(frame, search_area, chips_area, &app.download);
+    app.layout.download_search = search_hit;
+    app.layout.download_filters = chips;
 
     // ---- versions ----
-    let focused = download.focus == crate::app::PickerFocus::Versions;
+    let focused = app.download.focus == crate::app::PickerFocus::Versions;
     let versions_block = Block::bordered()
         .title(Line::from(" 版本 "))
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let versions_inner = versions_block.inner(versions_area);
     frame.render_widget(versions_block, versions_area);
     let visible = versions_inner.height.saturating_sub(1) as usize;
+    if app.download.versions.is_empty() {
+        app.layout.download_versions = Area::default();
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "没有匹配的版本",
+                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    if app.download.all.is_empty() {
+                        "版本列表还没到"
+                    } else {
+                        "Esc 清空搜索，或 f 换类型"
+                    },
+                    Style::new().fg(DIM),
+                )),
+            ])
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+            versions_inner,
+        );
+    } else {
+        let (offset, hit) = draw_version_rows(frame, versions_inner, &app.download, visible);
+        app.layout.download_offset = offset;
+        app.layout.download_versions = hit;
+    }
+
+    // ---- loaders ----
+    let focused = app.download.focus == crate::app::PickerFocus::Loaders;
+    let loaders_block = Block::bordered()
+        .title(Line::from(" 安装内容 "))
+        .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
+    let loaders_inner = loaders_block.inner(loaders_area);
+    frame.render_widget(loaders_block, loaders_area);
+    app.layout.download_loaders = Area::new(
+        loaders_inner.x,
+        loaders_inner.y.saturating_add(1),
+        loaders_inner.width,
+        loaders_inner.height.saturating_sub(1),
+    );
+
+    let rows: Vec<Row> = app
+        .download
+        .loaders
+        .iter()
+        .enumerate()
+        .map(|(index, loader)| {
+            let selected = index == app.download.loader_pick;
+            let mut row = Row::new(vec![Cell::from(Line::from(vec![
+                Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
+                Span::styled(
+                    loader.label(),
+                    if selected {
+                        Style::new().fg(ACCENT)
+                    } else {
+                        Style::new().fg(Color::White)
+                    },
+                ),
+            ]))]);
+            if selected {
+                row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
+            }
+            row
+        })
+        .collect();
+    frame.render_widget(Table::new(rows, [Constraint::Min(10)]), loaders_inner);
+
+    // A hint under the loader list: what Enter will do.
+    if loaders_inner.height > app.download.loaders.len() as u16 + 1 {
+        let hint_area = Rect {
+            y: loaders_inner.y + app.download.loaders.len() as u16 + 1,
+            height: loaders_inner
+                .height
+                .saturating_sub(app.download.loaders.len() as u16 + 1),
+            ..loaders_inner
+        };
+        let loader = app.download.picked_loader();
+        let text = if loader == Loader::None {
+            "仅安装原版".to_string()
+        } else {
+            format!("{} · 自动选最新版本", loader.label())
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::new().fg(DIM))))
+                .wrap(Wrap { trim: true }),
+            hint_area,
+        );
+    }
+}
+
+/// The filter bar: a search box on the left, the kind chips on the right.
+fn draw_filter_bar(
+    frame: &mut Frame,
+    search: Rect,
+    chips: Rect,
+    download: &crate::app::DownloadUi,
+) -> (Area, Vec<Area>) {
+    let focused = download.focus == crate::app::PickerFocus::Search;
+    let search_block = Block::bordered()
+        .title(Line::from(" 搜索 "))
+        .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
+    let search_inner = search_block.inner(search);
+    frame.render_widget(search_block, search);
+    let query = &download.query;
+    let mut spans = Vec::new();
+    if query.is_empty() {
+        spans.push(Span::styled(
+            if focused {
+                "▏输入版本号，如 1.20 或 1.8"
+            } else {
+                "/ 搜索"
+            },
+            Style::new().fg(DIM),
+        ));
+    } else {
+        spans.push(Span::styled(query.clone(), Style::new().fg(Color::White)));
+    }
+    if focused {
+        // A caret, because the terminal's own cursor stays hidden.
+        spans.push(Span::styled(
+            "▏",
+            Style::new().fg(ACCENT).add_modifier(Modifier::SLOW_BLINK),
+        ));
+    }
+    let matched = download.versions.len();
+    let total = download.all.len();
+    if !download.query.is_empty() {
+        spans.push(Span::styled(
+            format!("  {matched}/{total}"),
+            Style::new().fg(DIM),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), search_inner);
+
+    let chips_block = Block::bordered()
+        .title(Line::from(" 类型 "))
+        .border_style(Style::new().fg(DIM));
+    let chips_inner = chips_block.inner(chips);
+    frame.render_widget(chips_block, chips);
+
+    let mut chips_hit = Vec::new();
+    let mut spans = Vec::new();
+    let mut column = chips_inner.x;
+    for filter in crate::app::VersionFilter::ALL {
+        let active = download.filter == filter;
+        let text = format!(" {} ", filter.label());
+        let width = cell_width_of(&text) as u16;
+        if column + width > chips_inner.x + chips_inner.width {
+            break;
+        }
+        chips_hit.push(Area::new(column, chips_inner.y, width, 1));
+        spans.push(Span::styled(
+            text,
+            if active {
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(DIM)
+            },
+        ));
+        column += width;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), chips_inner);
+    (
+        Area::new(
+            search_inner.x,
+            search_inner.y,
+            search_inner.width,
+            search_inner.height,
+        ),
+        chips_hit,
+    )
+}
+
+/// The version rows of the picker, header included.
+fn draw_version_rows(
+    frame: &mut Frame,
+    inner: Rect,
+    download: &crate::app::DownloadUi,
+    visible: usize,
+) -> (usize, Area) {
     let offset = download.picked.saturating_sub(visible.saturating_sub(1));
     // Data rows only: the header above them is not a clickable version.
-    app.layout.download_offset = offset;
-    app.layout.download_versions = Area::new(
-        versions_inner.x,
-        versions_inner.y.saturating_add(1),
-        versions_inner.width,
-        versions_inner.height.saturating_sub(1),
+    let hit = Area::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(1),
     );
     let rows: Vec<Row> = download
         .versions
@@ -510,69 +717,9 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         )
         .header(Row::new(vec!["  版本", "类型", "发布"]).style(Style::new().fg(DIM).bold()))
         .column_spacing(1),
-        versions_inner,
+        inner,
     );
-
-    // ---- loaders ----
-    let focused = download.focus == crate::app::PickerFocus::Loaders;
-    let loaders_block = Block::bordered()
-        .title(Line::from(" 安装内容 "))
-        .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
-    let loaders_inner = loaders_block.inner(loaders_area);
-    frame.render_widget(loaders_block, loaders_area);
-    app.layout.download_loaders = Area::new(
-        loaders_inner.x,
-        loaders_inner.y.saturating_add(1),
-        loaders_inner.width,
-        loaders_inner.height.saturating_sub(1),
-    );
-
-    let rows: Vec<Row> = download
-        .loaders
-        .iter()
-        .enumerate()
-        .map(|(index, loader)| {
-            let selected = index == download.loader_pick;
-            let mut row = Row::new(vec![Cell::from(Line::from(vec![
-                Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
-                Span::styled(
-                    loader.label(),
-                    if selected {
-                        Style::new().fg(ACCENT)
-                    } else {
-                        Style::new().fg(Color::White)
-                    },
-                ),
-            ]))]);
-            if selected {
-                row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
-            }
-            row
-        })
-        .collect();
-    frame.render_widget(Table::new(rows, [Constraint::Min(10)]), loaders_inner);
-
-    // A hint under the loader list: what Enter will do.
-    if loaders_inner.height > download.loaders.len() as u16 + 1 {
-        let hint_area = Rect {
-            y: loaders_inner.y + download.loaders.len() as u16 + 1,
-            height: loaders_inner
-                .height
-                .saturating_sub(download.loaders.len() as u16 + 1),
-            ..loaders_inner
-        };
-        let loader = download.picked_loader();
-        let text = if loader == Loader::None {
-            "仅安装原版".to_string()
-        } else {
-            format!("{} · 自动选最新版本", loader.label())
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(text, Style::new().fg(DIM))))
-                .wrap(Wrap { trim: true }),
-            hint_area,
-        );
-    }
+    (offset, hit)
 }
 
 /// The running install: log in the middle, progress pinned at the bottom.
@@ -1028,6 +1175,7 @@ mod tests {
     use crate::app::App;
     use crate::discover::LocalVersion;
     use crate::install::InstallEvent;
+    use crossterm::event::KeyModifiers;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1320,6 +1468,88 @@ mod tests {
         assert!(screen.contains("Fabric"), "{screen}");
         assert!(screen.contains("仅安装原版"), "{screen}");
         assert!(app.layout.download_versions.height > 0);
+    }
+
+    #[test]
+    fn the_filter_bar_sits_above_both_panes() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+            crate::install::RemoteVersion {
+                id: "23w31a".into(),
+                kind: "snapshot".into(),
+                released: "2023-08-02T00:00:00+00:00".into(),
+            },
+        ]));
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        // The search box and every chip are drawn and recorded.
+        assert!(screen.contains("搜索"), "{screen}");
+        assert!(screen.contains("全部"), "{screen}");
+        assert!(screen.contains("正式版"), "{screen}");
+        assert!(screen.contains("快照"), "{screen}");
+        assert!(screen.contains("旧版"), "{screen}");
+        assert_eq!(app.layout.download_filters.len(), 4);
+        assert!(app.layout.download_search.width > 0);
+
+        // Both panes start below the filter row.
+        assert!(app.layout.download_versions.y > app.layout.download_search.y);
+        assert!(app.layout.download_loaders.y > app.layout.download_search.y);
+        assert_eq!(
+            app.layout.download_loaders.y, app.layout.download_versions.y,
+            "the two panes stay level with each other"
+        );
+    }
+
+    #[test]
+    fn a_search_with_no_match_says_so_instead_of_looking_empty() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+        ]));
+        app.handle_download_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "zzz".chars() {
+            app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("没有匹配的版本"), "{screen}");
+        assert!(screen.contains("安装内容"), "the loader pane still draws");
+        assert_eq!(
+            app.layout.download_versions,
+            Area::default(),
+            "no rows to click"
+        );
+    }
+
+    #[test]
+    fn the_title_counts_the_filtered_list_against_the_total() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+            crate::install::RemoteVersion {
+                id: "23w31a".into(),
+                kind: "snapshot".into(),
+                released: "2023-08-02T00:00:00+00:00".into(),
+            },
+        ]));
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("1 / 2"), "{screen}");
     }
 
     #[test]
