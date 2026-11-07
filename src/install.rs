@@ -447,6 +447,11 @@ mod tests {
     fn live_install_1_8_9_reports_progress_and_lands_on_disk() {
         let root = std::env::temp_dir().join("yaml-live-install");
         let _ = std::fs::remove_dir_all(&root);
+        // A fresh global registry, otherwise every asset is already cached and the
+        // thousands-of-small-files path is never exercised.
+        let registry = std::env::temp_dir().join("yaml-live-registry");
+        let _ = std::fs::remove_dir_all(&registry);
+        std::env::set_var("MDT_HOME", &registry);
         let receiver = spawn_install(
             root.clone(),
             Source::Mojang,
@@ -456,13 +461,17 @@ mod tests {
         );
 
         let mut progress_events = 0usize;
+        let mut last_event = std::time::Instant::now();
+        let mut max_gap = std::time::Duration::ZERO;
         let mut finished = false;
         let started = std::time::Instant::now();
         while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(300)) {
             match event {
                 InstallEvent::Progress { done, total, .. } => {
                     progress_events += 1;
-                    if progress_events % 40 == 0 {
+                    max_gap = max_gap.max(last_event.elapsed());
+                    last_event = std::time::Instant::now();
+                    if progress_events % 100 == 0 {
                         eprintln!("progress {done}/{total} at {:?}", started.elapsed());
                     }
                 }
@@ -486,6 +495,7 @@ mod tests {
         assert!(root.join("versions/1.8.9/1.8.9.jar").is_file());
         assert!(root.join("assets/indexes/1.8.json").is_file());
         std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&registry).ok();
     }
 
     #[test]

@@ -95,6 +95,20 @@ Measured on this machine with a 256 MB random file (page cache warm, `sha1` crat
   ~96k allocations for a 3.7k-object install — plus, for `Mirror::Custom`, an `RwLock` read and a
   runtime provider table clone per URL rewrite.
 
+### 7. Progress cadence is time-based, not ten-per-batch
+
+`execute_downloads` used to report after every `total / 10` files. For 1.8.9's 722
+assets that is one update every 72 files, and for a 3 700-asset version one update
+per ~370 files — a progress bar that looks hung for seconds at a time.
+
+It now reports at most every `REPORT_INTERVAL` (100 ms) plus one guaranteed update
+when the batch finishes. Measured on a cold install of 1.8.9 through the official
+source: 722 assets, 109.4 MiB, 7.6 MiB/s, and the longest gap between progress
+updates is under 900 ms (asserted by `live_install_1_8_9...`).
+
+The decision lives in `should_report(finished, since_last_report)` so the cadence
+is testable without waiting on a clock.
+
 ### 6. HTTP/1.1 by default (HTTP/2 multiplexing was half speed)
 
 Measured with `examples/download_bench` on 1.8.9's 722 asset objects (109.5 MiB), one machine,
@@ -146,6 +160,7 @@ the same object more than once (1.8.9: 734 names, 722 hashes).
 `src/asset.rs`: `missing_locally_reports_one_entry_per_hash_not_per_name`.
 
 `src/downloader.rs`: `asset_tasks_are_built_once_per_hash`,
+`progress_reports_on_a_time_cadence_not_a_file_count`,
 `native_classifier_prefers_the_declared_natives_map`,
 `native_classifier_accepts_the_pre_1_19_osx_spelling`,
 `native_classifier_expands_the_arch_placeholder`,

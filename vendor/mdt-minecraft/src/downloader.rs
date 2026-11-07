@@ -234,7 +234,6 @@ pub async fn execute_downloads(
     let concurrency = concurrency.max(1);
     let total = tasks.len();
     let total_bytes: u64 = tasks.iter().map(|t| t.size).sum();
-    let report_every = (total / 10).max(1);
     let start = Instant::now();
 
     let remaining: Arc<AtomicU64> = Arc::new(AtomicU64::new(total_bytes));
@@ -242,7 +241,7 @@ pub async fn execute_downloads(
     let downloaded_count: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let throttle = Arc::new(Mutex::new(Throttle {
         done: 0,
-        next_report: report_every,
+        last_report: Instant::now(),
     }));
     let failed: Arc<Mutex<Vec<FailedDownload>>> = Arc::new(Mutex::new(Vec::new()));
     // Resolve both mirrors once for the whole batch rather than once per task.
@@ -282,9 +281,10 @@ pub async fn execute_downloads(
             let mut t = throttle.lock().unwrap();
             t.done += 1;
             let done = t.done;
-            let report = done >= t.next_report || done == total;
+            // Time-based, plus one guaranteed update when the batch ends.
+            let report = should_report(done == total, t.last_report.elapsed());
             if report {
-                t.next_report = done + report_every;
+                t.last_report = Instant::now();
             }
             drop(t);
 
@@ -331,8 +331,24 @@ pub async fn execute_downloads(
 /// Progress throttling state for [`execute_downloads`].
 struct Throttle {
     done: usize,
-    next_report: usize,
+    last_report: Instant,
 }
+
+/// Whether this completion should emit a progress update.
+///
+/// Split out of the stream closure so the cadence is testable without waiting on
+/// a real clock: `finished` always reports, otherwise the interval decides.
+fn should_report(finished: bool, since_last_report: Duration) -> bool {
+    finished || since_last_report >= REPORT_INTERVAL
+}
+
+/// How often a running batch reports progress, at most.
+///
+/// This used to be "ten reports per batch", which for a 3 700-asset install meant
+/// one update every ~370 files — a progress bar that looked hung. A time cadence
+/// instead keeps a UI live regardless of how many files the batch holds, and
+/// costs nothing when the download is faster than the interval.
+const REPORT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Default concurrency for asset downloads. Assets are many and small, so this is much higher than
 /// the conservative default used for large files like the client JAR.
@@ -923,8 +939,8 @@ mod tests {
     use super::{
         build_tasks_from_assets, build_tasks_from_version_json, dedupe_by_destination,
         download_from_candidates, download_from_url, evaluate_rules, execute_downloads,
-        select_native_artifact, Artifact, AssetObject, DownloadTask, Library, LibraryDownloads,
-        MirrorChain, OsRule, Rule, VersionJson,
+        select_native_artifact, should_report, Artifact, AssetObject, DownloadTask, Library,
+        LibraryDownloads, MirrorChain, OsRule, Rule, VersionJson,
     };
     #[cfg(feature = "tokio")]
     use crate::customize::HttpDownloader;
@@ -936,6 +952,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
     #[cfg(feature = "tokio")]
     use wiremock::matchers::{method, path};
     #[cfg(feature = "tokio")]
@@ -1544,6 +1561,15 @@ mod tests {
     }
 
     // ===== evaluate_rules =====
+
+    #[test]
+    fn progress_reports_on_a_time_cadence_not_a_file_count() {
+        assert!(!should_report(false, Duration::from_millis(0)));
+        assert!(!should_report(false, Duration::from_millis(99)));
+        assert!(should_report(false, Duration::from_millis(100)));
+        // The last file always reports, however recently the previous one did.
+        assert!(should_report(true, Duration::from_millis(0)));
+    }
 
     #[test]
     fn evaluate_rules_no_rules_means_download() {

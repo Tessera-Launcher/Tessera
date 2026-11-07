@@ -169,7 +169,14 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
             break Ok(());
         }
 
-        match event::poll(Duration::from_millis(250)) {
+        // A running download reports every 100 ms; poll faster than that so the
+        // bar actually moves instead of stepping four times a second.
+        let tick = if app.screen == Screen::Installing || install_rx.is_some() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(250)
+        };
+        match event::poll(tick) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                     handle_key(app, key.code, key.modifiers)

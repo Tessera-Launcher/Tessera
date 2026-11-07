@@ -77,8 +77,14 @@ mod tests {
 
     #[test]
     fn build_client_succeeds() {
-        let _client =
-            build_client(None, Duration::from_secs(15), Duration::from_secs(30), 16).unwrap();
+        let _client = build_client(
+            None,
+            Duration::from_secs(15),
+            Duration::from_secs(30),
+            16,
+            true,
+        )
+        .unwrap();
     }
 
     #[test]
