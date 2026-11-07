@@ -1,15 +1,19 @@
 //! `yaml` — a terminal Minecraft: Java Edition launcher.
 //!
-//! This build is the main screen only: it scans `<root>/versions`, lists what is
-//! installed, and shows the details a launch layer will need. Downloading and
-//! signing in are not wired up yet, and the UI says so instead of pretending.
+//! Portable by design: the executable plus a `data/` directory next to it is the
+//! whole installation. Credentials live in `data/凭据/账户/<player>.json`, one
+//! file per account.
 
+mod accounts;
 mod app;
 mod discover;
+mod login;
+mod paths;
 mod ui;
 
-use std::io::{self, Stdout};
+use std::io;
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -20,7 +24,9 @@ use crossterm::terminal::{
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 
-use crate::app::App;
+use crate::app::{App, Screen};
+use crate::login::LoginEvent;
+use crate::paths::Paths;
 
 fn main() -> std::process::ExitCode {
     let options = match Options::parse() {
@@ -32,15 +38,25 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    let mut app = App::new(options.root.clone(), discover::scan(&options.root));
-    if !app.versions.is_empty() {
-        app.log(format!(
-            "最新一项：{}（Java {}）",
-            app.versions[0].id,
-            app.versions[0]
-                .java
-                .map_or_else(|| "未指定".to_string(), |j| j.to_string())
-        ));
+    let data = Paths::discover();
+    if let Err(error) = data.ensure() {
+        eprintln!("无法创建 {}: {error}", data.root().display());
+        return std::process::ExitCode::FAILURE;
+    }
+
+    let root = options.root.clone().unwrap_or_else(|| data.game());
+    let accounts = accounts::list(&data.accounts());
+    let mut app = App::new(
+        root.clone(),
+        data.accounts(),
+        discover::scan(&root),
+        accounts,
+    );
+    app.log(format!("数据目录 {}", data.root().display()));
+    app.log(format!("凭据目录 {}", data.accounts().display()));
+
+    if options.login {
+        app.open_login();
     }
 
     if options.once {
@@ -57,16 +73,57 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// Interactive loop: draw, wait for a key or a tick, repeat.
+/// Interactive loop: collect events, then draw.
 fn run(app: &mut App) -> io::Result<()> {
     let mut terminal = enter()?;
+    let client = match reqwest::Client::builder()
+        .user_agent(concat!("yaml-launcher/", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            leave()?;
+            return Err(io::Error::other(error));
+        }
+    };
+
+    let mut login_rx: Option<Receiver<LoginEvent>> = None;
     let result = loop {
+        // A login thread is requested by the state machine and spawned here, so
+        // `app` never needs to know about threads or runtimes.
+        if let Some(identity) = app.pending_login.take() {
+            login_rx = Some(login::spawn(
+                client.clone(),
+                identity,
+                app.accounts_dir.clone(),
+            ));
+        }
+
+        // Drain whatever the login thread has reported since the last frame.
+        let mut disconnected = false;
+        if let Some(receiver) = &login_rx {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => app.handle_login_event(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if disconnected {
+            login_rx = None;
+        }
+
         if let Err(error) = terminal.draw(|frame| ui::draw(frame, app)) {
             break Err(error);
         }
         if app.should_quit {
             break Ok(());
         }
+
         match event::poll(Duration::from_millis(250)) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
@@ -84,9 +141,12 @@ fn run(app: &mut App) -> io::Result<()> {
 }
 
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    // Ctrl-C must work even though raw mode swallows the usual SIGINT.
     if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
         app.should_quit = true;
+        return;
+    }
+    if app.screen == Screen::Login {
+        app.handle_login_key(code, modifiers);
         return;
     }
     match code {
@@ -96,18 +156,19 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Home | KeyCode::Char('g') => app.select_first(),
         KeyCode::End | KeyCode::Char('G') => app.select_last(),
         KeyCode::Char('r') => app.reload(),
+        KeyCode::Char('l') => app.open_login(),
         KeyCode::Enter => app.not_implemented("安装/启动"),
         _ => {}
     }
 }
 
-fn enter() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
+fn enter() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
 
-    // A panic inside a raw-mode alternate screen leaves the user's terminal
-    // unusable, so restore before the default hook prints the message.
+    // A panic inside a raw-mode alternate screen leaves the terminal unusable,
+    // so restore it before the default hook prints anything.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
@@ -124,14 +185,13 @@ fn leave() -> io::Result<()> {
     Ok(())
 }
 
-/// Render one frame headlessly and print it. Lets the screen be inspected without
-/// a TTY (`yaml --once --dir /tmp/mdt-1.8.9`), and keeps the demo reproducible.
+/// Render one frame headlessly and print it, so the screen can be inspected
+/// without a TTY (`yaml --once --dir /tmp/minecraft`) and in tests.
 fn print_once(app: &mut App, width: u16, height: u16) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("headless terminal");
     terminal
         .draw(|frame| ui::draw(frame, app))
         .expect("draw to the test backend");
-
     for line in ui::buffer_lines(terminal.backend().buffer()) {
         println!("{line}");
     }
@@ -139,8 +199,11 @@ fn print_once(app: &mut App, width: u16, height: u16) {
 
 /// Parsed command line.
 struct Options {
-    root: PathBuf,
+    /// `--dir`; `None` means `data/游戏`.
+    root: Option<PathBuf>,
     once: bool,
+    /// Open the login overlay immediately (useful with `--once` for screenshots).
+    login: bool,
     width: u16,
     height: u16,
 }
@@ -148,8 +211,9 @@ struct Options {
 impl Options {
     /// `Ok(None)` means `--help` was printed and there is nothing to run.
     fn parse() -> Result<Option<Self>, String> {
-        let mut root = default_root();
+        let mut root = None;
         let mut once = false;
+        let mut login = false;
         let mut width = 100;
         let mut height = 28;
 
@@ -157,12 +221,13 @@ impl Options {
         while let Some(arg) = argv.next() {
             match arg.as_str() {
                 "--dir" => {
-                    root = PathBuf::from(
+                    root = Some(PathBuf::from(
                         argv.next()
                             .ok_or_else(|| "--dir 需要一个路径".to_string())?,
-                    );
+                    ));
                 }
                 "--once" => once = true,
+                "--login" => login = true,
                 "--width" | "--height" => {
                     let value = argv.next().ok_or_else(|| format!("{arg} 需要一个数字"))?;
                     let parsed: u16 = value
@@ -185,33 +250,35 @@ impl Options {
         Ok(Some(Options {
             root,
             once,
+            login,
             width,
             height,
         }))
     }
 }
 
-fn default_root() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".minecraft")
-}
-
 const HELP: &str = "\
-yaml — 终端 Minecraft Java 版启动器
+yaml — 终端 Minecraft Java 版启动器（便携版）
 
 用法:
   yaml [选项]
 
 选项:
-  --dir <路径>      .minecraft 目录（默认 $HOME/.minecraft）
-  --once            渲染一帧后退出，不需要 TTY（用于演示与截图）
+  --dir <路径>      .minecraft 目录（默认 <exe>/data/游戏）
+  --once            渲染一帧后退出，不需要 TTY
+  --login           启动时直接打开登录面板
   --width <列数>    与 --once 搭配（默认 100）
   --height <行数>   与 --once 搭配（默认 28）
   -h, --help        显示本帮助
 
-按键:
-  ↑/k ↓/j  选择    g/G 首尾    Enter 安装/启动（未实现）
-  r 重新扫描        q/Esc 退出";
+环境变量:
+  YAML_DATA         覆盖 data 目录（默认 <exe>/data）
+
+目录:
+  data/游戏/            游戏文件（versions/libraries/assets）
+  data/凭据/账户/       每个账户一个 json
+  data/日志/
+
+按键（主界面）:
+  ↑/k ↓/j 选择   g/G 首尾   l 登录   r 刷新   q/Esc 退出
+  Enter 安装/启动（未实现）";
