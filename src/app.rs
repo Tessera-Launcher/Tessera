@@ -16,6 +16,13 @@ use crate::session::SessionEvent;
 /// How many log lines to keep before dropping the oldest.
 const LOG_CAPACITY: usize = 500;
 
+/// Two left clicks on the same version row inside this window launch it.
+///
+/// 400 ms is the usual double-click threshold (Windows defaults to 500 ms and
+/// users rarely exceed it); terminals do not report double clicks, so the
+/// launcher has to measure them itself.
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Which layer is on top.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -327,6 +334,8 @@ pub struct App {
     list_offset: usize,
     /// Lines scrolled back from the newest log line; `0` follows the tail.
     pub log_scroll: usize,
+    /// When and where the last left click landed in the version list.
+    last_click: Option<(Instant, usize)>,
 }
 
 impl App {
@@ -366,6 +375,7 @@ impl App {
             layout: Layout::default(),
             list_offset: 0,
             log_scroll: 0,
+            last_click: None,
         };
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
@@ -592,8 +602,21 @@ impl App {
                 }
                 if self.layout.list.contains(column, row) {
                     let index = self.list_offset + (row - self.layout.list.y) as usize;
-                    if index < self.versions.len() {
-                        self.selected = index;
+                    if index >= self.versions.len() {
+                        return;
+                    }
+                    // Double click launches; a single one only selects.
+                    let now = Instant::now();
+                    let double = matches!(
+                        self.last_click,
+                        Some((at, previous)) if previous == index && now.duration_since(at) <= DOUBLE_CLICK
+                    );
+                    self.selected = index;
+                    if double {
+                        self.last_click = None;
+                        self.request_launch();
+                    } else {
+                        self.last_click = Some((now, index));
                     }
                 }
             }
@@ -1548,6 +1571,59 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         }
+    }
+
+    #[test]
+    fn double_clicking_a_row_launches_it() {
+        let mut app = laid_out();
+        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
+
+        // First click only selects.
+        app.handle_mouse(click(10, 6));
+        assert_eq!(app.selected, 1);
+        assert!(app.last_credentials.is_none(), "one click must not launch");
+
+        // Second click on the same row within the window launches.
+        app.handle_mouse(click(10, 6));
+        let credentials = app.last_credentials.expect("double click launches");
+        assert_eq!(credentials.user_type, "legacy");
+    }
+
+    #[test]
+    fn a_slow_second_click_does_not_launch() {
+        let mut app = laid_out();
+        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
+        app.handle_mouse(click(10, 6));
+        // Pretend the previous click was a second ago.
+        app.last_click = Some((Instant::now() - std::time::Duration::from_secs(1), 1));
+        app.handle_mouse(click(10, 6));
+        assert!(
+            app.last_credentials.is_none(),
+            "clicks outside the window are separate"
+        );
+    }
+
+    #[test]
+    fn double_clicking_a_different_row_only_selects() {
+        let mut app = laid_out();
+        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
+        app.handle_mouse(click(10, 5));
+        app.handle_mouse(click(10, 6));
+        assert_eq!(app.selected, 1);
+        assert!(app.last_credentials.is_none());
+    }
+
+    #[test]
+    fn a_double_click_signed_in_refreshes_instead_of_launching_blind() {
+        let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
+        app.layout.list = Area::new(1, 5, 40, 4);
+        app.handle_mouse(click(10, 5));
+        app.handle_mouse(click(10, 5));
+        assert_eq!(
+            app.pending_refresh,
+            Some(("1.20.1".to_string(), PathBuf::from("/acc/Steve.json"))),
+            "the launch path, refresh included, is what a double click runs"
+        );
     }
 
     #[test]
