@@ -1,0 +1,37 @@
+# Vendored from https://github.com/CCBlueX/minecraft-auth-rs (v0.1.1), which is a
+# Rust port of RaphiMC/MinecraftAuth. Trimmed down to what a launcher needs: sign
+# in as a given application identity (official launcher or a third-party Azure
+# app) and get the credentials for a Minecraft Java session.
+[workspace]
+
+[package]
+name = "minecraft-auth"
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.79"
+license = "LGPL-3.0-or-later"
+description = "Microsoft, Xbox Live and Minecraft Java Edition authentication"
+repository = "https://github.com/CCBlueX/minecraft-auth-rs"
+readme = "README.md"
+keywords = ["minecraft", "microsoft", "xbox-live", "authentication"]
+categories = ["authentication", "network-programming", "api-bindings"]
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time"] }
+# `rustls` is not optional: without a TLS feature reqwest only speaks plain
+# http, and every https request fails inside hyper-util with the misleading
+# "invalid URL, scheme is not http". Upstream's manifest left it out because its
+# consumers happened to enable it themselves (Cargo unifies features).
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+httpdate = "1"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+rand_core = { version = "0.6", features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

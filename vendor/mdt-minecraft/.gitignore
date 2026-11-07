@@ -1,0 +1,11 @@
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+.history/
+.idea/*
+
+/target/
+
+# coverage artifacts
+/lcov.info

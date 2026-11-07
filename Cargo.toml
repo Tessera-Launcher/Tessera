@@ -1,0 +1,29 @@
+[workspace]
+# The vendored crates are their own workspace roots (each has a [workspace]
+# table of its own), so they are excluded here and consumed as path deps later.
+exclude = ["vendor"]
+
+[package]
+name = "yaml-launcher"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A terminal Minecraft: Java Edition launcher"
+license = "GPL-3.0-or-later"
+default-run = "yaml"
+
+[[bin]]
+name = "yaml"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

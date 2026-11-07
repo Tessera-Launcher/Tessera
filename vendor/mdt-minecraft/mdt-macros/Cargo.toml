@@ -1,0 +1,16 @@
+[package]
+name = "mdt-macros"
+version = "0.4.3"
+edition = "2021"
+rust-version = "1.85.0"
+homepage = "https://github.com/Lavaver/Minecraft-Download-Toolkit"
+description = "Compile-time provider codegen for MDT"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+toml = "1.1.8"
