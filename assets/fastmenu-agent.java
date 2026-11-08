@@ -10,8 +10,9 @@ import java.lang.reflect.Method;
  * At startup Minecraft creates a LoadingOverlay (Mojang logo plus a one-second
  * fade) and then a TitleScreen with its own two-second widget fade. Resources
  * are already loaded when the overlay starts fading, so both waits are pure
- * presentation. This agent polls the public Gui screen/overlay API and moves
- * the private fade timestamps into the past, or clears TitleScreen.fading.
+ * presentation. This agent polls the public Gui screen/overlay API, skips the
+ * logo fade-in, removes the overlay once tick() has run onFinish, and clears
+ * TitleScreen.fading.
  *
  * It is reflective on purpose: 26.x class names are stable, but the agent must
  * not depend on Minecraft being present at agent-build time. All failures are
@@ -82,19 +83,24 @@ public final class Agent {
                     if (name.endsWith("LoadingOverlay") || name.equals("LoadingOverlay")) {
                         settled = false;
                         long now = utilMillis();
-                        // The overlay's own onFinish callback runs from tick()
-                        // only when fadeOutStart is set; do not set it before
-                        // that, or the resource-load callback is skipped.
+                        // The overlay's own tick() calls onFinish() and only
+                        // then sets fadeOutStart. Once that has happened the
+                        // screen is initialized; remove the overlay directly
+                        // instead of rewriting its timestamp. Writing
+                        // fadeOutStart is what broke 26.2 when an AOT cache
+                        // compiled the overlay: the cached code kept seeing a
+                        // stale timestamp and never reached the >=2s removal.
                         long fadeOut = getLong(overlay, "fadeOutStart", -1L);
-                        if (now >= 0L && fadeOut > 0L && overlay != fadeOutFixed) {
-                            // LoadingOverlay compares against Util.getMillis(),
-                            // which is SDL's tick clock, not System.nanoTime().
-                            setLong(overlay, "fadeOutStart", now - 3000L);
-                            fadeOutFixed = overlay;
-                            if (Boolean.getBoolean("yaml.fastmenu.debug")) {
-                                System.out.println("[yaml-fastmenu] cleared LoadingOverlay.fadeOutStart");
+                        if (fadeOut > 0L && overlay != fadeOutFixed) {
+                            if (removeOverlay(gui, overlay)) {
+                                fadeOutFixed = overlay;
+                                if (Boolean.getBoolean("yaml.fastmenu.debug")) {
+                                    System.out.println("[yaml-fastmenu] removed LoadingOverlay");
+                                }
                             }
                         }
+                        // Skip the 500ms logo fade-in as well. This timestamp
+                        // is only read by the overlay's own render code.
                         if (now >= 0L && getLong(overlay, "fadeInStart", -1L) == -1L && overlay != fadeInFixed) {
                             setLong(overlay, "fadeInStart", now - 3000L);
                             fadeInFixed = overlay;
@@ -118,6 +124,17 @@ public final class Agent {
                 // Minecraft is not up yet, or a reflective field moved.
             }
             sleep(10);
+        }
+    }
+
+    private static boolean removeOverlay(Object gui, Object overlay) {
+        try {
+            Class<?> overlayType = overlay.getClass().getSuperclass();
+            Method setter = gui.getClass().getMethod("setOverlay", overlayType);
+            setter.invoke(gui, new Object[] { null });
+            return true;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 

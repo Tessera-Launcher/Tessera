@@ -307,9 +307,12 @@ Mod Loader 安装都不做这一步。
 启动都带一个小 Java agent：`data/缓存/fastmenu-agent.jar`。
 
 - `LoadingOverlay` 的 1 秒淡出 + 1 秒 logo 淡出、`TitleScreen` 的 2 秒控件淡入，
-  在资源加载完成后只是表现层等待；agent 通过反射把 `fadeOutStart`/`fadeInStart`
-  拨到过去，并把 `TitleScreen.fading` 置 false，菜单直接以最终不透明度出现
-- 只读反射、不修改 client jar；字段改名/不存在就静默 no-op，不会阻止启动
+  在资源加载完成后只是表现层等待；agent 等 overlay 的自然 `tick()` 调用完 `onFinish`
+  后直接 `Gui.setOverlay(null)`，不再改写 `fadeOutStart` 时间戳，同时把
+  `fadeInStart` 拨到过去、把 `TitleScreen.fading` 置 false
+- 不写 `fadeOutStart` 是为了兼容 AOT cache：26.2 的缓存训练时带过旧 agent，
+  改写时间戳会被缓存代码看成未来时间而永久停在 logo；直接移除 overlay 与缓存无关
+- 只读反射/公开 `setOverlay`，不修改 client jar；字段或方法不存在就静默 no-op
 - 对 26.x 原版、Fabric/Forge/NeoForge 等 profile 都生效（只要 26.x 类名不变）
 - Agent 同时参与 AOT 训练和生产启动，保证 AOT cache 的 JVM 参数一致
 
