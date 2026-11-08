@@ -6,6 +6,7 @@
 
 mod accounts;
 mod app;
+mod cleanup;
 mod discover;
 mod install;
 mod launch;

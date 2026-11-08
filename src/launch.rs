@@ -358,6 +358,8 @@ struct RawLibrary {
 struct Downloads {
     #[serde(default)]
     artifact: Option<Artifact>,
+    #[serde(default)]
+    classifiers: Option<HashMap<String, Artifact>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -435,6 +437,57 @@ impl Merged {
         }
         paths
     }
+}
+
+/// Everything under `libraries/` and `assets/` that one version may ask for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct References {
+    /// Absolute paths under `libraries/`.
+    pub libraries: Vec<PathBuf>,
+    /// Asset index id (`assets/indexes/<id>.json`), when the profile names one.
+    pub asset_index: Option<String>,
+}
+
+/// The files `version_id` may need, for the cleaner in [`crate::cleanup`].
+///
+/// Deliberately a superset of what this machine's launch would use: every
+/// declared classifier (not just this OS's) and the Maven-derived path for
+/// libraries without a `downloads` block. A cleaner may only delete what this
+/// set leaves out, so being generous here is what makes the sweep safe.
+pub fn references(root: &Path, version_id: &str) -> Result<References, String> {
+    let merged = merge_chain(root, version_id)?;
+    let libraries_dir = root.join("libraries");
+    let mut libraries = Vec::new();
+
+    for library in &merged.libraries {
+        match library
+            .downloads
+            .artifact
+            .as_ref()
+            .and_then(|artifact| artifact.path.clone())
+        {
+            Some(path) => libraries.push(libraries_dir.join(path)),
+            None => {
+                if let Some(path) = maven_path(&library.name) {
+                    libraries.push(libraries_dir.join(path));
+                }
+            }
+        }
+        if let Some(classifiers) = &library.downloads.classifiers {
+            for artifact in classifiers.values() {
+                if let Some(path) = &artifact.path {
+                    libraries.push(libraries_dir.join(path));
+                }
+            }
+        }
+    }
+
+    libraries.sort();
+    libraries.dedup();
+    Ok(References {
+        libraries,
+        asset_index: merged.asset_index_id,
+    })
 }
 
 fn features(custom_resolution: bool) -> HashMap<&'static str, bool> {

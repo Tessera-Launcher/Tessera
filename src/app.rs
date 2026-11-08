@@ -7,6 +7,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::accounts::{self, Account as SavedAccount};
+use crate::cleanup;
 use crate::discover::{self, LocalVersion};
 use crate::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
 use crate::launch;
@@ -756,6 +757,23 @@ impl App {
         // to become visible again (`h` would otherwise show a phantom base).
         self.all_versions = discover::scan(&self.root);
         self.apply_version_filter();
+
+        // `libraries/` and `assets/` are shared by every version, so the delete
+        // above only freed the profile. Reclaim what nothing on disk still
+        // references — the alternative is a `.minecraft` that never shrinks.
+        let installed: Vec<String> = self
+            .all_versions
+            .iter()
+            .map(|version| version.id.clone())
+            .collect();
+        let sweep = cleanup::sweep(&self.root, &installed);
+        let note = sweep.note();
+        if !note.is_empty() {
+            self.log(format!("清理库/资源{s}", s = note.trim_start_matches('；')));
+        }
+        if let Some(detail) = sweep.detail() {
+            self.log(detail);
+        }
         self.selected = self.selected.min(self.versions.len().saturating_sub(1));
 
         // `removed` starts with the selected version, so index 0 is the one the
@@ -767,9 +785,9 @@ impl App {
         };
         let size = discover::human_size(freed);
         self.status = match failure {
-            None => format!("已卸载 {what}（释放 {size}）"),
+            None => format!("已卸载 {what}（释放 {size}）{note}"),
             Some((target, error)) => {
-                format!("已卸载 {what}（释放 {size}），{target} 失败：{error}")
+                format!("已卸载 {what}（释放 {size}），{target} 失败：{error}{note}")
             }
         };
         self.log(self.status.clone());
@@ -1861,6 +1879,53 @@ mod tests {
             "the base is no longer hidden now that nothing inherits it"
         );
         assert_eq!(app.hidden_base_count(), 0);
+    }
+
+    #[test]
+    fn uninstall_reclaims_libraries_nothing_else_uses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let shared = "com/example/shared/1.0/shared-1.0.jar";
+        let own = "com/example/only189/1.0/only189-1.0.jar";
+        let body = |id: &str, extra: &str| {
+            let sep = if extra.is_empty() { "" } else { "," };
+            format!(
+                r#"{{"id":"{id}","mainClass":"net.minecraft.client.main.Main","javaVersion":{{"majorVersion":8}},"libraries":[{{"name":"com.example:shared:1.0","downloads":{{"artifact":{{"path":"{shared}"}}}}}}{sep}{extra}]}}"#
+            )
+        };
+
+        write_version(root, "1.20.1", &body("1.20.1", ""));
+        write_version(
+            root,
+            "1.8.9",
+            &body("1.8.9", &format!(
+                r#"{{"name":"com.example:only189:1.0","downloads":{{"artifact":{{"path":"{own}"}}}}}}"#
+            )),
+        );
+        for relative in [shared, own] {
+            let file = root.join("libraries").join(relative);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, vec![b'x'; 10]).unwrap();
+        }
+
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        select(&mut app, "1.8.9");
+        app.request_uninstall();
+        app.request_uninstall();
+
+        assert!(
+            root.join("libraries").join(shared).is_file(),
+            "1.20.1 still needs the shared jar"
+        );
+        assert!(
+            !root.join("libraries").join(own).exists(),
+            "only the removed version wanted this jar"
+        );
+        assert!(
+            app.status.contains("清理库/资源"),
+            "the status must report the sweep: {}",
+            app.status
+        );
     }
 
     #[test]
