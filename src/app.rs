@@ -183,6 +183,10 @@ pub struct DownloadUi {
     pub all: Vec<RemoteVersion>,
     /// The filtered view that is actually drawn and picked from.
     pub versions: Vec<RemoteVersion>,
+    /// Folded snapshot families, by key, that are currently opened.
+    pub expanded: Vec<String>,
+    /// The filtered list laid out as drawn lines (see [`crate::version_tree`]).
+    pub rows: Vec<crate::version_tree::Row>,
     /// Search text, matched against the version id.
     pub query: String,
     pub filter: VersionFilter,
@@ -210,6 +214,8 @@ impl Default for DownloadUi {
             stage: DownloadStage::LoadingVersions,
             all: Vec::new(),
             versions: Vec::new(),
+            expanded: Vec::new(),
+            rows: Vec::new(),
             query: String::new(),
             filter: VersionFilter::All,
             picked: 0,
@@ -249,6 +255,49 @@ impl DownloadUi {
         self.versions.get(self.picked)
     }
 
+    /// The drawn row the highlight is on.
+    ///
+    /// `picked` is a version index, and one version can be drawn twice (as the
+    /// newest member of an opened group, which is also that group's header). The
+    /// child row wins, because that is the line that stands for the version.
+    pub fn cursor(&self) -> usize {
+        self.rows
+            .iter()
+            .position(|row| matches!(row.kind, crate::version_tree::RowKind::Version(index) if index == self.picked))
+            .or_else(|| self.rows.iter().position(|row| row.anchor() == self.picked))
+            .unwrap_or(0)
+    }
+
+    /// Rows the keyboard walks: versions, and groups that are folded.
+    pub fn stops(&self) -> Vec<usize> {
+        (0..self.rows.len())
+            .filter(|index| self.rows[*index].is_stop())
+            .collect()
+    }
+
+    /// Re-lay the filtered list out. Folding only happens in the "全部" view with
+    /// no search: a search must never hide the version it matched.
+    pub fn rebuild_rows(&mut self) {
+        let tree = self.filter == VersionFilter::All && self.query.trim().is_empty();
+        self.rows = crate::version_tree::build(&self.versions, &self.expanded, tree);
+    }
+
+    /// The drawn row of the folded group the cursor is in, if any: the header
+    /// itself when the header is selected, or the one above an opened member.
+    fn group_row_at_cursor(&self) -> Option<usize> {
+        let cursor = self.cursor();
+        let rows = &self.rows;
+        if matches!(
+            rows.get(cursor)?.kind,
+            crate::version_tree::RowKind::Group { .. }
+        ) {
+            return Some(cursor);
+        }
+        rows[..cursor]
+            .iter()
+            .rposition(|row| matches!(row.kind, crate::version_tree::RowKind::Group { .. }))
+    }
+
     pub fn picked_loader(&self) -> Loader {
         self.loaders
             .get(self.loader_pick)
@@ -273,6 +322,10 @@ impl DownloadUi {
             .and_then(|id| self.versions.iter().position(|version| version.id == id))
             .unwrap_or(0)
             .min(self.versions.len().saturating_sub(1));
+        // A new list folds back up: keeping families open across a filter change
+        // would leave rows that are no longer on screen opened.
+        self.expanded.clear();
+        self.rebuild_rows();
         self.refresh_loaders();
     }
 
@@ -1326,6 +1379,11 @@ impl App {
                     }
                     KeyCode::Up | KeyCode::Char('k') => self.picker_move(-1),
                     KeyCode::Down | KeyCode::Char('j') => self.picker_move(1),
+                    // Tree controls: `←` closes, `→` opens, `Space` flips whichever
+                    // group the cursor is in (its header, or one of its members).
+                    KeyCode::Left => self.toggle_group_at_cursor(Some(false)),
+                    KeyCode::Right => self.toggle_group_at_cursor(Some(true)),
+                    KeyCode::Char(' ') => self.toggle_group_at_cursor(None),
                     KeyCode::Enter => self.start_install(),
                     _ => {}
                 }
@@ -1349,12 +1407,16 @@ impl App {
     fn picker_move(&mut self, delta: i32) {
         match self.download.focus {
             PickerFocus::Versions | PickerFocus::Search => {
-                let count = self.download.versions.len();
-                if count == 0 {
+                // Walk the drawn rows, not the filtered list: a folded group is one
+                // stop, however many snapshots it hides.
+                let stops = self.download.stops();
+                if stops.is_empty() {
                     return;
                 }
-                let index = (self.download.picked as i32 + delta).rem_euclid(count as i32);
-                self.download.picked = index as usize;
+                let cursor = self.download.cursor();
+                let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
+                let next = (position as i32 + delta).rem_euclid(stops.len() as i32) as usize;
+                self.download.picked = self.download.rows[stops[next]].anchor();
                 self.download.refresh_loaders();
             }
             PickerFocus::Loaders => {
@@ -1433,12 +1495,9 @@ impl App {
                     self.download.apply_filter();
                 } else if over_versions {
                     self.download.focus = PickerFocus::Versions;
-                    let index = self.layout.download_offset
+                    let drawn = self.layout.download_offset
                         + (row - self.layout.download_versions.y) as usize;
-                    if index < self.download.versions.len() {
-                        self.download.picked = index;
-                        self.download.refresh_loaders();
-                    }
+                    self.pick_version_row(drawn);
                 } else if over_loaders {
                     self.download.focus = PickerFocus::Loaders;
                     let index = (row - self.layout.download_loaders.y) as usize;
@@ -1449,6 +1508,52 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Clicking a drawn row: a version selects it, a folded group opens or closes.
+    fn pick_version_row(&mut self, drawn: usize) {
+        let Some(row) = self.download.rows.get(drawn).cloned() else {
+            return;
+        };
+        match row.kind {
+            crate::version_tree::RowKind::Version(index) => {
+                self.download.picked = index;
+                self.download.refresh_loaders();
+            }
+            // The row says "there is more behind me", so clicking it is what unfolds
+            // it; clicking the opened header folds it back up.
+            crate::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
+        }
+    }
+
+    /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
+    /// `drawn` is `None`.
+    fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
+        let Some(crate::version_tree::RowKind::Group {
+            key,
+            first,
+            expanded,
+            ..
+        }) = self.download.rows.get(drawn).map(|row| row.kind.clone())
+        else {
+            return;
+        };
+        let open = expand.unwrap_or(!expanded);
+        self.download.expanded.retain(|open_key| open_key != &key);
+        if open {
+            self.download.expanded.push(key);
+        }
+        self.download.picked = first;
+        self.download.rebuild_rows();
+        self.download.refresh_loaders();
+    }
+
+    /// `←` folds the group the cursor is in, `→` unfolds it, `Space` flips it.
+    fn toggle_group_at_cursor(&mut self, expand: Option<bool>) {
+        let Some(drawn) = self.download.group_row_at_cursor() else {
+            return;
+        };
+        self.toggle_group(drawn, expand);
     }
 
     fn start_install(&mut self) {
@@ -3051,6 +3156,149 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.layout.download_versions = Area::new(1, 5, 40, 10);
         app.layout.download_loaders = Area::new(45, 5, 20, 10);
         app
+    }
+
+    /// A picker whose "全部" list contains a real snapshot cycle.
+    fn tree_picker() -> App {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            remote("1.21.8", "release"),
+            remote("1.21.9-pre3", "snapshot"),
+            remote("1.21.9-pre2", "snapshot"),
+            remote("1.21.9-pre1", "snapshot"),
+            remote("1.21.7", "release"),
+        ]));
+        app.layout.download_offset = 0;
+        app.layout.download_versions = Area::new(1, 5, 40, 10);
+        app.layout.download_loaders = Area::new(45, 5, 20, 10);
+        app
+    }
+
+    #[test]
+    fn the_all_view_folds_a_snapshot_cycle_into_one_row() {
+        let app = tree_picker();
+        let rows = &app.download.rows;
+        assert_eq!(rows.len(), 3, "five versions, one folded cycle: {rows:?}");
+        assert!(matches!(
+            rows[1].kind,
+            crate::version_tree::RowKind::Group {
+                first: 1,
+                last: 3,
+                expanded: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            crate::version_tree::title(&app.download.versions, 1, 3),
+            "1.21.9-pre3 ~ 1.21.9-pre1"
+        );
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
+    }
+
+    #[test]
+    fn clicking_a_folded_group_unfolds_it_and_the_opened_header_folds_it_back() {
+        let mut app = tree_picker();
+
+        // Row 1 is the folded cycle.
+        app.handle_mouse(click(10, 6));
+        assert_eq!(app.download.expanded, ["1.21.9-pre".to_string()]);
+        assert_eq!(app.download.rows.len(), 6, "header plus three members");
+        assert_eq!(
+            app.download.picked_version().unwrap().id,
+            "1.21.9-pre3",
+            "unfolding selects the newest member"
+        );
+
+        // The opened header is still row 1, now a toggle that folds it back.
+        app.handle_mouse(click(10, 6));
+        assert!(app.download.expanded.is_empty());
+        assert_eq!(app.download.rows.len(), 3);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
+
+        // And a member row selects that member.
+        app.handle_mouse(click(10, 6));
+        app.handle_mouse(click(10, 8)); // second member: pre2
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
+    }
+
+    #[test]
+    fn the_keyboard_treats_a_folded_group_as_one_stop() {
+        let mut app = tree_picker();
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(
+            app.download.picked_version().unwrap().id,
+            "1.21.9-pre3",
+            "the folded cycle is one step, not three"
+        );
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.7");
+        // Wrapping goes back to the first row.
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
+    }
+
+    #[test]
+    fn the_arrow_keys_open_and_close_the_group_under_the_cursor() {
+        let mut app = tree_picker();
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE); // on the folded cycle
+        app.handle_download_key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.download.expanded.len(), 1);
+        assert_eq!(app.download.rows.len(), 6);
+
+        // Inside an opened group the arrows reach the members individually.
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
+
+        // `←` closes the group this member belongs to.
+        app.handle_download_key(KeyCode::Left, KeyModifiers::NONE);
+        assert!(app.download.expanded.is_empty());
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
+
+        // `Space` flips it, and does nothing on a plain version.
+        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.download.expanded.len(), 1);
+        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(app.download.expanded.is_empty());
+        app.handle_download_key(KeyCode::Up, KeyModifiers::NONE); // 1.21.8
+        let before = app.download.rows.clone();
+        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.download.rows, before, "a release has no children");
+    }
+
+    #[test]
+    fn other_filters_and_a_search_keep_every_version_on_its_own_row() {
+        let mut app = tree_picker();
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE); // 正式版
+        assert_eq!(app.download.filter, VersionFilter::Release);
+        assert_eq!(app.download.rows.len(), app.download.versions.len());
+        assert!(app
+            .download
+            .rows
+            .iter()
+            .all(|row| matches!(row.kind, crate::version_tree::RowKind::Version(_))));
+
+        // Back to "全部", then search: a folded group would hide the match.
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.download.filter, VersionFilter::All);
+        app.handle_download_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "pre2".chars() {
+            app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.download.versions.len(), 1);
+        assert_eq!(app.download.rows.len(), 1, "the match is its own row");
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
+    }
+
+    #[test]
+    fn installing_from_a_folded_group_installs_its_newest_member() {
+        let mut app = tree_picker();
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        let (version, _) = app.pending_install.clone().expect("an install started");
+        assert_eq!(version, "1.21.9-pre3");
     }
 
     #[test]

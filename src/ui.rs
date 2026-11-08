@@ -511,13 +511,34 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // ---- versions ----
     let focused = app.download.focus == crate::app::PickerFocus::Versions;
+    // The picker covers the footer, so the fold hint lives in the pane's title
+    // rather than in a key label nobody can see.
+    let folded = app
+        .download
+        .rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.kind,
+                crate::version_tree::RowKind::Group {
+                    expanded: false,
+                    ..
+                }
+            )
+        })
+        .count();
+    let versions_title = if folded > 0 {
+        format!(" 版本 · {folded} 组折叠 · Space 展开 ")
+    } else {
+        " 版本 ".to_string()
+    };
     let versions_block = Block::bordered()
-        .title(Line::from(" 版本 "))
+        .title(Line::from(versions_title))
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let versions_inner = versions_block.inner(versions_area);
     frame.render_widget(versions_block, versions_area);
     let visible = versions_inner.height.saturating_sub(1) as usize;
-    if app.download.versions.is_empty() {
+    if app.download.rows.is_empty() {
         app.layout.download_versions = Area::default();
         frame.render_widget(
             Paragraph::new(vec![
@@ -697,13 +718,18 @@ fn draw_filter_bar(
 }
 
 /// The version rows of the picker, header included.
+///
+/// The list is drawn from `download.rows`, so a folded snapshot family takes one
+/// line and an opened one shows its members indented under the header. `picked`
+/// and `versions` are untouched by the folding: a row is only an index into them.
 fn draw_version_rows(
     frame: &mut Frame,
     inner: Rect,
     download: &crate::app::DownloadUi,
     visible: usize,
 ) -> (usize, Area) {
-    let offset = download.picked.saturating_sub(visible.saturating_sub(1));
+    let cursor = download.cursor();
+    let offset = cursor.saturating_sub(visible.saturating_sub(1));
     // Data rows only: the header above them is not a clickable version.
     let hit = Area::new(
         inner.x,
@@ -711,34 +737,69 @@ fn draw_version_rows(
         inner.width,
         inner.height.saturating_sub(1),
     );
+    let version = |index: usize| &download.versions[index];
     let rows: Vec<Row> = download
-        .versions
+        .rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
-        .map(|(index, version)| {
-            let selected = index == download.picked;
-            let mut row = Row::new(vec![
-                Cell::from(Line::from(vec![
-                    Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
-                    Span::styled(
+        .map(|(index, drawn)| {
+            let selected = index == cursor;
+            let dim = Style::new().fg(DIM);
+
+            // Marker column, then one indent step per tree level, then the branch
+            // marker for a group. A plain version keeps the old two-column look.
+            let mut label = vec![Span::styled(
+                if selected { "▶ " } else { "  " },
+                Style::new().fg(ACCENT),
+            )];
+            for _ in 0..drawn.depth {
+                label.push(Span::styled("  ", Style::new()));
+            }
+
+            let (name, kind, date) = match &drawn.kind {
+                crate::version_tree::RowKind::Version(index) => {
+                    let version = version(*index);
+                    (
                         version.id.clone(),
-                        if selected {
-                            Style::new().fg(ACCENT)
-                        } else {
-                            Style::new().fg(Color::White)
-                        },
-                    ),
-                ])),
-                Cell::from(Line::from(Span::styled(
-                    version.kind.clone(),
-                    Style::new().fg(kind_color(&version.kind)),
-                ))),
-                Cell::from(Line::from(Span::styled(
-                    version.released.chars().take(10).collect::<String>(),
-                    Style::new().fg(DIM),
-                ))),
+                        Span::styled(
+                            version.kind.clone(),
+                            Style::new().fg(kind_color(&version.kind)),
+                        ),
+                        version.released.chars().take(10).collect::<String>(),
+                    )
+                }
+                crate::version_tree::RowKind::Group {
+                    first,
+                    last,
+                    expanded,
+                    ..
+                } => {
+                    label.push(Span::styled(
+                        if *expanded { "▾ " } else { "▸ " },
+                        Style::new().fg(ACCENT),
+                    ));
+                    (
+                        crate::version_tree::title(&download.versions, *first, *last),
+                        Span::styled("快照", dim),
+                        format!("{} 个", last - first + 1),
+                    )
+                }
+            };
+            label.push(Span::styled(
+                name,
+                if selected {
+                    Style::new().fg(ACCENT)
+                } else {
+                    Style::new().fg(Color::White)
+                },
+            ));
+
+            let mut row = Row::new(vec![
+                Cell::from(Line::from(label)),
+                Cell::from(Line::from(kind)),
+                Cell::from(Line::from(Span::styled(date, dim))),
             ]);
             if selected {
                 row = row.style(Style::new().bg(Color::Rgb(0x26, 0x28, 0x2e)));
@@ -2190,6 +2251,91 @@ mod tests {
         assert!(screen.contains("Fabric"), "{screen}");
         assert!(screen.contains("仅安装原版"), "{screen}");
         assert!(app.layout.download_versions.height > 0);
+    }
+
+    /// A picker with a release, a folded pre-release cycle, and an older release.
+    fn tree_picker() -> App {
+        let versions = [
+            ("1.21.8", "release"),
+            ("1.21.9-pre3", "snapshot"),
+            ("1.21.9-pre2", "snapshot"),
+            ("1.21.9-pre1", "snapshot"),
+            ("1.21.7", "release"),
+        ];
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(
+            versions
+                .iter()
+                .map(|(id, kind)| crate::install::RemoteVersion {
+                    id: id.to_string(),
+                    kind: kind.to_string(),
+                    released: "2025-01-01T00:00:00+00:00".to_string(),
+                })
+                .collect(),
+        ));
+        app
+    }
+
+    #[test]
+    fn the_all_view_draws_a_snapshot_cycle_as_one_folded_line() {
+        let mut app = tree_picker();
+        let screen = render(&mut app, 110, 28).join("\n");
+
+        // Releases keep the old two-column look, one line each.
+        assert!(screen.contains("▶ 1.21.8"), "{screen}");
+        assert!(screen.contains("  1.21.7"), "{screen}");
+        // The whole cycle is one line, marked as foldable and counted.
+        assert!(screen.contains("▸ 1.21.9-pre3 ~ 1.21.9-pre1"), "{screen}");
+        assert!(screen.contains("3 个"), "{screen}");
+        // None of the members is drawn while the cycle is folded.
+        assert!(
+            !screen.contains("1.21.9-pre2"),
+            "a folded cycle must not list its members:\n{screen}"
+        );
+        // Three rows drawn: 1.21.8, the folded cycle, 1.21.7.
+        assert_eq!(app.download.rows.len(), 3);
+    }
+
+    #[test]
+    fn an_opened_cycle_is_drawn_indented_under_its_header() {
+        let mut app = tree_picker();
+        // Draw once, then click the folded cycle: the second data row.
+        let before = render(&mut app, 110, 28).join("\n");
+        let area = app.layout.download_versions;
+        app.handle_mouse(click(area.x + 3, area.y + 1));
+        let opened = render(&mut app, 110, 28).join("\n");
+        assert!(opened.contains("▾ 1.21.9-pre3 ~ 1.21.9-pre1"), "{opened}");
+
+        // Members sit one level in: the selection marker, two spaces, then the id.
+        assert!(opened.contains("▶   1.21.9-pre3"), "{opened}");
+        assert!(opened.contains("    1.21.9-pre2"), "{opened}");
+        assert!(opened.contains("    1.21.9-pre1"), "{opened}");
+        // The rows that were not folded are untouched.
+        assert!(opened.contains("  1.21.8"), "{opened}");
+        assert!(opened.contains("  1.21.7"), "{opened}");
+        assert!(before.contains("▶ 1.21.8"), "{before}");
+    }
+
+    #[test]
+    fn the_version_title_says_that_something_is_folded_and_how_to_open_it() {
+        let mut app = tree_picker();
+        let screen = render(&mut app, 110, 28).join("\n");
+        assert!(screen.contains("1 组折叠"), "{screen}");
+        assert!(screen.contains("Space 展开"), "{screen}");
+
+        // Opening it drops the hint, since nothing is folded any more.
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.download.expanded.len(), 1);
+        let screen = render(&mut app, 110, 28).join("\n");
+        assert!(!screen.contains("组折叠"), "{screen}");
+
+        // The flat views have nothing to fold, so no hint either.
+        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.download.filter, crate::app::VersionFilter::Release);
+        let screen = render(&mut app, 110, 28).join("\n");
+        assert!(!screen.contains("组折叠"), "{screen}");
     }
 
     #[test]

@@ -15,6 +15,7 @@ mod login;
 mod paths;
 mod session;
 mod ui;
+mod version_tree;
 
 use std::io;
 use std::path::PathBuf;
