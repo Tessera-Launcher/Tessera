@@ -478,6 +478,8 @@ pub struct Layout {
     /// The picker's search box and one area per kind filter, in `VersionFilter::ALL` order.
     pub download_search: Area,
     pub download_filters: Vec<Area>,
+    /// One area per source chip in the picker's bottom-right switch.
+    pub download_sources: Vec<Area>,
     /// Clickable key hints in the footer.
     pub buttons: Vec<Button>,
 }
@@ -1327,6 +1329,23 @@ impl App {
         self.source.label()
     }
 
+    /// Switch where downloads come from. Deliberately not persisted: the next
+    /// start falls back to the default (or `--mirror`), so a one-off switch does
+    /// not quietly become the new normal.
+    pub fn set_source(&mut self, source: crate::install::Source) {
+        if self.source == source {
+            return;
+        }
+        self.source = source;
+        self.log(format!("下载源：{}", source.label()));
+        self.status = format!("下载源：{}", source.label());
+    }
+
+    /// `s` in the picker: the other source.
+    pub fn toggle_source(&mut self) {
+        self.set_source(self.source.next());
+    }
+
     /// Open the picker and ask the main loop to fetch the version list.
     pub fn open_download(&mut self) {
         self.download = DownloadUi::default();
@@ -1383,6 +1402,7 @@ impl App {
                     KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
                     KeyCode::Tab => self.download.focus = self.download.focus.next(),
                     KeyCode::Char('/') => self.download.focus = PickerFocus::Search,
+                    KeyCode::Char('s') => self.toggle_source(),
                     KeyCode::Char('f') => {
                         self.download.filter = self.download.filter.next();
                         self.download.apply_filter();
@@ -1488,6 +1508,13 @@ impl App {
             .download_filters
             .iter()
             .position(|area| area.contains(column, row));
+        // The source switch sits inside the loader pane, so it has to be tested
+        // before the pane's rows are.
+        let source_chip = self
+            .layout
+            .download_sources
+            .iter()
+            .position(|area| area.contains(column, row));
 
         match event.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -1512,6 +1539,11 @@ impl App {
                 } else if let Some(index) = chip {
                     self.download.filter = VersionFilter::ALL[index];
                     self.download.apply_filter();
+                } else if let Some(index) = source_chip {
+                    // The switch lives in the loader pane, so clicking it focuses
+                    // that pane like any other click there would.
+                    self.download.focus = PickerFocus::Loaders;
+                    self.set_source(crate::install::Source::ALL[index]);
                 } else if over_versions_rows {
                     self.download.focus = PickerFocus::Versions;
                     let drawn = self.layout.download_offset
@@ -3697,6 +3729,50 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.pending_install.is_none());
         assert_eq!(app.screen, Screen::Download);
+    }
+
+    #[test]
+    fn the_picker_starts_on_bmclapi_and_s_toggles_the_source() {
+        let mut app = downloader();
+        assert_eq!(
+            app.source,
+            crate::install::Source::Bmclapi,
+            "the default source"
+        );
+        assert_eq!(app.source_label(), "BMCLAPI");
+
+        app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(app.source, crate::install::Source::Mojang);
+        assert_eq!(app.source_label(), "官方源");
+        assert!(app.log.iter().any(|line| line.contains("下载源：官方源")));
+
+        app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(
+            app.source,
+            crate::install::Source::Bmclapi,
+            "the switch is a two-way toggle"
+        );
+    }
+
+    #[test]
+    fn clicking_a_source_chip_switches_the_source() {
+        let mut app = laid_out_picker();
+        app.layout.download_sources = vec![Area::new(50, 14, 8, 1), Area::new(58, 14, 10, 1)];
+
+        app.handle_mouse(click(52, 14));
+        assert_eq!(
+            app.source,
+            crate::install::Source::Mojang,
+            "the first chip is 官方源"
+        );
+        assert_eq!(app.download.focus, PickerFocus::Loaders);
+
+        app.handle_mouse(click(60, 14));
+        assert_eq!(app.source, crate::install::Source::Bmclapi);
+
+        // The chips sit on the pane's last row, which is not a loader row.
+        assert_eq!(app.download.loader_pick, 0, "no loader was picked");
+        assert_eq!(app.download.picked, 0, "no version was picked");
     }
 
     #[test]

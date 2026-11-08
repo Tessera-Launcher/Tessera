@@ -23,10 +23,21 @@ pub enum Source {
 }
 
 impl Source {
+    /// Every source, in the order the picker's switch draws them.
+    pub const ALL: [Source; 2] = [Source::Mojang, Source::Bmclapi];
+
     pub fn label(self) -> &'static str {
         match self {
             Source::Bmclapi => "BMCLAPI",
             Source::Mojang => "官方源",
+        }
+    }
+
+    /// The other one: the switch is a two-way toggle.
+    pub fn next(self) -> Self {
+        match self {
+            Source::Bmclapi => Source::Mojang,
+            Source::Mojang => Source::Bmclapi,
         }
     }
 

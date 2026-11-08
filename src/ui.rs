@@ -587,7 +587,13 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
     // Data rows only, and the first of them is the first line of the pane: unlike
     // the version table this one has no header row, so adding one here would make
     // every click land on the row above the pointer.
-    let loader_rows = (app.download.loaders.len() as u16).min(loaders_inner.height);
+    // The switch lives on the pane's last row, so the list and its hint keep one
+    // row clear at the bottom.
+    let switch_row = loaders_inner
+        .y
+        .saturating_add(loaders_inner.height.saturating_sub(1));
+    let list_height = loaders_inner.height.saturating_sub(1);
+    let loader_rows = (app.download.loaders.len() as u16).min(list_height);
     app.layout.download_loaders = Area::new(
         loaders_inner.x,
         loaders_inner.y,
@@ -623,7 +629,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // A hint under the loader list: what Enter will do. It starts right below the
     // last row, so it cannot be mistaken for one of them.
-    if loaders_inner.height > loader_rows {
+    if list_height > loader_rows {
         let hint_area = Rect {
             y: loaders_inner.y + loader_rows,
             height: loaders_inner.height.saturating_sub(loader_rows),
@@ -641,6 +647,65 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
             hint_area,
         );
     }
+
+    draw_source_switch(frame, loaders_inner, switch_row, app);
+}
+
+/// The download source switch, right-aligned on the loader pane's last row.
+///
+/// `--mirror` only decides where the launcher starts; from here on the pick can be
+/// changed per install, and nothing about it is written to disk.
+fn draw_source_switch(frame: &mut Frame, inner: Rect, row: u16, app: &mut App) {
+    app.layout.download_sources.clear();
+    let prefix = "下载源 ";
+    let chips: Vec<(crate::install::Source, String)> = crate::install::Source::ALL
+        .into_iter()
+        .map(|source| {
+            let label = format!(" {} ", source.label());
+            (source, label)
+        })
+        .collect();
+    let total: u16 = cell_width_of(prefix) as u16
+        + chips
+            .iter()
+            .map(|(_, text)| cell_width_of(text) as u16)
+            .sum::<u16>();
+    // A pane too narrow for the whole switch simply does not get one: it must not
+    // push the loader rows around.
+    if total > inner.width || inner.height == 0 {
+        return;
+    }
+
+    // The chips start after the prefix, which is drawn but not clickable.
+    let mut column = inner.x + inner.width - total + cell_width_of(prefix) as u16;
+    // The paragraph starts at the pane's left edge, so the switch is pushed to the
+    // right by a run of spaces; the chip areas above already assume that offset.
+    let mut spans = vec![
+        Span::styled(" ".repeat((inner.width - total) as usize), Style::new()),
+        Span::styled(prefix, Style::new().fg(DIM)),
+    ];
+    for (source, text) in chips {
+        let width = cell_width_of(&text) as u16;
+        app.layout
+            .download_sources
+            .push(Area::new(column, row, width, 1));
+        spans.push(Span::styled(
+            text,
+            if app.source == source {
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(DIM)
+            },
+        ));
+        column += width;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(inner.x, row, inner.width, 1),
+    );
 }
 
 /// The filter bar: a search box on the left, the kind chips on the right.
@@ -1843,8 +1908,12 @@ mod tests {
     ///
     /// The text rows from [`buffer_lines`] collapse the placeholder cells of
     /// wide glyphs, so a colour has to be looked up on the buffer itself.
-    fn row_cells(app: &mut App, width: u16, y: u16) -> Vec<(String, ratatui::style::Color)> {
-        let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+    fn row_cells(
+        app: &mut App,
+        (width, height): (u16, u16),
+        y: u16,
+    ) -> Vec<(String, ratatui::style::Color)> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         let buffer = terminal.backend().buffer();
         (0..width)
@@ -1853,6 +1922,19 @@ mod tests {
                 (cell.symbol().to_string(), cell.fg)
             })
             .collect()
+    }
+
+    /// Foreground and background of one cell in a freshly drawn frame.
+    fn colors_at(
+        app: &mut App,
+        (width, height): (u16, u16),
+        x: u16,
+        y: u16,
+    ) -> (ratatui::style::Color, ratatui::style::Color) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let cell = terminal.backend().buffer().cell((x, y)).expect("cell");
+        (cell.fg, cell.bg)
     }
 
     /// Where `text` starts in a row of cells, ignoring which glyph is wide.
@@ -1890,7 +1972,7 @@ mod tests {
         let header = &screen[app.layout.account.y as usize];
         assert!(header.contains("Steve (1) · HMCL"), "{header}");
         let header_y = app.layout.account.y;
-        let row = row_cells(&mut app, 100, header_y);
+        let row = row_cells(&mut app, (100, 32), header_y);
         let paren = find_cells(&row, &["(", "1", ")"]).expect("the number is drawn");
         for (symbol, fg) in &row[paren..paren + 3] {
             assert_eq!(*fg, DIM, "the number {symbol} must be dimmed");
@@ -1915,7 +1997,7 @@ mod tests {
 
         // And in the row list the number is dimmed there too.
         let area = app.layout.account_rows[1];
-        let row = row_cells(&mut app, 100, area.y);
+        let row = row_cells(&mut app, (100, 32), area.y);
         let paren = find_cells(&row, &["(", "1", ")"]).expect("the row shows the number");
         for (symbol, fg) in &row[paren..paren + 3] {
             assert_eq!(*fg, DIM, "row number {symbol} must be dimmed");
@@ -2446,6 +2528,63 @@ mod tests {
         assert!(
             screen.contains("旧版 Alpha"),
             "alpha run keeps its era:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn the_loader_pane_offers_the_source_switch_in_its_bottom_corner() {
+        let mut app = tree_picker();
+        let screen = render(&mut app, 110, 28).join("\n");
+
+        assert!(screen.contains("下载源"), "{screen}");
+        assert!(screen.contains("官方源"), "{screen}");
+        assert!(screen.contains("BMCLAPI"), "{screen}");
+        assert_eq!(app.layout.download_sources.len(), 2, "two clickable chips");
+
+        // The active one is highlighted; the other is dim.
+        let chips = app.layout.download_sources.clone();
+        let (mojang, bmclapi) = (chips[0], chips[1]);
+        assert_eq!(
+            colors_at(&mut app, (110, 28), bmclapi.x, bmclapi.y).1,
+            ACCENT,
+            "BMCLAPI is the default, so its chip carries the accent background"
+        );
+        let (mojang_fg, mojang_bg) = colors_at(&mut app, (110, 28), mojang.x, mojang.y);
+        assert_eq!(mojang_fg, DIM, "the inactive chip is dim");
+        assert_ne!(mojang_bg, ACCENT, "and has no highlight");
+
+        // The switch sits on the pane's last row and never over a loader row.
+        let loaders = app.layout.download_loaders;
+        assert!(
+            loaders.y + loaders.height <= bmclapi.y,
+            "the list must stop above the switch: {loaders:?} vs {bmclapi:?}"
+        );
+        // It is the pane's last content row, above its bottom border.
+        let pane = app.layout.download_loaders_pane;
+        assert_eq!(
+            bmclapi.y + 1,
+            pane.y + pane.height - 1,
+            "the switch is on the pane's last row: {pane:?}"
+        );
+        assert_eq!(
+            bmclapi.x + bmclapi.width,
+            pane.x + pane.width - 1,
+            "flushed against the pane's right border"
+        );
+    }
+
+    #[test]
+    fn the_source_switch_takes_effect_on_the_spot() {
+        let mut app = tree_picker();
+        render(&mut app, 110, 28);
+        let title = app.source_label();
+        assert!(title == "BMCLAPI", "{title}");
+
+        app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        let screen = render(&mut app, 110, 28).join("\n");
+        assert!(
+            screen.contains("下载 官方源"),
+            "title follows the switch:\n{screen}"
         );
     }
 

@@ -194,17 +194,19 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
         }
 
         // Download work, same shape: the state machine asks, the loop spawns.
+        // The source is read from the app, not from the command line: the picker
+        // can switch it, and that switch has to reach the worker.
         if std::mem::take(&mut app.pending_versions) {
             install_rx = Some(install::spawn_versions(
                 app.root.clone(),
-                settings.source,
+                app.source,
                 settings.asset_concurrency,
             ));
         }
         if let Some((version, loader)) = app.pending_install.take() {
             install_rx = Some(install::spawn_install(
                 app.root.clone(),
-                settings.source,
+                app.source,
                 settings.asset_concurrency,
                 version,
                 loader,
