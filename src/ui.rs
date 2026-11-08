@@ -859,6 +859,42 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// The account manager, drawn over the main screen.
+/// Draw one hint row whose key words are clickable.
+///
+/// `segments` are drawn left to right. A segment carrying a key is underlined and
+/// recorded in [`Layout::buttons`], so a click replays that key through the same
+/// path the footer buttons use — the drawn hint and the binding cannot drift.
+/// Segments without a key are plain text in `color`.
+fn draw_hint(
+    frame: &mut Frame,
+    area: Rect,
+    segments: &[(&str, Option<KeyCode>)],
+    color: Color,
+    app: &mut App,
+) {
+    let mut spans = Vec::with_capacity(segments.len());
+    let mut x = area.x;
+    for (text, key) in segments {
+        let width = cell_width_of(text).min(u16::MAX as usize) as u16;
+        let style = match key {
+            Some(_) => Style::new()
+                .fg(Color::White)
+                .add_modifier(Modifier::UNDERLINED),
+            None => Style::new().fg(color),
+        };
+        spans.push(Span::styled(*text, style));
+        if let Some(code) = key {
+            if width > 0 {
+                app.layout
+                    .buttons
+                    .push(Button::new(Area::new(x, area.y, width, 1), *code));
+            }
+        }
+        x = x.saturating_add(width);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
     let width = area.width.saturating_sub(6).clamp(40, 72);
     let rows = app.accounts.len().clamp(1, 10) as u16;
@@ -963,27 +999,44 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
     .column_spacing(1);
     frame.render_widget(table, inner);
 
-    let hint = if app.accounts_ui.confirm_delete {
-        " 再按一次 d 确认移除 · Esc 取消".to_string()
-    } else {
-        " Enter 切换 · d 移除 · l 登录新账户 · Esc 关闭".to_string()
-    };
     let hint_area = Rect {
         y: inner.y + inner.height.saturating_sub(1),
         height: 1,
         ..inner
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            hint,
-            Style::new().fg(if app.accounts_ui.confirm_delete {
-                BROKEN
-            } else {
-                DIM
-            }),
-        ))),
-        hint_area,
-    );
+    if app.accounts_ui.confirm_delete {
+        draw_hint(
+            frame,
+            hint_area,
+            &[
+                (" 再按一次 ", None),
+                ("d", Some(KeyCode::Char('d'))),
+                (" 确认移除 · ", None),
+                ("Esc", Some(KeyCode::Esc)),
+                (" 取消", None),
+            ],
+            BROKEN,
+            app,
+        );
+    } else {
+        draw_hint(
+            frame,
+            hint_area,
+            &[
+                (" ", None),
+                ("Enter", Some(KeyCode::Enter)),
+                (" 切换 · ", None),
+                ("d", Some(KeyCode::Char('d'))),
+                (" 移除 · ", None),
+                ("l", Some(KeyCode::Char('l'))),
+                (" 登录新账户 · ", None),
+                ("Esc", Some(KeyCode::Esc)),
+                (" 关闭", None),
+            ],
+            DIM,
+            app,
+        );
+    }
 }
 
 /// The login overlay, drawn over the main screen.
@@ -1071,11 +1124,21 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 )));
             }
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " ↑↓ 选择 · Enter 下一步 · Esc 取消",
-                Style::new().fg(DIM),
-            )));
+            let hint_row = inner.y.saturating_add(lines.len() as u16);
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            draw_hint(
+                frame,
+                Rect::new(inner.x, hint_row, inner.width, 1),
+                &[
+                    (" ↑↓ 选择 · ", None),
+                    ("Enter", Some(KeyCode::Enter)),
+                    (" 下一步 · ", None),
+                    ("Esc", Some(KeyCode::Esc)),
+                    (" 取消", None),
+                ],
+                DIM,
+                app,
+            );
         }
         LoginStep::EnterAppId => {
             let filled = !app.login.app_id.trim().is_empty();
@@ -1092,16 +1155,41 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Span::styled("▏", Style::new().fg(ACCENT)),
                 ]),
                 Line::from(""),
-                Line::from(Span::styled(
-                    if filled {
-                        " Enter 开始登录 · Esc 返回"
-                    } else {
-                        " 不能为空 · 例如 Prism 的 c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
-                    },
-                    Style::new().fg(if filled { DIM } else { BROKEN }),
-                )),
             ];
+            let hint_row = inner.y.saturating_add(lines.len() as u16);
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            if filled {
+                draw_hint(
+                    frame,
+                    Rect::new(inner.x, hint_row, inner.width, 1),
+                    &[
+                        (" ", None),
+                        ("Enter", Some(KeyCode::Enter)),
+                        (" 开始登录 · ", None),
+                        ("Esc", Some(KeyCode::Esc)),
+                        (" 返回", None),
+                    ],
+                    DIM,
+                    app,
+                );
+            } else {
+                // Nothing can be started yet, so only the way back is clickable.
+                draw_hint(
+                    frame,
+                    Rect::new(inner.x, hint_row, inner.width, 1),
+                    &[
+                        (
+                            " 不能为空 · 例如 Prism 的 c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb",
+                            None,
+                        ),
+                        (" · ", None),
+                        ("Esc", Some(KeyCode::Esc)),
+                        (" 返回", None),
+                    ],
+                    BROKEN,
+                    app,
+                );
+            }
         }
         LoginStep::ChooseAppIds => {
             let mut lines = Vec::new();
@@ -1117,11 +1205,21 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::new().fg(Color::White),
                 )));
                 lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    " Esc 返回 · 编辑上面这个文件后按 Enter 重试",
-                    Style::new().fg(DIM),
-                )));
+                let hint_row = inner.y.saturating_add(lines.len() as u16);
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+                draw_hint(
+                    frame,
+                    Rect::new(inner.x, hint_row, inner.width, 1),
+                    &[
+                        (" ", None),
+                        ("Esc", Some(KeyCode::Esc)),
+                        (" 返回 · 编辑上面这个文件后按 ", None),
+                        ("Enter", Some(KeyCode::Enter)),
+                        (" 重试", None),
+                    ],
+                    DIM,
+                    app,
+                );
             } else {
                 // One row of height is enough per entry (name + id on one line),
                 // but two keeps a long id readable when the popup is narrow.
@@ -1170,19 +1268,27 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     )));
                 }
                 let more = app.login.app_ids.len().saturating_sub(offset + visible);
-                lines.push(Line::from(Span::styled(
-                    if app.login.app_ids.len() > visible {
-                        format!(
-                            " ↑↓ 选择 · Enter 登录 · Esc 返回 · 共 {} 项，下面还有 {} 项",
-                            app.login.app_ids.len(),
-                            more
-                        )
-                    } else {
-                        " ↑↓ 选择 · Enter 登录 · Esc 返回".to_string()
-                    },
-                    Style::new().fg(DIM),
-                )));
+                let tail = if app.login.app_ids.len() > visible {
+                    format!(" · 共 {} 项，下面还有 {} 项", app.login.app_ids.len(), more)
+                } else {
+                    String::new()
+                };
+                let hint_row = inner.y.saturating_add(lines.len() as u16);
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+                draw_hint(
+                    frame,
+                    Rect::new(inner.x, hint_row, inner.width, 1),
+                    &[
+                        (" ↑↓ 选择 · ", None),
+                        ("Enter", Some(KeyCode::Enter)),
+                        (" 登录 · ", None),
+                        ("Esc", Some(KeyCode::Esc)),
+                        (" 返回", None),
+                        (&tail, None),
+                    ],
+                    DIM,
+                    app,
+                );
             }
         }
         LoginStep::Waiting { user_code, url } => {
@@ -1203,12 +1309,20 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::new().fg(ACCENT).bold(),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    " 等待浏览器确认… Esc 取消",
-                    Style::new().fg(DIM),
-                )),
             ];
+            let hint_row = inner.y.saturating_add(lines.len() as u16);
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            draw_hint(
+                frame,
+                Rect::new(inner.x, hint_row, inner.width, 1),
+                &[
+                    (" 等待浏览器确认… ", None),
+                    ("Esc", Some(KeyCode::Esc)),
+                    (" 取消", None),
+                ],
+                DIM,
+                app,
+            );
         }
         LoginStep::Done {
             player,
@@ -1225,12 +1339,22 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::new().fg(Color::White),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    " 凭据已写入 data/凭据/账户/ · Enter 返回",
-                    Style::new().fg(DIM),
-                )),
             ];
+            let hint_row = inner.y.saturating_add(lines.len() as u16);
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            draw_hint(
+                frame,
+                Rect::new(inner.x, hint_row, inner.width, 1),
+                &[
+                    (" 凭据已写入 data/凭据/账户/ · ", None),
+                    ("Enter", Some(KeyCode::Enter)),
+                    (" 返回 · ", None),
+                    ("Esc", Some(KeyCode::Esc)),
+                    (" 关闭", None),
+                ],
+                DIM,
+                app,
+            );
         }
         LoginStep::Failed(message) => {
             let lines = vec![
@@ -1242,12 +1366,20 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::new().fg(Color::White),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    " Esc 返回 · 检查网络/代理后重试",
-                    Style::new().fg(DIM),
-                )),
             ];
+            let hint_row = inner.y.saturating_add(lines.len() as u16);
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            draw_hint(
+                frame,
+                Rect::new(inner.x, hint_row, inner.width, 1),
+                &[
+                    (" ", None),
+                    ("Esc", Some(KeyCode::Esc)),
+                    (" 返回 · 检查网络/代理后重试", None),
+                ],
+                DIM,
+                app,
+            );
         }
     }
 }
@@ -1660,6 +1792,182 @@ mod tests {
         app.accounts_ui.confirm_delete = true;
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("再按一次 d 确认移除"), "{screen}");
+    }
+
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    /// The middle of an area, which is always inside it.
+    fn middle(area: Area) -> (u16, u16) {
+        (area.x + area.width / 2, area.y)
+    }
+
+    fn click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// The button inside the popup that replays `code`: the footer has its own
+    /// copies of `l` / `d` / `Esc`, so the hit area has to be disambiguated.
+    fn popup_button(app: &App, code: KeyCode, inside: Area) -> Area {
+        app.layout
+            .buttons
+            .iter()
+            .find(|button| button.code == code && inside.contains(button.area.x, button.area.y))
+            .map(|button| button.area)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no clickable {code:?} inside the popup; buttons: {:?}",
+                    app.layout.buttons
+                )
+            })
+    }
+
+    #[test]
+    fn the_account_manager_hint_is_clickable() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["Alex", "Steve"] {
+            crate::accounts::save(
+                tmp.path(),
+                "Minecraft Launcher",
+                "id",
+                name,
+                "uuid",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        }
+        let saved = crate::accounts::list(tmp.path());
+        let mut app = App::new("/mc", tmp.path(), vec![], saved);
+        app.open_accounts();
+        render(&mut app, 100, 28);
+
+        // `l 登录新账户` in the popup opens the login overlay.
+        let area = popup_button(&app, KeyCode::Char('l'), app.layout.accounts_popup);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.screen, Screen::Login);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Accounts);
+
+        // `Enter 切换` activates the highlighted row.
+        app.accounts_ui.selected = 0;
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Enter, app.layout.accounts_popup);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
+
+        // `d 移除` asks first, and the confirm hint's `d` deletes for real.
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Char('d'), app.layout.accounts_popup);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert!(app.accounts_ui.confirm_delete, "first click only asks");
+
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Char('d'), app.layout.accounts_popup);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.accounts.len(), 1, "second click deletes");
+        assert!(!app.accounts_ui.confirm_delete);
+
+        // `Esc 关闭` leaves the manager.
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Esc, app.layout.accounts_popup);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn the_login_hint_buttons_replay_their_key() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_login();
+        render(&mut app, 100, 28);
+
+        // "Enter 下一步" on the official identity starts the flow.
+        let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.pending_login, Some(crate::login::Identity::Official));
+
+        // "Esc 取消" while waiting cancels it.
+        assert!(matches!(
+            app.login.step,
+            crate::app::LoginStep::Waiting { .. }
+        ));
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Esc, app.layout.overlay);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.screen, Screen::Main);
+
+        // A failure screen keeps its only way out clickable.
+        app.open_login();
+        app.handle_login_event(crate::login::LoginEvent::Failed("网络不可达".into()));
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Esc, app.layout.overlay);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn the_saved_list_and_the_success_screen_have_clickable_hints() {
+        let tmp = tempfile::tempdir().unwrap();
+        let accounts = tmp.path().join("凭据").join("账户");
+        std::fs::create_dir_all(&accounts).unwrap();
+        let file = crate::app_ids::path_under(accounts.parent().unwrap());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "[[api_keys]]\nname = \"HMCL\"\nkey = \"6a3728d6-27a3-4180-99bb-479895b8f88e\"\n",
+        )
+        .unwrap();
+
+        let mut app = App::new("/mc", &accounts, vec![], vec![]);
+        app.open_login();
+        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.login.step, crate::app::LoginStep::ChooseAppIds);
+
+        // "Enter 登录" picks the highlighted entry.
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(
+            app.pending_login,
+            Some(crate::login::Identity::Saved {
+                name: "HMCL".to_string(),
+                app_id: "6a3728d6-27a3-4180-99bb-479895b8f88e".to_string(),
+            })
+        );
+
+        // And "Enter 返回" on the success panel closes the overlay.
+        let saved_file = crate::accounts::save(
+            &accounts,
+            "HMCL",
+            "6a3728d6-27a3-4180-99bb-479895b8f88e",
+            "Steve",
+            "uuid",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        app.handle_login_event(crate::login::LoginEvent::Succeeded {
+            player_name: "Steve".into(),
+            application: "HMCL".into(),
+            file: saved_file,
+        });
+        render(&mut app, 100, 28);
+        let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
+        let (x, y) = middle(area);
+        app.handle_mouse(click(x, y));
+        assert_eq!(app.screen, Screen::Main);
     }
 
     #[test]
