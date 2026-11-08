@@ -168,9 +168,22 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
         // Clipboard and browser are the loop's job too: the state machine only
         // records what the user asked for, so it stays testable without a tty.
         if let Some(text) = app.pending_clipboard.take() {
-            if let Err(error) = clipboard::copy(&text) {
-                app.log(format!("复制失败：{error}"));
-                app.status = "复制失败".to_string();
+            match clipboard::copy(&text) {
+                // Which route worked matters: a terminal that ignores OSC 52
+                // looks exactly like a successful copy otherwise.
+                Ok(method) => {
+                    app.log(format!("剪贴板：{method}"));
+                    if method.starts_with("OSC 52") {
+                        app.log(
+                            "提示：OSC 52 需要终端支持；粘贴不出来就安装 wl-clipboard/xclip，\
+                             或在终端里允许 OSC 52（tmux 另需 set-clipboard on）",
+                        );
+                    }
+                }
+                Err(error) => {
+                    app.log(format!("复制失败：{error}"));
+                    app.status = "复制失败".to_string();
+                }
             }
         }
         if let Some(url) = app.pending_browser.take() {
