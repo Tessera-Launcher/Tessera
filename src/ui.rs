@@ -348,21 +348,37 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let sep = " · ";
+    // Buttons hug the right edge and never move; the status gets what is left.
+    // Otherwise every status message would drag the whole row sideways.
     let buttons_width: usize = entries
         .iter()
-        .map(|(text, _)| cell_width_of(sep) + cell_width_of(text))
-        .sum();
+        .map(|(text, _)| cell_width_of(text))
+        .sum::<usize>()
+        + cell_width_of(sep) * entries.len().saturating_sub(1);
+    let area_width = area.width as usize;
+    // Two columns of breathing room, so a long status never touches the buttons.
+    let status_room = area_width.saturating_sub(buttons_width + 2);
+    let full = format!(" {}", app.status);
+    let status = if cell_width_of(&full) > status_room && status_room > 0 {
+        format!("{}…", truncate_to_width(&full, status_room - 1))
+    } else {
+        truncate_to_width(&full, status_room)
+    };
+    let status_width = cell_width_of(&status);
+    let buttons_column = area_width.saturating_sub(buttons_width);
+    let gap = buttons_column.saturating_sub(status_width);
 
-    // Status first; it gives up whatever room the buttons need.
-    let room = (area.width as usize).saturating_sub(buttons_width);
-    let status = truncate_to_width(&format!(" {}", app.status), room);
-
-    let mut spans = vec![Span::styled(status.clone(), Style::new().fg(ACCENT))];
+    let mut spans = vec![
+        Span::styled(status, Style::new().fg(ACCENT)),
+        Span::styled(" ".repeat(gap), Style::new()),
+    ];
     let mut placed: Vec<(usize, usize, KeyCode)> = Vec::new();
-    let mut column = cell_width_of(&status);
-    for (text, code) in &entries {
-        spans.push(Span::styled(sep, Style::new().fg(DIM)));
-        column += cell_width_of(sep);
+    let mut column = buttons_column;
+    for (index, (text, code)) in entries.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(sep, Style::new().fg(DIM)));
+            column += cell_width_of(sep);
+        }
         placed.push((column, cell_width_of(text), *code));
         spans.push(Span::styled(
             text.clone(),
@@ -1360,6 +1376,51 @@ mod tests {
         app.accounts_ui.confirm_delete = true;
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("再按一次 d 确认移除"), "{screen}");
+    }
+
+    #[test]
+    fn the_footer_buttons_sit_at_the_right_edge_and_do_not_move() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.status = "短".to_string();
+        render(&mut app, 100, 28);
+        let short: Vec<u16> = app
+            .layout
+            .buttons
+            .iter()
+            .map(|button| button.area.x)
+            .collect();
+
+        // A long status must not push the buttons around.
+        app.status = "这一行状态文字明显长得多，长到几乎占满整个页脚".repeat(2);
+        render(&mut app, 100, 28);
+        let long: Vec<u16> = app
+            .layout
+            .buttons
+            .iter()
+            .map(|button| button.area.x)
+            .collect();
+        assert_eq!(short, long, "buttons are pinned to the right edge");
+
+        // And the last one ends flush with the footer's right edge.
+        let last = app.layout.buttons.last().expect("footer buttons");
+        assert_eq!(
+            last.area.x + last.area.width,
+            100,
+            "the row ends flush with the frame's right edge"
+        );
+    }
+
+    #[test]
+    fn a_very_long_status_is_truncated_instead_of_covering_the_buttons() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.status = "长".repeat(200);
+        let screen = render(&mut app, 60, 28).join("\n");
+        assert!(
+            screen.contains("q 退出"),
+            "buttons survive the squeeze:\n{screen}"
+        );
+        let first = app.layout.buttons.first().expect("footer buttons");
+        assert!(first.area.x >= 1, "and stay inside the frame");
     }
 
     #[test]
