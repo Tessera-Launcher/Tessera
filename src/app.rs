@@ -3190,7 +3190,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     #[test]
     fn double_clicking_a_row_launches_it() {
         let mut app = laid_out();
-        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
 
         // First click only selects.
         app.handle_mouse(click(10, 6));
@@ -3206,7 +3205,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     #[test]
     fn a_slow_second_click_does_not_launch() {
         let mut app = laid_out();
-        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
         app.handle_mouse(click(10, 6));
         // Pretend the previous click was a second ago.
         app.last_click = Some((Instant::now() - std::time::Duration::from_secs(1), 1));
@@ -3220,11 +3218,36 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     #[test]
     fn double_clicking_a_different_row_only_selects() {
         let mut app = laid_out();
-        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
         app.handle_mouse(click(10, 5));
         app.handle_mouse(click(10, 6));
         assert_eq!(app.selected, 1);
         assert!(app.last_credentials.is_none());
+    }
+
+    #[test]
+    fn launching_without_a_managed_runtime_says_where_to_get_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("游戏");
+        // A profile that parses, so the only thing missing is the runtime.
+        write_version(
+            &root,
+            "1.21.9",
+            r#"{"id":"1.21.9","type":"release","mainClass":"net.minecraft.client.main.Main",
+                "javaVersion":{"majorVersion":21},"libraries":[]}"#,
+        );
+        std::fs::write(root.join("versions/1.21.9/1.21.9.jar"), b"jar").unwrap();
+
+        let scanned = crate::discover::scan(&root);
+        let mut app = App::new(&root, "/acc", scanned, vec![]);
+        app.set_runtimes(tmp.path().join("运行时"));
+        app.start_game(launch::Credentials::offline("Steve"));
+        assert_eq!(app.status, "启动失败");
+        assert!(
+            app.log.iter().any(|line| line.contains("按 v")),
+            "the log points at the Java screen: {:?}",
+            app.log
+        );
+        assert!(app.last_launch.is_none(), "nothing was started");
     }
 
     #[test]
@@ -4514,7 +4537,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             file: account_file,
         };
         // An unusable Java keeps `start_game` from ever spawning a process.
-        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
         app
     }
 
@@ -4533,7 +4555,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn a_signed_out_launch_goes_straight_to_offline_credentials() {
         let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
-        app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
         app.request_launch();
         assert!(app.pending_refresh.is_none());
         let credentials = app.last_credentials.expect("offline credentials are used");

@@ -79,9 +79,6 @@ fn main() -> std::process::ExitCode {
     );
     app.source = settings.source;
     app.set_runtimes(data.runtimes());
-    if let Some(java) = options.java.clone() {
-        app.launch_options.java = Some(java);
-    }
     app.launch_options.memory_mb = options.memory;
     app.log(format!("数据目录 {}", data.root().display()));
     app.log(format!("凭据目录 {}", data.accounts().display()));
@@ -414,8 +411,6 @@ struct Options {
     /// Open the Java runtime picker immediately (likewise).
     jre: bool,
     source: Source,
-    /// `--java`: skip discovery and use this executable.
-    java: Option<PathBuf>,
     /// `--memory`: heap size in MiB.
     memory: u32,
     /// `--print-launch <version>`: build and print the command, then exit.
@@ -433,7 +428,6 @@ impl Options {
         let mut accounts = false;
         let mut jre = false;
         let mut source = Source::default();
-        let mut java = None;
         let mut memory = 2048;
         let mut print_launch = None;
         let mut width = 100;
@@ -452,11 +446,12 @@ impl Options {
                 "--login" => login = true,
                 "--accounts" => accounts = true,
                 "--jre" => jre = true,
+                // `--java` used to point a launch at some outside Java. Every
+                // instance now runs on a managed runtime, so the flag is gone.
                 "--java" => {
-                    java = Some(PathBuf::from(
-                        argv.next()
-                            .ok_or_else(|| "--java 需要一个路径".to_string())?,
-                    ));
+                    return Err(
+                        "--java 已移除：启动器只使用 data/运行时 里的 Java，按 v 下载".to_string(),
+                    );
                 }
                 "--print-launch" => {
                     print_launch = Some(
@@ -508,7 +503,6 @@ impl Options {
             accounts,
             jre,
             source,
-            java,
             memory,
             print_launch,
             width,
@@ -530,7 +524,6 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   --accounts        启动时直接打开账户管理
   --jre             启动时直接打开 Java 下载界面
   --mirror <源>     bmclapi（默认）或 mojang，决定从哪下载
-  --java <路径>     指定 Java（默认扫 JAVA_HOME 与 PATH，挑版本够新的）
   --memory <MiB>    堆大小（默认 2048）
   --print-launch <版本>
                     只打印会执行的启动命令，不启动（调试用）

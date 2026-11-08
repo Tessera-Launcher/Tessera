@@ -86,9 +86,9 @@ pub struct Options {
     pub memory_mb: u32,
     pub width: u32,
     pub height: u32,
-    /// Skip Java discovery and use this executable.
-    pub java: Option<PathBuf>,
-    /// `data/运行时`: where the launcher's own JREs live, if it has any.
+    /// `data/运行时`: where the launcher's own JREs live. There is deliberately no
+    /// way to point a launch at some other Java — every instance runs on a runtime
+    /// the launcher downloaded, so the version is known and explainable.
     pub runtimes: Option<PathBuf>,
 }
 
@@ -98,7 +98,6 @@ impl Default for Options {
             memory_mb: 2048,
             width: 854,
             height: 480,
-            java: None,
             runtimes: None,
         }
     }
@@ -131,20 +130,16 @@ pub fn prepare(
     options: &Options,
 ) -> Result<Launch, String> {
     let merged = merge_chain(root, version_id)?;
-    let required = merged.java_version;
-
-    let (java, java_major) = match &options.java {
-        Some(path) => {
-            let major = probe_java(path).ok_or_else(|| {
-                format!("{} 不是可用的 Java（--java 指定的路径）", path.display())
-            })?;
-            (path.clone(), major)
-        }
-        None => match &options.runtimes {
-            Some(dir) => find_java_in(dir, required)?,
-            None => find_java_from(java_candidates(), required)?,
-        },
-    };
+    // The profile's own `javaVersion` wins; older metadata gets the legacy rules.
+    let required = required_java(
+        version_id,
+        (merged.java_version > 0).then_some(merged.java_version),
+    );
+    let runtimes = options
+        .runtimes
+        .clone()
+        .ok_or_else(|| "没有配置 Java 运行时目录".to_string())?;
+    let (java, java_major) = find_java(&runtimes, required)?;
 
     let version_dir = root.join("versions").join(version_id);
     // A loader install copies the parent's client jar without renaming it, so the
@@ -730,10 +725,9 @@ fn merge_chain(root: &Path, version_id: &str) -> Result<Merged, String> {
     if merged.main_class.is_empty() {
         return Err("版本 JSON 没有 mainClass".to_string());
     }
-    if merged.java_version == 0 {
-        // Metadata older than 1.16 has no `javaVersion`; those versions are Java 8.
-        merged.java_version = 8;
-    }
+    // `java_version` stays 0 when no profile in the chain declares one: the
+    // caller derives it from the version id instead (see [`required_java`]), which
+    // is the only place that knows both the id and the merge result.
     Ok(merged)
 }
 
@@ -765,49 +759,6 @@ fn find_natives(version_dir: &Path, version_id: &str, parents: &[String]) -> Opt
 
 // ===== Java discovery =====
 
-/// Runtimes this launcher downloaded (from `data/运行时`), plus `JAVA_HOME` and
-/// `PATH`.
-///
-/// The downloaded ones come first: the user picked one of them on purpose, while
-/// whatever happens to be on `PATH` is an accident of the environment.
-pub fn java_candidates_in(runtimes: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = crate::java::installed(runtimes)
-        .into_iter()
-        .map(|(_, java)| java)
-        .collect();
-    for candidate in java_candidates() {
-        if !found.contains(&candidate) {
-            found.push(candidate);
-        }
-    }
-    found
-}
-
-/// Every `java` we can find, `JAVA_HOME` first and then `PATH` order.
-pub fn java_candidates() -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    if let Some(home) = std::env::var_os("JAVA_HOME") {
-        let home = PathBuf::from(home);
-        for name in ["bin/java", "bin/java.exe"] {
-            let candidate = home.join(name);
-            if candidate.is_file() {
-                found.push(candidate);
-            }
-        }
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for name in ["java", "java.exe"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() && !found.contains(&candidate) {
-                    found.push(candidate);
-                }
-            }
-        }
-    }
-    found
-}
-
 /// Whether a runtime of `major` can run a profile that asks for `required`.
 ///
 /// Java 8 profiles are the exception to "newer is fine": 1.7–1.16 rely on
@@ -822,51 +773,120 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
     }
 }
 
-/// Find a Java that can run a profile asking for `required`, preferring the
-/// runtimes this launcher downloaded under `runtimes`.
+/// Find the Java a profile needs among the runtimes this launcher manages.
 ///
-/// Used by [`prepare`] through [`Options::runtimes`], and by tests.
-pub fn find_java_in(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), String> {
-    find_java_from(java_candidates_in(runtimes), required)
+/// Only `data/运行时` is consulted: there is no `JAVA_HOME`, no `PATH`, no
+/// `--java`. Whatever the game runs on was downloaded here on purpose, so the
+/// version on disk is a fact the launcher owns and can explain.
+///
+/// An exact version wins; otherwise the smallest acceptable one is used, and the
+/// result is probed once so a half-unpacked runtime fails with a message instead
+/// of a confusing game crash.
+pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), String> {
+    let installed = crate::java::installed(runtimes);
+    if installed.is_empty() {
+        return Err(format!(
+            "还没有下载 Java {required}：按 v 打开 Java 下载界面装一个（{}）",
+            runtimes.display()
+        ));
+    }
+
+    let pick = installed
+        .iter()
+        .find(|(major, _)| *major == required)
+        .or_else(|| {
+            installed
+                .iter()
+                .filter(|(major, _)| java_is_acceptable(required, *major))
+                .min_by_key(|(major, _)| *major)
+        });
+
+    let Some((major, path)) = pick else {
+        let seen = installed
+            .iter()
+            .map(|(major, _)| format!("Java {major}"))
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(if required <= 8 {
+            format!("这个版本需要 Java 8，现在只有 {seen}（按 v 下载 Java 8）")
+        } else {
+            format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（按 v 下载）")
+        });
+    };
+
+    match probe_java(path) {
+        Some(probed) if probed == *major => Ok((path.clone(), probed)),
+        Some(probed) => Err(format!(
+            "{} 报告自己是 Java {probed}，但目录写着 Java {major}（按 v 重新下载）",
+            path.display()
+        )),
+        None => Err(format!(
+            "{} 跑不起来（按 v 重新下载 Java {major}）",
+            path.display()
+        )),
+    }
 }
 
-fn find_java_from(candidates: Vec<PathBuf>, required: u32) -> Result<(PathBuf, u32), String> {
-    if candidates.is_empty() {
-        return Err("没有找到 Java：设置 JAVA_HOME，或把 java 放进 PATH".to_string());
+/// The Java a version needs, when its own metadata does not say.
+///
+/// Every profile Mojang publishes carries `javaVersion`, but hand-written ones and
+/// old metadata may not — and old metadata is exactly what needs the legacy rules.
+/// The cut-offs are Mojang's own:
+///
+/// | Minecraft | Java |
+/// |---|---|
+/// | 1.20.5 and newer | 21 |
+/// | 1.18 – 1.20.4 | 17 |
+/// | 1.17 | 16 |
+/// | 1.16.5 and older | 8 |
+///
+/// 16 is not a runtime the picker offers; [`java_is_acceptable`] lets 17 stand in.
+pub fn required_java(version_id: &str, declared: Option<u32>) -> u32 {
+    if let Some(major) = declared.filter(|major| *major > 0) {
+        return major;
     }
-
-    let mut probed: Vec<(PathBuf, u32)> = Vec::new();
-    for candidate in candidates {
-        if let Some(major) = probe_java(&candidate) {
-            if major == required {
-                return Ok((candidate, major));
+    match release_number(version_id) {
+        Some((major, minor, patch)) => {
+            if (major, minor, patch) >= (1, 20, 5) {
+                21
+            } else if (major, minor, patch) >= (1, 18, 0) {
+                17
+            } else if (major, minor) >= (1, 17) {
+                16
+            } else {
+                8
             }
-            probed.push((candidate, major));
         }
+        // Old alphas and betas do not parse; neither do the pre-1.13 snapshots,
+        // and those are all Java 8 anyway.
+        None => 8,
     }
+}
 
-    let mut acceptable: Vec<(PathBuf, u32)> = probed
-        .iter()
-        .filter(|(_, major)| java_is_acceptable(required, *major))
-        .cloned()
-        .collect();
-    acceptable.sort_by_key(|(_, major)| *major);
-    if let Some(found) = acceptable.into_iter().next() {
-        return Ok(found);
-    }
-
-    let seen = probed
-        .iter()
-        .map(|(path, major)| format!("{} ({major})", path.display()))
-        .collect::<Vec<_>>()
-        .join("、");
-    Err(if seen.is_empty() {
-        format!("找到的 Java 都无法运行，需要 Java {required}")
-    } else if required <= 8 {
-        format!("这个版本需要 Java 8，找到的是 {seen}（用 --java 指定一个 Java 8）")
-    } else {
-        format!("这个版本需要 Java {required} 或更高，找到的是 {seen}")
-    })
+/// `1.20.1` / `1.21.9-pre9` / `26.4-snapshot-7` → `(1, 20, 1)`.
+fn release_number(version_id: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = version_id.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let rest = parts.next()?;
+    let minor: u32 = rest
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    // A third component is optional (`1.21`).
+    let patch: u32 = parts
+        .next()
+        .and_then(|tail| {
+            tail.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .ok()
+        })
+        .or_else(|| rest.chars().any(|c| !c.is_ascii_digit()).then_some(0))
+        .unwrap_or(0);
+    Some((major, minor, patch))
 }
 
 /// Ask a Java for its version without starting a game.
@@ -928,27 +948,22 @@ mod tests {
         assert!(!java_is_acceptable(21, 17));
     }
 
+    /// A managed runtime at `<root>/运行时/<version>/bin/java`, as the picker
+    /// leaves it. Returns the runtimes directory.
+    fn managed_runtime(root: &Path, major: u32) -> PathBuf {
+        let version = format!("{major}.0.1+1");
+        let bin = crate::java::install_dir(&root.join("运行时"), &version).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        fake_java(&bin, major);
+        root.join("运行时")
+    }
+
     #[test]
     fn prepare_uses_a_downloaded_runtime_when_it_has_one() {
         let tmp = tempfile::tempdir().unwrap();
         fixture(tmp.path());
-        // `data/运行时/8u512-b09/bin/java`, as the Java picker would leave it.
-        let runtimes = tmp.path().join("运行时");
-        let bin = runtimes.join("8u512-b09/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let java = bin.join("java");
-        std::fs::write(
-            &java,
-            "#!/bin/sh\necho 'openjdk version \"1.8.0_512\" 2026-01-01' >&2\nexit 0\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&java).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&java, perms).unwrap();
-        }
+        let runtimes = managed_runtime(tmp.path(), 8);
+        let java = crate::java::install_dir(&runtimes, "8.0.1+1").join("bin/java");
 
         let options = Options {
             runtimes: Some(runtimes),
@@ -961,39 +976,49 @@ mod tests {
             &options,
         )
         .unwrap();
-        assert_eq!(launch.command.exe, java, "the downloaded runtime is used");
+        assert_eq!(launch.command.exe, java, "the managed runtime is used");
         assert_eq!(launch.java_major, 8);
     }
 
     #[test]
-    fn a_downloaded_runtime_wins_over_the_ones_on_path() {
+    fn only_managed_runtimes_are_considered() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        // `data/运行时/21.0.13+9/bin/java`, the layout the Java picker installs.
-        let runtimes = root.join("运行时");
-        let bin = runtimes.join("21.0.13+9/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let java = bin.join("java");
-        std::fs::write(
-            &java,
-            "#!/bin/sh\necho 'openjdk version \"21.0.13\" 2026-01-01' >&2\nexit 0\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&java).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&java, perms).unwrap();
-        }
+        let runtimes = tmp.path().join("运行时");
+        // Nothing installed: the error says what to do, not "install Java on PATH".
+        let error = find_java(&runtimes, 21).unwrap_err();
+        assert!(error.contains("按 v"), "{error}");
+        assert!(!error.contains("JAVA_HOME"), "{error}");
 
-        assert_eq!(crate::java::installed(&runtimes), vec![(21, java.clone())]);
-        let candidates = java_candidates_in(&runtimes);
-        assert_eq!(candidates.first(), Some(&java), "{candidates:?}");
-        // And it is what a 21 profile actually picks.
-        let (found, major) = find_java_in(&runtimes, 21).expect("a runtime was found");
-        assert_eq!(found, java);
-        assert_eq!(major, 21);
+        managed_runtime(tmp.path(), 8);
+        managed_runtime(tmp.path(), 21);
+
+        // Exact wins, 8 stays pinned, and a 17 profile takes the smallest newer one.
+        assert_eq!(find_java(&runtimes, 21).unwrap().1, 21);
+        assert_eq!(find_java(&runtimes, 8).unwrap().1, 8);
+        assert_eq!(find_java(&runtimes, 17).unwrap().1, 21);
+        // A 25 profile has nothing to run on, and the message lists what exists.
+        let error = find_java(&runtimes, 25).unwrap_err();
+        assert!(error.contains("Java 25"), "{error}");
+        assert!(error.contains("Java 8"), "{error}");
+        assert!(error.contains("Java 21"), "{error}");
+    }
+
+    #[test]
+    fn the_requirement_comes_from_the_profile_or_the_version_number() {
+        // What the profile says wins.
+        assert_eq!(required_java("1.8.9", Some(17)), 17);
+        // Modern versions all carry `javaVersion`; these rules are the fallback.
+        assert_eq!(required_java("1.16.5", None), 8);
+        assert_eq!(required_java("1.17.1", None), 16);
+        assert_eq!(required_java("1.18.2", None), 17);
+        assert_eq!(required_java("1.20.4", None), 17);
+        assert_eq!(required_java("1.20.5", None), 21);
+        assert_eq!(required_java("1.21.9-pre9", None), 21);
+        assert_eq!(required_java("26.4-snapshot-7", None), 21);
+        // Anything that does not parse is ancient: alphas, betas, web builds.
+        assert_eq!(required_java("a1.2.6", None), 8);
+        assert_eq!(required_java("b1.7.3", None), 8);
+        assert_eq!(required_java("25w37a", None), 8);
     }
 
     #[test]
@@ -1183,7 +1208,7 @@ mod tests {
         std::fs::create_dir_all(root.join("versions/26.3/26.3-natives")).unwrap();
 
         let options = Options {
-            java: Some(fake_java(&root.join("jdk"), 21)),
+            runtimes: Some(managed_runtime(root, 21)),
             ..Options::default()
         };
         let launch = prepare(root, "26.3", &Credentials::offline("Steve"), &options).unwrap();
@@ -1215,7 +1240,7 @@ mod tests {
 
         let creds = Credentials::offline("Steve");
         let options = Options {
-            java: Some(fake_java(&tmp.path().join("jdk"), 8)),
+            runtimes: Some(managed_runtime(tmp.path(), 8)),
             ..Options::default()
         };
         let launch = prepare(tmp.path(), "1.8.9+Fabric0.15.11", &creds, &options).unwrap();
@@ -1270,7 +1295,7 @@ mod tests {
         creds.access_token = "tok".into();
         creds.uuid = "uuid-1".into();
         let options = Options {
-            java: Some(fake_java(&tmp.path().join("jdk"), 8)),
+            runtimes: Some(managed_runtime(tmp.path(), 8)),
             ..Options::default()
         };
         let launch = prepare(tmp.path(), "1.8.9", &creds, &options).unwrap();
@@ -1295,7 +1320,7 @@ mod tests {
         .unwrap();
 
         let options = Options {
-            java: Some(fake_java(&tmp.path().join("jdk"), 8)),
+            runtimes: Some(managed_runtime(tmp.path(), 8)),
             ..Options::default()
         };
         let error = prepare(
@@ -1314,7 +1339,7 @@ mod tests {
         fixture(tmp.path());
         std::fs::remove_file(tmp.path().join("versions/1.8.9/1.8.9.jar")).unwrap();
         let options = Options {
-            java: Some(fake_java(&tmp.path().join("jdk"), 8)),
+            runtimes: Some(managed_runtime(tmp.path(), 8)),
             ..Options::default()
         };
         let error = prepare(
@@ -1328,14 +1353,46 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_without_java_version_gets_it_from_the_version_number() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 1.20.5 is the first release that needs 21; the metadata here has no
+        // `javaVersion`, so only the version id can decide.
+        write_version(
+            tmp.path(),
+            "1.20.5",
+            serde_json::json!({
+                "id": "1.20.5",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "assetIndex": { "id": "19" },
+                "libraries": []
+            }),
+        );
+        std::fs::write(tmp.path().join("versions/1.20.5/1.20.5.jar"), b"jar").unwrap();
+        let options = Options {
+            runtimes: Some(managed_runtime(tmp.path(), 21)),
+            ..Options::default()
+        };
+        let launch = prepare(
+            tmp.path(),
+            "1.20.5",
+            &Credentials::offline("Steve"),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(launch.required_major, 21, "1.20.5 needs 21");
+        assert_eq!(launch.java_major, 21);
+    }
+
+    #[test]
     fn a_too_old_java_is_refused_with_what_was_found() {
         let tmp = tempfile::tempdir().unwrap();
         fixture(tmp.path());
         let options = Options {
-            java: Some(fake_java(&tmp.path().join("jdk"), 8)),
+            runtimes: Some(managed_runtime(tmp.path(), 8)),
             ..Options::default()
         };
-        // The fake java reports 8, so ask for a profile that needs 17 by faking it.
+        // Only Java 8 is installed, and this profile asks for 21.
         write_version(
             tmp.path(),
             "1.21.11",
@@ -1349,15 +1406,16 @@ mod tests {
         );
         // Give it a jar so only the Java decision is under test.
         std::fs::write(tmp.path().join("versions/1.21.11/1.21.11.jar"), b"jar").unwrap();
-        let launch = prepare(
+        let error = prepare(
             tmp.path(),
             "1.21.11",
             &Credentials::offline("Steve"),
             &options,
         )
-        .expect("the explicit --java path is trusted, discovery is what refuses");
-        assert_eq!(launch.java_major, 8);
-        assert_eq!(launch.required_major, 21);
+        .expect_err("Java 8 cannot run a 21 profile");
+        assert!(error.contains("Java 21"), "{error}");
+        assert!(error.contains("Java 8"), "{error}");
+        assert!(error.contains("按 v"), "{error}");
     }
 
     #[test]
@@ -1393,7 +1451,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         fixture(tmp.path());
         let options = Options {
-            java: Some(fake_java(&tmp.path().join("jdk"), 8)),
+            runtimes: Some(managed_runtime(tmp.path(), 8)),
             width: 1280,
             height: 720,
             ..Options::default()
