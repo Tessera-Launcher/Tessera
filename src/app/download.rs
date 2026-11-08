@@ -1,0 +1,838 @@
+//! The download picker: the mirror's version list, search/kind filter, loader
+//! choice, and the install progress screen.
+//!
+//! The state structs and the `App` handlers that drive them live here; `App` in
+//! the parent module is still the only state machine, and this module never
+//! touches the terminal or a thread — it queues [`Effect`]s like every screen.
+
+use super::*;
+
+/// Which pane of the download picker has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerFocus {
+    Versions,
+    Loaders,
+    Search,
+}
+
+impl PickerFocus {
+    /// Tab order: versions → loaders → the filter bar → back.
+    fn next(self) -> Self {
+        match self {
+            PickerFocus::Versions => PickerFocus::Loaders,
+            PickerFocus::Loaders => PickerFocus::Search,
+            PickerFocus::Search => PickerFocus::Versions,
+        }
+    }
+}
+
+/// The kind-of-release filter above the version list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionFilter {
+    All,
+    Release,
+    Snapshot,
+    Old,
+}
+
+impl VersionFilter {
+    pub const ALL: [VersionFilter; 4] = [
+        VersionFilter::All,
+        VersionFilter::Release,
+        VersionFilter::Snapshot,
+        VersionFilter::Old,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VersionFilter::All => "全部",
+            VersionFilter::Release => "正式版",
+            VersionFilter::Snapshot => "快照",
+            VersionFilter::Old => "旧版",
+        }
+    }
+
+    /// Cycles the way `f` does; the mouse picks one directly.
+    fn next(self) -> Self {
+        match self {
+            VersionFilter::All => VersionFilter::Release,
+            VersionFilter::Release => VersionFilter::Snapshot,
+            VersionFilter::Snapshot => VersionFilter::Old,
+            VersionFilter::Old => VersionFilter::All,
+        }
+    }
+
+    fn matches(self, kind: &str) -> bool {
+        match self {
+            VersionFilter::All => true,
+            VersionFilter::Release => kind == "release",
+            VersionFilter::Snapshot => kind == "snapshot",
+            VersionFilter::Old => kind.starts_with("old_"),
+        }
+    }
+}
+
+/// Where the download screen is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStage {
+    /// Waiting for the mirror's version list.
+    LoadingVersions,
+    Picking,
+    Installing,
+    /// The install finished; the forced AOT training run is in progress.
+    Training,
+    Done,
+    Failed,
+}
+
+/// The download picker and the progress screen share this state.
+#[derive(Debug)]
+pub struct DownloadUi {
+    pub stage: DownloadStage,
+    /// Every version the mirror listed.
+    pub all: Vec<RemoteVersion>,
+    /// Indices into [`DownloadUi::all`] that survive the search and kind filter,
+    /// in display order. Keeping indices instead of cloned versions means a
+    /// keystroke in the search box re-filters without allocating a second copy
+    /// of the whole list.
+    visible: Vec<usize>,
+    /// Folded snapshot families, by key, that are currently opened.
+    pub expanded: Vec<String>,
+    /// The filtered list laid out as drawn lines (see [`crate::version_tree`]).
+    pub rows: Vec<crate::version_tree::Row>,
+    /// Folded groups in [`DownloadUi::rows`], cached so the pane title does not
+    /// walk every row on every frame.
+    folded: usize,
+    /// Search text, matched against the version id.
+    pub query: String,
+    pub filter: VersionFilter,
+    pub picked: usize,
+    /// Loaders compatible with the picked version, in [`LOADERS`] order.
+    pub loaders: Vec<Loader>,
+    pub loader_pick: usize,
+    pub focus: PickerFocus,
+    /// Files finished / total in the current batch.
+    pub done: usize,
+    pub total: usize,
+    /// Full size of the current batch, from the batch's opening event.
+    pub batch_total_bytes: u64,
+    pub remaining_bytes: u64,
+    /// Smoothed bytes per second.
+    pub speed: f64,
+    pub(crate) sample: Option<(Instant, u64)>,
+    pub error: Option<String>,
+    pub installed: Option<(String, Option<String>)>,
+    /// Class-load progress of the forced AOT training.
+    pub aot_loaded: usize,
+    pub aot_total: usize,
+    /// Java 28 is being prepared/downloaded before training starts.
+    pub aot_preparing: bool,
+    /// The game is gone and the JVM is assembling the cache.
+    pub aot_assembling: bool,
+    /// A short explanation for the Done screen (AOT skipped/failed).
+    pub aot_note: Option<String>,
+}
+
+impl Default for DownloadUi {
+    fn default() -> Self {
+        DownloadUi {
+            stage: DownloadStage::LoadingVersions,
+            all: Vec::new(),
+            visible: Vec::new(),
+            expanded: Vec::new(),
+            rows: Vec::new(),
+            folded: 0,
+            query: String::new(),
+            filter: VersionFilter::All,
+            picked: 0,
+            loaders: vec![Loader::None],
+            loader_pick: 0,
+            focus: PickerFocus::Versions,
+            done: 0,
+            total: 0,
+            batch_total_bytes: 0,
+            remaining_bytes: 0,
+            speed: 0.0,
+            sample: None,
+            error: None,
+            installed: None,
+            aot_loaded: 0,
+            aot_total: 0,
+            aot_preparing: false,
+            aot_assembling: false,
+            aot_note: None,
+        }
+    }
+}
+
+impl DownloadUi {
+    /// `0.0..=1.0` for the progress bar.
+    pub fn fraction(&self) -> f64 {
+        if self.batch_total_bytes > 0 && self.remaining_bytes <= self.batch_total_bytes {
+            let done_bytes = self.batch_total_bytes - self.remaining_bytes;
+            return (done_bytes as f64 / self.batch_total_bytes as f64).clamp(0.0, 1.0);
+        }
+        if self.total > 0 {
+            return (self.done as f64 / self.total as f64).clamp(0.0, 1.0);
+        }
+        0.0
+    }
+
+    pub fn percent(&self) -> u16 {
+        (self.fraction() * 100.0).round() as u16
+    }
+
+    /// `0.0..=1.0` for the AOT training bar.
+    pub fn aot_fraction(&self) -> f64 {
+        if self.aot_total == 0 {
+            0.0
+        } else {
+            (self.aot_loaded as f64 / self.aot_total as f64).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn picked_version(&self) -> Option<&RemoteVersion> {
+        self.visible.get(self.picked).map(|&index| &self.all[index])
+    }
+
+    /// How many of [`DownloadUi::all`] the current filter lets through.
+    pub fn matched(&self) -> usize {
+        self.visible.len()
+    }
+
+    /// The visible version at `index` (a position in the filtered list).
+    pub fn version(&self, index: usize) -> &RemoteVersion {
+        &self.all[self.visible[index]]
+    }
+
+    /// The filtered list, in display order.
+    #[cfg(test)]
+    pub fn versions(&self) -> impl Iterator<Item = &RemoteVersion> {
+        self.visible.iter().map(|&index| &self.all[index])
+    }
+
+    /// The indices behind [`DownloadUi::versions`]; the tree layout and the
+    /// title need both the list and what it points at.
+    pub fn visible(&self) -> &[usize] {
+        &self.visible
+    }
+
+    /// Folded groups currently drawn.
+    pub fn folded_rows(&self) -> usize {
+        self.folded
+    }
+
+    /// The drawn row the highlight is on.
+    ///
+    /// `picked` is a version index, and one version can be drawn twice (as the
+    /// newest member of an opened group, which is also that group's header). The
+    /// child row wins, because that is the line that stands for the version.
+    pub fn cursor(&self) -> usize {
+        self.rows
+            .iter()
+            .position(|row| matches!(row.kind, crate::version_tree::RowKind::Version(index) if index == self.picked))
+            .or_else(|| self.rows.iter().position(|row| row.anchor() == self.picked))
+            .unwrap_or(0)
+    }
+
+    /// Rows the keyboard walks: versions, and groups that are folded.
+    pub fn stops(&self) -> Vec<usize> {
+        (0..self.rows.len())
+            .filter(|index| self.rows[*index].is_stop())
+            .collect()
+    }
+
+    /// Re-lay the filtered list out. Folding only happens in the "全部" view with
+    /// no search: a search must never hide the version it matched.
+    pub fn rebuild_rows(&mut self) {
+        let tree = self.filter == VersionFilter::All && self.query.trim().is_empty();
+        self.rows = crate::version_tree::build(&self.all, &self.visible, &self.expanded, tree);
+        self.folded = self
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.kind,
+                    crate::version_tree::RowKind::Group {
+                        expanded: false,
+                        ..
+                    }
+                )
+            })
+            .count();
+    }
+
+    /// The drawn row of the folded group the cursor is in, if any: the header
+    /// itself when the header is selected, or the one above an opened member.
+    fn group_row_at_cursor(&self) -> Option<usize> {
+        let cursor = self.cursor();
+        let rows = &self.rows;
+        if matches!(
+            rows.get(cursor)?.kind,
+            crate::version_tree::RowKind::Group { .. }
+        ) {
+            return Some(cursor);
+        }
+        rows[..cursor]
+            .iter()
+            .rposition(|row| matches!(row.kind, crate::version_tree::RowKind::Group { .. }))
+    }
+
+    pub fn picked_loader(&self) -> Loader {
+        self.loaders
+            .get(self.loader_pick)
+            .copied()
+            .unwrap_or(Loader::None)
+    }
+
+    /// Rebuild the visible list from `all`, keeping the picked id when it survives.
+    fn apply_filter(&mut self) {
+        let keep = self.picked_version().map(|version| version.id.clone());
+        let query = self.query.trim().to_lowercase();
+        let filter = self.filter;
+        // Reuse the allocation and only store indices: no version is cloned, so a
+        // keystroke costs a scan, not a full copy of the mirror's list.
+        self.visible.clear();
+        for (index, version) in self.all.iter().enumerate() {
+            if !filter.matches(&version.kind) {
+                continue;
+            }
+            if !query.is_empty() && !version.id.to_lowercase().contains(&query) {
+                continue;
+            }
+            self.visible.push(index);
+        }
+
+        self.picked = keep
+            .and_then(|id| {
+                self.visible
+                    .iter()
+                    .position(|&index| self.all[index].id == id)
+            })
+            .unwrap_or(0)
+            .min(self.visible.len().saturating_sub(1));
+        // A new list folds back up: keeping families open across a filter change
+        // would leave rows that are no longer on screen opened.
+        self.expanded.clear();
+        self.rebuild_rows();
+        self.refresh_loaders();
+    }
+
+    /// Rebuild the loader list for the newly picked version, keeping the choice
+    /// when that loader still exists.
+    fn refresh_loaders(&mut self) {
+        let Some(version) = self.picked_version() else {
+            self.loaders = vec![Loader::None];
+            self.loader_pick = 0;
+            return;
+        };
+        let previous = self.picked_loader();
+        self.loaders = LOADERS
+            .into_iter()
+            .filter(|loader| loader.compatible(&version.id))
+            .collect();
+        self.loader_pick = self
+            .loaders
+            .iter()
+            .position(|loader| *loader == previous)
+            .unwrap_or(0);
+    }
+}
+
+impl App {
+    // ---- download ----
+
+    /// Label for the active download source.
+    pub fn source_label(&self) -> &'static str {
+        self.source.label()
+    }
+
+    /// Where the launcher's own Java runtimes live; launching looks there first.
+    pub fn set_runtimes(&mut self, runtimes: PathBuf) {
+        self.runtimes = runtimes.clone();
+        self.launch_options.runtimes = Some(runtimes);
+    }
+
+    /// Switch where downloads come from. Deliberately not persisted: the next
+    /// start falls back to the default (or `--mirror`), so a one-off switch does
+    /// not quietly become the new normal.
+    pub fn set_source(&mut self, source: crate::install::Source) {
+        if self.source == source {
+            return;
+        }
+        self.source = source;
+        self.log(format!("下载源：{}", source.label()));
+        self.status = format!("下载源：{}", source.label());
+    }
+
+    /// `s` in the picker: the other source.
+    pub fn toggle_source(&mut self) {
+        self.set_source(self.source.next());
+    }
+
+    /// Open the picker and ask the main loop to fetch the version list.
+    pub fn open_download(&mut self) {
+        self.download = DownloadUi::default();
+        self.screen = Screen::Download;
+        self.request(Effect::FetchVersions);
+        self.status = "下载：正在获取版本列表".to_string();
+        self.log("打开下载界面");
+    }
+
+    pub fn close_download(&mut self) {
+        self.screen = Screen::Main;
+        self.download.stage = DownloadStage::Picking;
+    }
+
+    pub fn handle_download_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let _ = modifiers;
+        match self.download.stage {
+            DownloadStage::LoadingVersions => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.close_download();
+                }
+            }
+            DownloadStage::Picking => {
+                // The search box swallows printable keys, so it gets first say.
+                if self.download.focus == PickerFocus::Search {
+                    match code {
+                        KeyCode::Esc => {
+                            if self.download.query.is_empty() {
+                                self.download.focus = PickerFocus::Versions;
+                            } else {
+                                self.download.query.clear();
+                                self.download.apply_filter();
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if self.download.query.pop().is_some() {
+                                self.download.apply_filter();
+                            }
+                        }
+                        KeyCode::Tab => self.download.focus = self.download.focus.next(),
+                        // Arrows still walk the list while the caret is in the box.
+                        KeyCode::Up => self.picker_step(-1, true),
+                        KeyCode::Down => self.picker_step(1, true),
+                        KeyCode::Enter => self.start_install(),
+                        KeyCode::Char(c) if !c.is_control() => {
+                            self.download.query.push(c);
+                            self.download.apply_filter();
+                        }
+                        _ => {}
+                    }
+                    return true;
+                }
+                match code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
+                    KeyCode::Tab => self.download.focus = self.download.focus.next(),
+                    KeyCode::Char('/') => self.download.focus = PickerFocus::Search,
+                    KeyCode::Char('s') => self.toggle_source(),
+                    KeyCode::Char('f') => {
+                        self.download.filter = self.download.filter.next();
+                        self.download.apply_filter();
+                        self.status = format!("下载：{} 版本", self.download.filter.label());
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.picker_step(-1, true),
+                    KeyCode::Down | KeyCode::Char('j') => self.picker_step(1, true),
+                    // Tree controls: `←` closes, `→` opens, `Space` flips whichever
+                    // group the cursor is in (its header, or one of its members).
+                    KeyCode::Left => self.toggle_group_at_cursor(Some(false)),
+                    KeyCode::Right => self.toggle_group_at_cursor(Some(true)),
+                    KeyCode::Char(' ') => self.toggle_group_at_cursor(None),
+                    KeyCode::Enter => self.start_install(),
+                    _ => {}
+                }
+            }
+            DownloadStage::Installing | DownloadStage::Training => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.screen = Screen::Main;
+                    self.log("安装/训练转为后台进行，完成后会重新扫描版本");
+                }
+            }
+            DownloadStage::Done | DownloadStage::Failed => {
+                if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                    self.reload();
+                    self.screen = Screen::Main;
+                }
+            }
+        }
+        true
+    }
+
+    /// Move the picker selection by `delta` steps.
+    ///
+    /// The keyboard wraps (`↓` on the last row starts over) and the wheel stops at
+    /// both ends; that is the only difference, so both share this walk.
+    fn picker_step(&mut self, delta: i32, wrap: bool) {
+        let step = |position: i32, count: usize| -> usize {
+            let last = count as i32 - 1;
+            let target = position + delta;
+            (if wrap {
+                target.rem_euclid(count as i32)
+            } else {
+                target.clamp(0, last)
+            }) as usize
+        };
+        match self.download.focus {
+            // Walk the drawn rows, not the filtered list: a folded group is one
+            // stop, however many snapshots it hides, and its members are not
+            // steps either the keyboard or the wheel may land on.
+            PickerFocus::Versions | PickerFocus::Search => {
+                let stops = self.download.stops();
+                if stops.is_empty() {
+                    return;
+                }
+                let cursor = self.download.cursor();
+                let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
+                let next = step(position as i32, stops.len());
+                self.download.picked = self.download.rows[stops[next]].anchor();
+                self.download.refresh_loaders();
+            }
+            PickerFocus::Loaders => {
+                let count = self.download.loaders.len();
+                if count == 0 {
+                    return;
+                }
+                self.download.loader_pick = step(self.download.loader_pick as i32, count);
+            }
+        }
+    }
+
+    pub(super) fn handle_download_mouse(&mut self, layout: &Layout, event: MouseEvent) {
+        if self.download.stage != DownloadStage::Picking {
+            return;
+        }
+        let (column, row) = (event.column, event.row);
+        // Clicks land on rows; the wheel works anywhere in the pane, so pointing
+        // at the header or the empty space below the last row still scrolls.
+        let over_versions_rows = layout.download_versions.contains(column, row);
+        let over_loaders_rows = layout.download_loaders.contains(column, row);
+        let over_versions = layout.download_versions_pane.contains(column, row);
+        let over_loaders = layout.download_loaders_pane.contains(column, row);
+        let over_search = layout.download_search.contains(column, row);
+        let chip = layout
+            .download_filters
+            .iter()
+            .position(|area| area.contains(column, row));
+        // The source switch sits inside the loader pane, so it has to be tested
+        // before the pane's rows are.
+        let source_chip = layout
+            .download_sources
+            .iter()
+            .position(|area| area.contains(column, row));
+
+        match event.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
+                    -WHEEL_STEP
+                } else {
+                    WHEEL_STEP
+                };
+                // The pane under the pointer takes the focus, so the highlighted
+                // border always says which list the wheel is about to move.
+                if over_versions {
+                    self.download.focus = PickerFocus::Versions;
+                    self.picker_step(delta, false);
+                } else if over_loaders {
+                    self.download.focus = PickerFocus::Loaders;
+                    self.picker_step(delta, false);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if over_search {
+                    self.download.focus = PickerFocus::Search;
+                } else if let Some(index) = chip {
+                    self.download.filter = VersionFilter::ALL[index];
+                    self.download.apply_filter();
+                } else if let Some(index) = source_chip {
+                    // The switch lives in the loader pane, so clicking it focuses
+                    // that pane like any other click there would.
+                    self.download.focus = PickerFocus::Loaders;
+                    self.set_source(crate::install::Source::ALL[index]);
+                } else if over_versions_rows {
+                    self.download.focus = PickerFocus::Versions;
+                    let drawn =
+                        layout.download_offset + (row - layout.download_versions.y) as usize;
+                    // A folded group unfolds on the first click either way; a
+                    // second click on the same row starts the install.
+                    let now = Instant::now();
+                    let double = matches!(
+                        self.download_click,
+                        Some((at, previous))
+                            if previous == drawn && now.duration_since(at) <= DOUBLE_CLICK
+                    );
+                    if double {
+                        self.download_click = None;
+                        self.pick_version_row(drawn);
+                        self.start_install();
+                    } else {
+                        self.download_click = Some((now, drawn));
+                        self.pick_version_row(drawn);
+                    }
+                } else if over_loaders_rows {
+                    self.download.focus = PickerFocus::Loaders;
+                    let index = (row - layout.download_loaders.y) as usize;
+                    if index < self.download.loaders.len() {
+                        self.download.loader_pick = index;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Clicking a drawn row: a version selects it, a folded group opens or closes.
+    fn pick_version_row(&mut self, drawn: usize) {
+        let Some(row) = self.download.rows.get(drawn).cloned() else {
+            return;
+        };
+        match row.kind {
+            crate::version_tree::RowKind::Version(index) => {
+                self.download.picked = index;
+                self.download.refresh_loaders();
+            }
+            // The row says "there is more behind me", so clicking it is what unfolds
+            // it; clicking the opened header folds it back up.
+            crate::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
+        }
+    }
+
+    /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
+    /// `drawn` is `None`.
+    fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
+        let Some(crate::version_tree::RowKind::Group {
+            key,
+            first,
+            expanded,
+            ..
+        }) = self.download.rows.get(drawn).map(|row| row.kind.clone())
+        else {
+            return;
+        };
+        let open = expand.unwrap_or(!expanded);
+        self.download.expanded.retain(|open_key| open_key != &key);
+        if open {
+            self.download.expanded.push(key);
+        }
+        self.download.picked = first;
+        self.download.rebuild_rows();
+        self.download.refresh_loaders();
+    }
+
+    /// `←` folds the group the cursor is in, `→` unfolds it, `Space` flips it.
+    fn toggle_group_at_cursor(&mut self, expand: Option<bool>) {
+        let Some(drawn) = self.download.group_row_at_cursor() else {
+            return;
+        };
+        self.toggle_group(drawn, expand);
+    }
+
+    fn start_install(&mut self) {
+        let Some(version) = self.download.picked_version() else {
+            return;
+        };
+        let version = version.id.clone();
+        let loader = self.download.picked_loader();
+        self.download.stage = DownloadStage::Installing;
+        self.download.done = 0;
+        self.download.total = 0;
+        self.download.batch_total_bytes = 0;
+        self.download.remaining_bytes = 0;
+        self.download.speed = 0.0;
+        self.download.sample = None;
+        self.screen = Screen::Installing;
+        self.status = format!("安装 {version} · {}", loader.label());
+        self.log(format!("开始安装 {version}（{}）", loader.label()));
+        self.request(Effect::Install { version, loader });
+    }
+
+    /// Apply an event from the download worker.
+    pub fn handle_install_event(&mut self, event: InstallEvent) {
+        match event {
+            InstallEvent::Versions(versions) => {
+                self.log(format!("版本列表：{} 个", versions.len()));
+                self.download.all = versions;
+                self.download.stage = DownloadStage::Picking;
+                self.download.apply_filter();
+                self.status = "下载：选择版本与 Loader".to_string();
+            }
+            InstallEvent::Log(line) => {
+                self.log(line);
+                self.download.stage = DownloadStage::Installing;
+            }
+            InstallEvent::Progress {
+                done,
+                total,
+                remaining_bytes,
+                total_bytes,
+            } => {
+                let now = Instant::now();
+                if total_bytes > 0 {
+                    self.download.batch_total_bytes = total_bytes;
+                }
+                // Bytes per second, smoothed so the number does not flicker.
+                if let Some((previous_at, previous_remaining)) = self.download.sample {
+                    let seconds = now.duration_since(previous_at).as_secs_f64();
+                    if seconds > 0.01 {
+                        let moved = previous_remaining.saturating_sub(remaining_bytes);
+                        if moved > 0 {
+                            let instant = moved as f64 / seconds;
+                            self.download.speed = if self.download.speed > 0.0 {
+                                self.download.speed * 0.6 + instant * 0.4
+                            } else {
+                                instant
+                            };
+                        }
+                    }
+                }
+                self.download.sample = Some((now, remaining_bytes));
+                self.download.done = done;
+                self.download.total = total;
+                self.download.remaining_bytes = remaining_bytes;
+            }
+            InstallEvent::Finished { version, loader } => {
+                self.download.installed = Some((version.clone(), loader.clone()));
+                self.download.aot_loaded = 0;
+                self.download.aot_total = 0;
+                self.download.aot_preparing = false;
+                self.download.aot_assembling = false;
+                self.download.aot_note = None;
+                self.reload();
+                self.log(format!(
+                    "安装完成：{version}{}",
+                    loader
+                        .as_ref()
+                        .map_or_else(String::new, |loader| format!(" + {loader}"))
+                ));
+                // 26.1+ vanilla installs pay for one training run as part of the
+                // install. Mod loaders are excluded: their classes go through a
+                // custom ClassLoader and cannot enter the AOT cache anyway.
+                if loader.is_none() && crate::aot::eligible(&version) {
+                    self.download.stage = DownloadStage::Training;
+                    self.status = format!("安装完成，正在训练 {version} 的 AOT 缓存");
+                    self.log("开始 AOT 训练（26.1+ 原版）");
+                    self.request(Effect::TrainAot(version));
+                } else {
+                    self.download.stage = DownloadStage::Done;
+                    self.status = format!("安装完成：{version}");
+                }
+            }
+            InstallEvent::Failed(message) => {
+                self.download.stage = DownloadStage::Failed;
+                self.download.error = Some(message.clone());
+                self.status = "下载失败".to_string();
+                self.log(format!("下载失败：{message}"));
+            }
+        }
+    }
+
+    /// Apply a forced-AOT-training event.
+    pub fn handle_aot_event(&mut self, event: crate::aot::Event) {
+        use crate::aot::Event;
+        let (version, showing) = match &event {
+            Event::Preparing { version, .. }
+            | Event::Progress { version, .. }
+            | Event::Assembling { version }
+            | Event::Finished { version, .. }
+            | Event::Skipped { version, .. }
+            | Event::Failed { version, .. } => (
+                version.clone(),
+                self.download
+                    .installed
+                    .as_ref()
+                    .is_some_and(|(installed, _)| installed == version)
+                    && self.screen == Screen::Installing,
+            ),
+        };
+        match event {
+            Event::Preparing { message, .. } => {
+                self.download.aot_preparing = true;
+                self.download.aot_loaded = 0;
+                self.download.aot_total = 0;
+                if showing {
+                    self.download.stage = DownloadStage::Training;
+                }
+                self.status = message.clone();
+                self.log(message);
+            }
+            Event::Progress { loaded, total, .. } => {
+                self.download.aot_preparing = false;
+                self.download.aot_loaded = loaded;
+                self.download.aot_total = total;
+                if showing {
+                    self.download.stage = DownloadStage::Training;
+                    self.download.aot_assembling = false;
+                }
+                self.status = if total > 0 {
+                    format!("AOT 训练：{loaded} / {total} 个类")
+                } else {
+                    format!("AOT 训练：已加载 {loaded} 个类")
+                };
+            }
+            Event::Assembling { .. } => {
+                self.download.aot_preparing = false;
+                self.download.aot_assembling = true;
+                self.download.aot_loaded = self.download.aot_loaded.max(self.download.aot_total);
+                if showing {
+                    self.download.stage = DownloadStage::Training;
+                }
+                self.status = "AOT 训练完成，正在组装缓存…".to_string();
+                self.log("AOT 训练完成，正在组装缓存（可能几分钟）");
+            }
+            Event::Finished {
+                loaded,
+                total,
+                java_major,
+                java_version,
+                ..
+            } => {
+                let note = format!(
+                    "AOT 缓存已生成（Java {java_major} {java_version}，{loaded}/{total} 个类）"
+                );
+                self.download.aot_preparing = false;
+                self.download.aot_assembling = false;
+                self.download.aot_note = Some(note.clone());
+                if showing {
+                    self.download.stage = DownloadStage::Done;
+                }
+                self.status = note.clone();
+                self.log(note);
+            }
+            Event::Skipped { reason, .. } => {
+                self.download.aot_preparing = false;
+                self.download.aot_note = Some(format!("跳过 AOT：{reason}"));
+                if showing {
+                    self.download.stage = DownloadStage::Done;
+                }
+                self.status = format!("安装完成（跳过 AOT：{reason}）");
+                self.log(format!("跳过 AOT 训练：{reason}"));
+            }
+            Event::Failed { reason, .. } => {
+                self.download.aot_preparing = false;
+                self.download.aot_assembling = false;
+                self.download.aot_note = Some(format!("AOT 训练失败：{reason}"));
+                if showing {
+                    self.download.stage = DownloadStage::Done;
+                }
+                self.status = "安装完成，AOT 训练失败".to_string();
+                self.log(format!("AOT 训练失败：{reason}"));
+                let _ = version;
+            }
+        }
+    }
+
+    /// Called on every loop iteration: drop the speed reading when updates stop.
+    ///
+    /// Returns whether anything visible changed, so the main loop can skip a
+    /// redraw for an idle launcher.
+    pub fn tick(&mut self) -> bool {
+        let mut changed = false;
+        if let Some((at, _)) = self.download.sample {
+            if at.elapsed().as_secs_f64() > 2.0 && self.download.speed > 0.0 {
+                self.download.speed = 0.0;
+                changed = true;
+            }
+        }
+        changed
+    }
+}

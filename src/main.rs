@@ -7,6 +7,7 @@
 mod accounts;
 mod app;
 mod app_ids;
+mod aot;
 mod cleanup;
 mod clipboard;
 mod discover;
@@ -222,7 +223,11 @@ fn run(
     let mut session_rx: Option<Receiver<SessionEvent>> = None;
     let mut java_rx: Option<Receiver<java::Event>> = None;
     let mut sweep_rx: Option<Receiver<cleanup::Sweep>> = None;
-    let mut game_rx: Vec<Receiver<(String, io::Result<std::process::ExitStatus>)>> = Vec::new();
+    // One channel per launched game: a second Enter must not lose the exit status
+    // of the one already running.
+    let mut launch_rx: Vec<Receiver<launch::GameEvent>> = Vec::new();
+    let mut aot_rx: Option<Receiver<aot::Event>> = None;
+    let mut clipboard_rx: Option<Receiver<(String, Result<&'static str, String>)>> = None;
     // The launcher is idle most of the time; redraw only when something changed.
     let mut dirty = true;
 
@@ -273,23 +278,10 @@ fn run(
                     java_rx = Some(java::spawn_install(app.runtimes.clone(), runtime, urls));
                 }
                 Effect::Copy(text) => {
-                    match clipboard::copy(&text) {
-                        // Which route worked matters: a terminal that ignores
-                        // OSC 52 looks exactly like a successful copy otherwise.
-                        Ok(method) => {
-                            app.log(format!("剪贴板：{method}"));
-                            if method.starts_with("OSC 52") {
-                                app.log(
-                                    "提示：OSC 52 需要终端支持；粘贴不出来就安装 wl-clipboard/xclip，\
-                                     或在终端里允许 OSC 52（tmux 另需 set-clipboard on）",
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            app.log(format!("复制失败：{error}"));
-                            app.status = "复制失败".to_string();
-                        }
-                    }
+                    // Probing the platform tools can block for a tool timeout, so
+                    // it runs on a worker. OSC 52 is written when the answer comes
+                    // back, from this thread, which owns the terminal.
+                    clipboard_rx = Some(clipboard::spawn_tool_copy(text));
                 }
                 Effect::OpenBrowser(url) => {
                     if let Err(error) = open_in_browser(&url) {
@@ -306,15 +298,24 @@ fn run(
                         installed,
                     ));
                 }
-                Effect::Watch(dir, mut child) => {
-                    // Waiting here would freeze the UI for the whole session;
-                    // dropping the handle would leave a zombie and lose the exit
-                    // code.
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || {
-                        let _ = sender.send((dir, child.wait()));
-                    });
-                    game_rx.push(receiver);
+                Effect::TrainAot(version) => {
+                    aot_rx = Some(aot::spawn(
+                        app.root.clone(),
+                        app.runtimes.clone(),
+                        app.launch_options.clone(),
+                        app.settings.github_proxy.clone(),
+                        version,
+                    ));
+                }
+                Effect::Launch { dir, credentials } => {
+                    // `prepare` (which probes the JVM) and `wait` both run on the
+                    // worker; only the events come back to this thread.
+                    launch_rx.push(launch::spawn_game(
+                        app.root.clone(),
+                        dir,
+                        credentials,
+                        app.launch_options.clone(),
+                    ));
                 }
             }
         }
@@ -327,15 +328,14 @@ fn run(
 
         dirty |= drain(&mut sweep_rx, |sweep| app.handle_sweep(sweep));
 
-        // One channel per launched game; keep the ones still running.
-        game_rx.retain_mut(|receiver| loop {
+        dirty |= drain(&mut aot_rx, |event| app.handle_aot_event(event));
+
+        // Keep the channels of games that are still running; a disconnected one
+        // has delivered its exit status and can go.
+        launch_rx.retain_mut(|receiver| loop {
             match receiver.try_recv() {
-                Ok((dir, Ok(status))) => {
-                    app.handle_game_exit(&dir, status);
-                    dirty = true;
-                }
-                Ok((_, Err(error))) => {
-                    app.log(format!("无法等待游戏进程：{error}"));
+                Ok(event) => {
+                    app.handle_game_event(event);
                     dirty = true;
                 }
                 Err(TryRecvError::Empty) => return true,
@@ -345,19 +345,33 @@ fn run(
 
         dirty |= drain(&mut login_rx, |event| app.handle_login_event(event));
 
-        if !app.pending_log.is_empty() {
-            // One write per line; the file is opened in append mode and only a few
-            // lines are produced per second even during a download.
-            if let Some(file) = log_file.as_mut() {
-                let lines = std::mem::take(&mut app.pending_log);
-                let mut failure = None;
-                for line in &lines {
-                    if let Err(error) = file.write(line) {
-                        failure = Some(error);
-                        break;
+        dirty |= drain(&mut clipboard_rx, |(text, tool)| {
+            let method = clipboard::outcome(tool, clipboard::write_osc52(&text));
+            match method {
+                // Which route worked matters: a terminal that ignores OSC 52 looks
+                // exactly like a successful copy otherwise.
+                Ok(method) => {
+                    app.log(format!("剪贴板：{method}"));
+                    if method.starts_with("OSC 52") {
+                        app.log(
+                            "提示：OSC 52 需要终端支持；粘贴不出来就安装 wl-clipboard/xclip，\
+                             或在终端里允许 OSC 52（tmux 另需 set-clipboard on）",
+                        );
                     }
                 }
-                if let Some(error) = failure {
+                Err(error) => {
+                    app.log(format!("复制失败：{error}"));
+                    app.status = "复制失败".to_string();
+                }
+            }
+        });
+
+        if !app.pending_log.is_empty() {
+            // Everything queued in this iteration goes out in one write: a download
+            // logs per file, and a syscall per line is the expensive part.
+            if let Some(file) = log_file.as_mut() {
+                let lines = std::mem::take(&mut app.pending_log);
+                if let Err(error) = file.write_lines(&lines) {
                     // Stop trying: a full disk would otherwise fail on every frame.
                     log_file = None;
                     app.pending_log.clear();

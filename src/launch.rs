@@ -1,11 +1,14 @@
 //! Build a launch command: merge the version chain, resolve the classpath,
 //! substitute Mojang's `${}` placeholders, find a Java, hand back a process.
 //!
-//! No process is spawned from here — [`prepare`] returns a [`Launch`] and the UI
-//! decides when to run it, which keeps the whole thing testable without a JVM.
+//! [`prepare`] builds the command without running anything, which keeps the
+//! whole thing testable without a JVM. [`spawn_game`] is the only function here
+//! that starts a process, and it does so on a worker thread: preparing a launch
+//! probes the JVM and stats the classpath, which must not happen in the UI loop.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 
 /// Who the game should think is playing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +136,37 @@ pub fn prepare(
     creds: &Credentials,
     options: &Options,
 ) -> Result<Launch, String> {
+    prepare_inner(root, version_dir_name, creds, options, None)
+}
+
+/// Build the command with a specific Java runtime, for AOT training.
+///
+/// Training has to use the same JVM the cache will later be replayed on, and
+/// that may be newer than the version's minimum (Java 28 for a 25 profile).
+pub fn prepare_with_java(
+    root: &Path,
+    version_dir_name: &str,
+    creds: &Credentials,
+    options: &Options,
+    java: PathBuf,
+    java_major: u32,
+) -> Result<Launch, String> {
+    prepare_inner(
+        root,
+        version_dir_name,
+        creds,
+        options,
+        Some((java, java_major)),
+    )
+}
+
+fn prepare_inner(
+    root: &Path,
+    version_dir_name: &str,
+    creds: &Credentials,
+    options: &Options,
+    java_override: Option<(PathBuf, u32)>,
+) -> Result<Launch, String> {
     let merged = merge_chain(root, version_dir_name)?;
     // The profile's own `javaVersion` wins; older metadata gets the legacy rules.
     // The JSON id is the better fallback than the folder name: a folder may be
@@ -145,18 +179,35 @@ pub fn prepare(
         .runtimes
         .clone()
         .ok_or_else(|| "没有配置 Java 运行时目录".to_string())?;
-    let (java, java_major) = find_java(&runtimes, required)?;
-
     let version_dir = root.join("versions").join(version_dir_name);
+    // A finished AOT training run stores the exact JVM build it used. Launching
+    // with a different JVM would make the cache silently unusable, so the cache
+    // also chooses the Java here. Training itself passes an explicit override.
+    let aot = if java_override.is_none() {
+        aot_cache(&version_dir, version_dir_name, &runtimes)
+    } else {
+        None
+    };
+    let (java, java_major) = if let Some(selection) = &aot {
+        (selection.java.clone(), selection.java_major)
+    } else if let Some(override_java) = java_override {
+        override_java
+    } else {
+        find_java(&runtimes, required)?
+    };
     // A loader install copies the parent's client jar without renaming it, so the
-    // jar next to a `26.3+Fabric…` profile is still `26.3.jar`.
-    let client_jar =
+    // jar next to a `26.3+Fabric…` profile is still `26.3.jar`. A trained
+    // vanilla profile uses the unsigned copy the cache was built from.
+    let client_jar = if let Some(selection) = &aot {
+        selection.unsigned_jar.clone()
+    } else {
         client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
             format!(
                 "缺少客户端 jar：{}（重新安装这个版本）",
                 version_dir.display()
             )
-        })?;
+        })?
+    };
 
     // Extension points the profile may test (`has_custom_resolution`, demo mode,
     // quick play). One map for the classpath rules and the argument rules, so the
@@ -294,6 +345,11 @@ pub fn prepare(
         args.push(options.height.to_string());
     }
 
+    if let Some(selection) = &aot {
+        args.insert(0, format!("-XX:AOTCache={}", selection.cache.display()));
+        args.insert(1, format!("-javaagent:{}", selection.agent.display()));
+    }
+
     Ok(Launch {
         command: Command {
             exe: java,
@@ -305,6 +361,113 @@ pub fn prepare(
         classpath_entries: classpath.len(),
         natives,
         main_class: merged.main_class,
+    })
+}
+
+/// What a background launch reports.
+#[derive(Debug)]
+pub enum GameEvent {
+    /// The process is running; its output is discarded, not inherited.
+    Started { dir: String, pid: u32 },
+    /// Nothing was started; `reason` is user-facing.
+    Failed { reason: String },
+    /// The process ended (or waiting on it failed).
+    Exited {
+        dir: String,
+        status: std::io::Result<std::process::ExitStatus>,
+    },
+}
+
+/// Prepare, spawn and reap one version on a worker thread.
+///
+/// The whole sequence is here so the UI thread never pays for [`prepare`] (which
+/// runs `java -version` and reads the version chain) and never blocks on
+/// `wait`. [`GameEvent::Started`] arrives as soon as the child exists.
+pub fn spawn_game(
+    root: PathBuf,
+    version_dir: String,
+    credentials: Credentials,
+    options: Options,
+) -> Receiver<GameEvent> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let prepared = match prepare(&root, &version_dir, &credentials, &options) {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                let _ = sender.send(GameEvent::Failed { reason });
+                return;
+            }
+        };
+        let mut command = std::process::Command::new(&prepared.command.exe);
+        command
+            .args(&prepared.command.args)
+            .current_dir(&prepared.command.cwd)
+            // The game writes to the alternate screen; inheriting stdio would
+            // scribble over the TUI.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match command.spawn() {
+            Ok(mut child) => {
+                let _ = sender.send(GameEvent::Started {
+                    dir: version_dir.clone(),
+                    pid: child.id(),
+                });
+                let status = child.wait();
+                let _ = sender.send(GameEvent::Exited {
+                    dir: version_dir,
+                    status,
+                });
+            }
+            Err(error) => {
+                let _ = sender.send(GameEvent::Failed {
+                    reason: format!("无法启动 Java：{error}"),
+                });
+            }
+        }
+    });
+    receiver
+}
+
+/// The AOT cache and the exact JVM it was trained with, if both still exist.
+///
+/// The metadata lives next to the cache in the version directory, so uninstall
+/// removes both and a moved profile keeps working.
+struct AotSelection {
+    cache: PathBuf,
+    java: PathBuf,
+    java_major: u32,
+    unsigned_jar: PathBuf,
+    agent: PathBuf,
+}
+
+fn aot_cache(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Option<AotSelection> {
+    #[derive(serde::Deserialize)]
+    struct Meta {
+        java_major: u32,
+        java_version: String,
+        unsigned_jar: String,
+        agent: String,
+    }
+    let cache = version_dir.join(format!("{version_dir_name}.aot"));
+    let meta_path = version_dir.join(format!("{version_dir_name}.aot.json"));
+    if !cache.is_file() {
+        return None;
+    }
+    let meta: Meta = serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
+    let java = crate::java::installed_runtimes(runtimes)
+        .into_iter()
+        .find(|runtime| runtime.version == meta.java_version && runtime.major == meta.java_major)?;
+    let unsigned_jar = version_dir.join(&meta.unsigned_jar);
+    let agent = version_dir.join(&meta.agent);
+    if !unsigned_jar.is_file() || !agent.is_file() {
+        return None;
+    }
+    Some(AotSelection {
+        cache,
+        java: java.java,
+        java_major: meta.java_major,
+        unsigned_jar,
+        agent,
     })
 }
 
@@ -674,10 +837,20 @@ fn substitute(text: &str, vars: &HashMap<&str, String>) -> String {
 /// The first path component is the directory name; every further hop is a
 /// profile `id`, which is what `inheritsFrom` names (and is a directory name for
 /// anything an installer wrote).
+/// How many `inheritsFrom` hops a chain may take.
+///
+/// Loader profiles are one or two hops deep; the cap is a guard against a
+/// hand-edited or corrupted JSON, not a format limit.
+const MAX_CHAIN_DEPTH: usize = 8;
+
 fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>, String> {
-    let mut chain = Vec::new();
+    let mut chain: Vec<RawVersion> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut current = version_dir_name.to_string();
-    for _ in 0..8 {
+    loop {
+        if !seen.insert(current.clone()) {
+            return Err(format!("版本链有环：{} 又继承回自己", current));
+        }
         let path = root
             .join("versions")
             .join(&current)
@@ -692,7 +865,16 @@ fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>, St
         let next = version.inherits_from.clone();
         chain.push(version);
         match next {
-            Some(parent) => current = parent,
+            Some(parent) => {
+                // Refuse a chain longer than the format ever needs instead of
+                // silently launching the 8th profile without its parent.
+                if chain.len() >= MAX_CHAIN_DEPTH {
+                    return Err(format!(
+                        "版本链超过 {MAX_CHAIN_DEPTH} 层：{parent} 没有读取（检查 inheritsFrom）"
+                    ));
+                }
+                current = parent;
+            }
             None => break,
         }
     }
@@ -1023,6 +1205,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(launch.command.exe, java, "the managed runtime is used");
+        assert_eq!(launch.java_major, 8);
+    }
+
+    #[test]
+    fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        fixture(tmp.path());
+        let runtimes = managed_runtime(tmp.path(), 8);
+        let version_dir = tmp.path().join("versions/1.8.9");
+        let cache = version_dir.join("1.8.9.aot");
+        let unsigned = version_dir.join("1.8.9.unsigned.jar");
+        let agent = version_dir.join("1.8.9.aot-agent.jar");
+        std::fs::write(&cache, b"cache").unwrap();
+        std::fs::write(&unsigned, b"jar").unwrap();
+        std::fs::write(&agent, b"agent").unwrap();
+        std::fs::write(
+            version_dir.join("1.8.9.aot.json"),
+            r#"{"java_major":8,"java_version":"8.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        )
+        .unwrap();
+
+        let found = aot_cache(&version_dir, "1.8.9", &runtimes).expect("cache + metadata");
+        assert_eq!(found.cache, cache);
+        assert_eq!(found.java_major, 8);
+        assert_eq!(found.unsigned_jar, unsigned);
+
+        let options = Options {
+            runtimes: Some(runtimes),
+            ..Options::default()
+        };
+        let launch = prepare(
+            tmp.path(),
+            "1.8.9",
+            &Credentials::offline("Steve"),
+            &options,
+        )
+        .unwrap();
+        assert!(
+            launch
+                .command
+                .args
+                .iter()
+                .any(|arg| arg == &format!("-XX:AOTCache={}", cache.display())),
+            "{:?}",
+            launch.command.args
+        );
+        assert!(
+            launch
+                .command
+                .args
+                .iter()
+                .any(|arg| arg == &format!("-javaagent:{}", agent.display())),
+            "{:?}",
+            launch.command.args
+        );
         assert_eq!(launch.java_major, 8);
     }
 
@@ -1585,6 +1822,39 @@ mod tests {
         std::fs::write(&path, r#"{"player":{"name":"Steve"}}"#).unwrap();
         let error = Credentials::from_account_file(&path).unwrap_err();
         assert!(error.contains("重新登录"), "{error}");
+    }
+
+    #[test]
+    fn a_chain_that_loops_is_an_error_not_a_stack_of_duplicates() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_version(
+            tmp.path(),
+            "a",
+            serde_json::json!({"id": "a", "inheritsFrom": "b", "mainClass": "A"}),
+        );
+        write_version(
+            tmp.path(),
+            "b",
+            serde_json::json!({"id": "b", "inheritsFrom": "a", "mainClass": "B"}),
+        );
+        let error = load_chain(tmp.path(), "a").unwrap_err();
+        assert!(error.contains("有环"), "{error}");
+    }
+
+    #[test]
+    fn a_chain_deeper_than_the_limit_says_so_instead_of_launching_half_of_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_CHAIN_DEPTH {
+            let id = format!("v{index}");
+            let parent = (index < MAX_CHAIN_DEPTH).then(|| format!("v{}", index + 1));
+            let mut body = serde_json::json!({"id": id, "mainClass": "Main"});
+            if let Some(parent) = parent {
+                body["inheritsFrom"] = serde_json::Value::String(parent);
+            }
+            write_version(tmp.path(), &id, body);
+        }
+        let error = load_chain(tmp.path(), "v0").unwrap_err();
+        assert!(error.contains("超过"), "{error}");
     }
 
     #[test]

@@ -15,9 +15,14 @@
 //! and the escape sequence always, since it costs nothing and is the only thing
 //! that can reach a terminal on the other end of a connection. Neither touches
 //! the screen: OSC 52 moves no cursor, and the next frame repaints the same cells.
+//!
+//! The tool probe runs on a worker (a broken tool can block for the whole
+//! timeout); OSC 52 is written by the main loop, which owns the terminal and must
+//! not have a frame interleaved with an escape sequence.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 /// How long a platform tool may take before it is killed.
@@ -73,25 +78,54 @@ pub fn sequences(text: &str) -> [String; 2] {
     ]
 }
 
-/// Copy `text`, and say which route worked (`wl-copy`, `OSC 52`, …).
+/// Try the platform tools on a worker thread.
 ///
-/// `Err` only when nothing was even attempted successfully — a terminal that
-/// ignores OSC 52 cannot be detected, so a silent copy is still reported as one.
-pub fn copy(text: &str) -> Result<String, String> {
-    let tool = TOOLS.iter().find(|tool| tool.run(text).is_ok());
+/// The payload is returned with the answer so the main loop can write OSC 52
+/// itself: writing terminal escape sequences from two threads could interleave
+/// with a frame.
+pub fn spawn_tool_copy(text: String) -> Receiver<(String, Result<&'static str, String>)> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let tool = copy_with_tool(&text);
+        let _ = sender.send((text, tool));
+    });
+    receiver
+}
 
-    // Always ask the terminal too: over SSH it is the only route that lands on
-    // the clipboard the user actually pastes from.
-    let osc = write_sequences(text);
+/// Which platform tool took the text, or why none did.
+///
+/// This is the blocking half: each tool may take up to [`TOOL_TIMEOUT`], so it
+/// belongs on a worker thread, never in the UI loop.
+pub fn copy_with_tool(text: &str) -> Result<&'static str, String> {
+    let mut last_error = String::from("没有可用的剪贴板工具");
+    for tool in TOOLS {
+        match tool.run(text) {
+            Ok(()) => return Ok(tool.program),
+            Err(error) => last_error = format!("{}: {error}", tool.program),
+        }
+    }
+    Err(last_error)
+}
 
+/// The outcome to report, given what the tool route and OSC 52 did.
+///
+/// A successful tool wins the label (it is the route the local desktop uses),
+/// but OSC 52 is always attempted and is the only route over SSH, so it is the
+/// fallback that keeps a copy from being reported as a total failure.
+pub fn outcome(
+    tool: Result<&'static str, String>,
+    osc: std::io::Result<()>,
+) -> Result<String, String> {
     match (tool, osc) {
-        (Some(tool), _) => Ok(tool.program.to_string()),
-        (None, Ok(())) => Ok(if std::env::var_os("TMUX").is_some() {
+        (Ok(program), _) => Ok(program.to_string()),
+        (Err(_), Ok(())) => Ok(if std::env::var_os("TMUX").is_some() {
             "OSC 52（tmux 需 set-clipboard on）".to_string()
         } else {
             "OSC 52".to_string()
         }),
-        (None, Err(error)) => Err(format!("没有可用的剪贴板工具，OSC 52 也写不出去：{error}")),
+        (Err(tool_error), Err(error)) => {
+            Err(format!("没有可用的剪贴板工具（{tool_error}），OSC 52 也写不出去：{error}"))
+        }
     }
 }
 
@@ -130,6 +164,11 @@ impl Tool {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+/// Ask the terminal to set the clipboard (both terminators, see [`sequences`]).
+pub fn write_osc52(text: &str) -> std::io::Result<()> {
+    write_sequences(text)
 }
 
 fn write_sequences(text: &str) -> std::io::Result<()> {
@@ -206,6 +245,29 @@ mod tests {
         assert!(body
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)));
+    }
+
+    #[test]
+    fn a_tool_win_is_reported_even_when_osc52_cannot_be_written() {
+        let outcome = outcome(Ok("wl-copy"), Err(std::io::Error::other("no tty")));
+        assert_eq!(outcome.unwrap(), "wl-copy");
+    }
+
+    #[test]
+    fn osc52_is_the_fallback_when_no_tool_exists() {
+        let outcome = outcome(Err("none".to_string()), Ok(()));
+        assert!(outcome.unwrap().starts_with("OSC 52"));
+    }
+
+    #[test]
+    fn both_routes_failing_is_the_only_error() {
+        let outcome = outcome(
+            Err("xclip: not found".to_string()),
+            Err(std::io::Error::other("no tty")),
+        );
+        let error = outcome.unwrap_err();
+        assert!(error.contains("xclip"), "{error}");
+        assert!(error.contains("no tty"), "{error}");
     }
 
     #[test]

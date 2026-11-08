@@ -46,4 +46,24 @@ lto = "fat"
 strip = true
 panic = "abort"
 codegen-units = 1
+# Size wins for the great majority of the binary (the TUI, the state machine,
+# the argument builders). The two CPU-heavy paths — SHA-1/SHA-256 verification
+# and gzip/zip extraction during a JRE install — are opted back into speed below.
 opt-level = "z"
+
+# A JRE install is dominated by hashing and decompression. At `opt-level = "z"`
+# those crates lose 10–30% throughput for a handful of kilobytes, so they are
+# pinned to 3. Listing them explicitly also keeps them fast if the global
+# setting is ever tuned again.
+[profile.release.package.sha1]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3
+[profile.release.package.flate2]
+opt-level = 3
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.zip]
+opt-level = 3
+[profile.release.package.tar]
+opt-level = 3

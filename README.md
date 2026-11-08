@@ -75,7 +75,7 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 
 ### Java 运行时
 
-`v` 打开（点页脚的 `v Java` 也可以），从 Adoptium 取 **8 / 17 / 21 / 25** 四个大版本最新的 **JRE**：
+`v` 打开（点页脚的 `v Java` 也可以），从 Adoptium 取 **8 / 17 / 21 / 25 / 28 EA** 各个大版本最新的 **JRE**：
 
 ```
 ┌ 下载 Java（清华源） ────────────────────────────────────────────────────┐
@@ -91,18 +91,23 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 ```
 
 - 元数据（文件名、大小、**SHA-256**）一律来自 Adoptium 的公开 API
-  `api.adoptium.net/v3/assets/latest/{feature}/hotspot?...&image_type=jre`
+  `api.adoptium.net/v3/assets/latest/{feature}/hotspot?...&image_type=jre`；
+  28 还是 EA，走 `api.adoptium.net/v3/assets/feature_releases/28/ea?...`，只提供 **JRE**
 - 下载源两份，`s` 或点标签切换，**默认清华源**：
   - **清华源**：`mirrors.tuna.tsinghua.edu.cn/Adoptium/<大版本>/jre/<arch>/<os>/<文件名>`
-    （与官方同一份文件，实测 sha256 一致；拉不到时自动回落 GitHub）
+    （与官方同一份文件，实测 sha256 一致；拉不到时自动回落 GitHub）。
+    清华源没有 EA：Java 28 会直接走 GitHub（Proxy 仍可用）
   - **官方源（GitHub）**：Adoptium API 指向的 GitHub release；因为国内常常连不上，
     可以填一个 **GitHub Proxy**（`p` 进入输入，或点那行）：填 `gh-proxy.com` 就先试
     `https://gh-proxy.com/github.com/<owner>/…`，再试 `https://gh-proxy.com/https://github.com/…`，
     最后才直连
 - **下载完必校验 SHA-256**，不匹配就换下一个候选地址重试，全失败则在那一行显示原因
+- 打开界面时会把**已安装的版本和 Adoptium 最新小版本比对**（例如 `8u502-b07` → `8u512-b09`），
+  状态列写“可更新”；`Enter` 更新当前行，`u` 依次更新所有可更新的大版本。
+  只比较启动器自己命名的目录（`8u…`、`21.0.…+…`、`28+…`），手改的 `运行时/21` 不会被当成旧版
 - 装到 **`data/运行时/<版本号>/`**（如 `data/运行时/21.0.13+9/`，Java 8 是 `8u512-b09`），
   不在游戏目录里；解包时去掉压缩包的顶层目录，所以 `bin/java` 就在那个文件夹下。装新版本时
-  同一大版本的旧文件夹会被删掉（日志里写明），不同的 `8 / 17 / 21 / 25` 各自并存
+  同一大版本的旧文件夹会被删掉（日志里写明），不同的 `8 / 17 / 21 / 25 / 28` 各自并存
 - 下载/校验/解包都在后台线程，Esc 可以退出界面继续下
 - 启动时**只在 `data/运行时/` 里挑**（按版本号，够用就行；8 的档位仍然钉死 8）。
   `JAVA_HOME` / `PATH` 一律不看，`--java` 已移除（传了会明确报错）
@@ -266,6 +271,34 @@ github_proxy = ""     # Java 下载界面里填的 GitHub Proxy，关掉界面�
 - 有字节总量时按字节算百分比，否则按文件数
 - `Esc` 关界面但**下载在后台继续**，完成后自动重扫本地版本
 - 完成/失败会停在结果页，`Enter`/`Esc` 返回列表
+
+### 26.1+ 原版的 AOT 训练
+
+安装**原版**（不选任何 Mod Loader）且版本是 **26.1 及之后**（含快照，如
+`26.4-snapshot-7`）时，下载完成后会自动接一次 AOT 训练；1.x 和更早版本、所有
+Mod Loader 安装都不做这一步。
+
+- **强制 Java 28 EA**：训练固定使用 Java 28（`data/运行时/28+…`），没有就先用 Adoptium
+  的 EA JRE 自动安装；不退回 Java 25。缓存和之后启动用的是**同一个 JVM build**
+- **强制去签名**：训练前从已安装的原始 jar 生成 `versions/<id>/<id>.unsigned.jar`
+  （删 `META-INF/*.SF`、`*.RSA`、`*.DSA`、`*.EC`，保留 MANIFEST 和 `META-INF/services`）。
+  训练和之后的启动都用这个副本，原 jar 不动，JVM 不再把 client 类当 signed 类跳过
+- **全量类加载**：训练时带 `versions/<id>/<id>.aot-agent.jar`（`-javaagent`），
+  agent 在游戏 main 之前遍历整个 classpath，用 `Class.forName(name, false, …)`
+  尝试加载每一个 `.class`；失败的通常是有可选依赖/确实不可加载的类，会跳过。
+  实测 26.3 的 43,246 个候选类里加载了 43,040 个（99.5%）
+- 训练启动时带 `-XX:AOTCacheOutput` 和 `-Xlog:class+load=info`，进度条显示
+  `已记录 / 候选类数`
+- 检测到 `Sound engine started` 后多停 10 秒，让字体/GUI 的懒加载类也进缓存，然后向
+  JVM 发正常终止信号；JVM 在退出时组装缓存，这期间进度条显示“组装 AOT 缓存…”
+- 缓存写在 `versions/<id>/<id>.aot`，旁边 `<id>.aot.json` 记录 `java_major`、
+  `java_version`、`unsigned_jar`、`agent`。下次启动只有**同一 Java build**、去签名副本
+  和 agent 都在时才加 `-XX:AOTCache`/`-javaagent` 并强制用同一个 Java；缺一样就忽略缓存
+- 实测 26.3 全量缓存约 **454 MB**，训练+组装约 **4 分钟**；缓存大小随版本/库变化
+- 训练失败、Java 下载失败、没有图形显示（SSH/headless），或系统不让进程正常退出，都
+  **不影响安装本身**；结果页会写明“安装完成，AOT 训练失败/跳过”，缓存不完整时不会写元数据
+- 只对原版有意义：Fabric 的 Knot、Forge/NeoForge 的 ModLauncher 是自定义
+  ClassLoader，JEP 483 不缓存这些类，所以 Loader 安装直接跳过
 
 ### 卸载
 
@@ -434,12 +467,12 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 
 1. **主界面** ✅
 2. **登录** ✅（官方 / 自定义 app id / `azure_app_ids.toml` 清单，一账户一 json；恢复会话待接）
-3. **下载** ✅（版本 + Loader 选择，进度条/速度/文件日志；镜像与并发可调）
+3. **下载** ✅（版本 + Loader 选择，进度条/速度/文件日志；镜像与并发可调；26.1+ 原版安装后自动训练 AOT 缓存）
 4. **启动** ✅（版本链合并、classpath、natives、占位符；Java 只用 `data/运行时` 里下载的，
    按版本 json / 版本号自动挑；`--print-launch` 可预览）
 5. **令牌自动刷新** ✅（过期才联网，轮换后的 refresh token 写回凭据）
-6. **Java 运行时** ✅（Adoptium 最新 JRE × 8/17/21/25，清华源/官方源+GitHub Proxy，sha256 校验，
-   装到 `data/运行时/<版本号>/`，启动时优先使用）
+6. **Java 运行时** ✅（Adoptium 最新 JRE × 8/17/21/25/28 EA，清华源/官方源+GitHub Proxy，sha256 校验，
+   装到 `data/运行时/<版本号>/`，启动时优先使用；打开界面时检查各大版本的小版本更新，`u` 批量更新）
 7. 日志落盘 ✅（`data/日志/yaml.log`，面板仍只留 500 行）；设置持久化 ✅
    （`data/配置.toml`：堆、窗口、GitHub Proxy）
 8. 设置页（目前只有命令行开关和手改 toml）

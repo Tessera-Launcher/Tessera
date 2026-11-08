@@ -1,4 +1,9 @@
-//! Drawing the main screen. Pure rendering: takes `&App`, touches no state.
+//! Drawing the main screen.
+//!
+//! Rendering is a function of the state plus a small layout cache: `draw` records
+//! where it put things so the next mouse event can be hit-tested, and the details
+//! pane measures the selected version once per selection. Nothing here starts a
+//! thread, touches the network or changes a screen.
 
 use crossterm::event::KeyCode;
 use ratatui::buffer::CellWidth;
@@ -489,13 +494,13 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
         Span::styled(" 下载 ", Style::new().fg(ACCENT).bold()),
         Span::styled(
             // Total, and how much of it the filter lets through.
-            if app.download.versions.len() == app.download.all.len() {
+            if app.download.matched() == app.download.all.len() {
                 format!("{} · {} ", app.source_label(), app.download.all.len())
             } else {
                 format!(
                     "{} · {} / {} ",
                     app.source_label(),
-                    app.download.versions.len(),
+                    app.download.matched(),
                     app.download.all.len()
                 )
             },
@@ -546,20 +551,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
     let focused = app.download.focus == crate::app::PickerFocus::Versions;
     // The picker covers the footer, so the fold hint lives in the pane's title
     // rather than in a key label nobody can see.
-    let folded = app
-        .download
-        .rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.kind,
-                crate::version_tree::RowKind::Group {
-                    expanded: false,
-                    ..
-                }
-            )
-        })
-        .count();
+    let folded = app.download.folded_rows();
     let versions_title = if folded > 0 {
         format!(" 版本 · {folded} 组折叠 · Space 展开 ")
     } else {
@@ -784,7 +776,7 @@ fn draw_filter_bar(
             Style::new().fg(ACCENT).add_modifier(Modifier::SLOW_BLINK),
         ));
     }
-    let matched = download.versions.len();
+    let matched = download.matched();
     let total = download.all.len();
     if !download.query.is_empty() {
         spans.push(Span::styled(
@@ -856,7 +848,7 @@ fn draw_version_rows(
         inner.width,
         inner.height.saturating_sub(1),
     );
-    let version = |index: usize| &download.versions[index];
+    let version = |index: usize| download.version(index);
     let rows: Vec<Row> = download
         .rows
         .iter()
@@ -901,7 +893,7 @@ fn draw_version_rows(
                     ));
                     let kind = version(*first).kind.as_str();
                     (
-                        crate::version_tree::title(&download.versions, *first, *last),
+                        crate::version_tree::title(&download.all, download.visible(), *first, *last),
                         Span::styled(group_kind_label(kind), Style::new().fg(kind_color(kind))),
                         format!("{} 个", last - first + 1),
                     )
@@ -985,20 +977,29 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
 
     for (index, feature) in crate::java::FEATURES.iter().enumerate() {
         let selected = app.java.selected == index && !app.java.runtimes.is_empty();
-        let runtime = app.java.runtimes.iter().find(|r| r.major == *feature);
-        let version = runtime.map_or("—".to_string(), |r| r.version());
-        let size = runtime.map_or("—".to_string(), |r| crate::discover::human_size(r.size));
-        let installed = app.java.is_installed(*feature);
+        let runtime = app
+            .java
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.major == feature.major);
+        let version = runtime.map_or("—".to_string(), |runtime| runtime.version());
+        let size = runtime.map_or("—".to_string(), |runtime| {
+            crate::discover::human_size(runtime.size)
+        });
+        let update = runtime.and_then(|runtime| app.java.update_for(runtime));
         let running = app.java.stage == crate::app::JavaStage::Downloading
-            && app.java.current == Some(*feature);
+            && app.java.current == Some(feature.major);
         let status = if running {
             format!("下载中 {}", app.java.progress_text())
-        } else if installed {
+        } else if let Some(installed) = update {
+            format!("可更新（{}）", installed.version)
+        } else if app.java.is_installed(feature.major) {
             "已安装".to_string()
         } else {
             match (&app.java.message, app.java.current) {
                 (Some(message), Some(current))
-                    if *feature == current && app.java.stage == crate::app::JavaStage::Failed =>
+                    if feature.major == current
+                        && app.java.stage == crate::app::JavaStage::Failed =>
                 {
                     message.clone()
                 }
@@ -1007,11 +1008,13 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
         };
         let status_style = if running {
             Style::new().fg(ACCENT)
+        } else if update.is_some() {
+            Style::new().fg(SNAPSHOT)
         } else if app.java.stage == crate::app::JavaStage::Failed
-            && app.java.current == Some(*feature)
+            && app.java.current == Some(feature.major)
         {
             Style::new().fg(BROKEN)
-        } else if installed {
+        } else if app.java.is_installed(feature.major) {
             Style::new().fg(ACCENT)
         } else {
             Style::new().fg(DIM)
@@ -1020,7 +1023,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
         lines.push(Line::from(vec![
             Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
             Span::styled(
-                format!("Java {feature:<3} "),
+                format!("{:<12}", feature.label()),
                 if selected {
                     Style::new().fg(ACCENT).bold()
                 } else {
@@ -1091,8 +1094,13 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     layout.java_proxy = Area::new(proxy_area.x, proxy_area.y, proxy_area.width, 1);
 
     // ---- keys ----
+    let updates = app.java.update_count();
     let hint = if app.java.editing_proxy {
         " 输入代理地址 · Enter/Esc 结束编辑".to_string()
+    } else if updates > 0 {
+        format!(
+            " ↑↓ 选择 · Enter 下载/更新 · u 全部更新（{updates}） · s 换源 · p 改代理 · Esc 返回"
+        )
     } else {
         " ↑↓ 选择 · Enter 下载 · s 换源 · p 改代理 · Esc 返回".to_string()
     };
@@ -1177,6 +1185,7 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
     let (title, border, gauge_color) = match download.stage {
         crate::app::DownloadStage::Done => (" 安装完成 ", ACCENT, ACCENT),
         crate::app::DownloadStage::Failed => (" 安装失败 ", BROKEN, BROKEN),
+        crate::app::DownloadStage::Training => (" AOT 训练 ", SNAPSHOT, SNAPSHOT),
         _ => (" 安装进度 ", ACCENT, ACCENT),
     };
     let block = Block::bordered()
@@ -1204,18 +1213,60 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
                 .installed
                 .clone()
                 .unwrap_or_else(|| ("?".to_string(), None));
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    format!(
+                        "{version}{} 已安装",
+                        loader.map_or_else(String::new, |l| format!(" + {l}"))
+                    ),
+                    Style::new().fg(ACCENT),
+                )),
+            ];
+            if let Some(note) = &download.aot_note {
+                lines.push(Line::from(Span::styled(note.clone(), Style::new().fg(DIM))));
+            }
+            lines.push(Line::from(Span::styled(
+                "Esc 返回列表",
+                Style::new().fg(DIM),
+            )));
+            frame.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
+        crate::app::DownloadStage::Training => {
+            let ratio = download.aot_fraction();
+            let label = if download.aot_preparing {
+                "准备 Java 28 EA…".to_string()
+            } else if download.aot_assembling {
+                "组装 AOT 缓存…".to_string()
+            } else if download.aot_total > 0 {
+                format!(
+                    "{}% · {} / {} 个候选类",
+                    (ratio * 100.0).round() as u16,
+                    download.aot_loaded,
+                    download.aot_total
+                )
+            } else {
+                format!("已加载 {} 个类", download.aot_loaded)
+            };
+            let trough = Color::Rgb(0x26, 0x28, 0x2e);
+            let gauge = ratatui::widgets::Gauge::default()
+                .gauge_style(Style::new().fg(SNAPSHOT).bg(trough))
+                .ratio(ratio)
+                .label(Span::raw(label.clone()));
+            let [gauge_area, stats_area] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+            frame.render_widget(gauge, gauge_area);
+            draw_gauge_label(frame, gauge_area, &label, ratio, SNAPSHOT, trough);
+            let stats = if download.aot_preparing {
+                "正在安装/查找 Java 28 EA，完成后自动开始训练"
+            } else if download.aot_assembling {
+                "AOT 缓存组装中（通常几分钟，Esc 可回主界面）"
+            } else {
+                "正在记录类加载 · 训练结束后自动退出并组装缓存"
+            };
             frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        format!(
-                            "{version}{} 已安装",
-                            loader.map_or_else(String::new, |l| format!(" + {l}"))
-                        ),
-                        Style::new().fg(ACCENT),
-                    )),
-                    Line::from(Span::styled("Esc 返回列表", Style::new().fg(DIM))),
-                ]),
-                inner,
+                Paragraph::new(Line::from(Span::styled(stats, Style::new().fg(DIM)))),
+                stats_area,
             );
             return;
         }
@@ -1459,8 +1510,11 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
 
 /// The login overlay, drawn over the main screen.
 fn draw_login(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
+    // The step is cloned so the per-step helpers can take `&mut App`: the
+    // overlay mutates its scroll offset while drawing.
+    let step = app.login.step.clone();
     let width = area.width.saturating_sub(4).clamp(36, 68);
-    let height = match &app.login.step {
+    let height = match &step {
         LoginStep::Choose => 10,
         LoginStep::EnterAppId => 11,
         LoginStep::ChooseAppIds => {
@@ -1485,7 +1539,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) 
     layout.overlay = Area::new(popup.x, popup.y, popup.width, popup.height);
     layout.overlay_options.clear();
 
-    let title = match &app.login.step {
+    let title = match &step {
         LoginStep::Choose => " 登录 · 选择身份 ",
         LoginStep::EnterAppId => " 登录 · 自定义 app id ",
         LoginStep::ChooseAppIds => " 登录 · 现有凭据 ",
@@ -1499,329 +1553,349 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    match &app.login.step {
-        LoginStep::Choose => {
-            let options = [
-                (
-                    "官方启动器",
-                    "Minecraft Launcher 的 title client id，走设备令牌 + SISU",
-                ),
-                (
-                    "自定义 app id",
-                    "其他启动器的 Azure 应用 client id，走 user + XSTS",
-                ),
-                (
-                    "现有凭据……",
-                    "从 凭据/启动器/azure_app_ids.toml 读取的 app id 清单",
-                ),
-            ];
-            let mut lines = Vec::new();
-            for (index, (name, hint)) in options.iter().enumerate() {
-                // Two clickable rows per option: the name and its hint.
-                layout.overlay_options.push(Area::new(
-                    inner.x,
-                    inner.y.saturating_add((index as u16) * 2),
-                    inner.width,
-                    2,
-                ));
-                let chosen = app.login.choice == index;
-                lines.push(Line::from(vec![
-                    Span::styled(if chosen { " ▶ " } else { "   " }, Style::new().fg(ACCENT)),
-                    Span::styled(
-                        *name,
-                        if chosen {
-                            Style::new().fg(ACCENT).bold()
-                        } else {
-                            Style::new().fg(Color::White)
-                        },
-                    ),
-                ]));
-                lines.push(Line::from(Span::styled(
-                    format!("     {hint}"),
-                    Style::new().fg(DIM),
-                )));
-            }
-            lines.push(Line::from(""));
-            let hint_row = inner.y.saturating_add(lines.len() as u16);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-            draw_hint(
-                frame,
-                Rect::new(inner.x, hint_row, inner.width, 1),
-                &[
-                    (" ↑↓ 选择", None),
-                    (" · ", None),
-                    ("Enter 下一步", Some(KeyCode::Enter)),
-                    (" · ", None),
-                    ("Esc 取消", Some(KeyCode::Esc)),
-                ],
-                DIM,
-                layout,
-            );
-        }
-        LoginStep::EnterAppId => {
-            let filled = !app.login.app_id.trim().is_empty();
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    " 输入启动器的 Azure 应用 client id：",
-                    Style::new().fg(Color::White),
-                )),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  ", Style::new()),
-                    Span::styled(app.login.app_id.clone(), Style::new().fg(ACCENT)),
-                    Span::styled("▏", Style::new().fg(ACCENT)),
-                ]),
-                Line::from(""),
-            ];
-            let hint_row = inner.y.saturating_add(lines.len() as u16);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-            if filled {
-                draw_hint(
-                    frame,
-                    Rect::new(inner.x, hint_row, inner.width, 1),
-                    &[
-                        (" ", None),
-                        ("Enter 开始登录", Some(KeyCode::Enter)),
-                        (" · ", None),
-                        ("Esc 返回", Some(KeyCode::Esc)),
-                    ],
-                    DIM,
-                    layout,
-                );
-            } else {
-                // Nothing can be started yet, so only the way back is clickable.
-                draw_hint(
-                    frame,
-                    Rect::new(inner.x, hint_row, inner.width, 1),
-                    &[
-                        (
-                            " 不能为空 · 例如 Prism 的 c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb",
-                            None,
-                        ),
-                        (" · ", None),
-                        ("Esc 返回", Some(KeyCode::Esc)),
-                    ],
-                    BROKEN,
-                    layout,
-                );
-            }
-        }
-        LoginStep::ChooseAppIds => {
-            let mut lines = Vec::new();
-            if let Some(error) = &app.login.app_ids_error {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    " 没有可用的 app id",
-                    Style::new().fg(BROKEN).bold(),
-                )));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    format!(" {error}"),
-                    Style::new().fg(Color::White),
-                )));
-                lines.push(Line::from(""));
-                let hint_row = inner.y.saturating_add(lines.len() as u16);
-                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-                draw_hint(
-                    frame,
-                    Rect::new(inner.x, hint_row, inner.width, 1),
-                    &[
-                        (" ", None),
-                        ("Esc 返回", Some(KeyCode::Esc)),
-                        (" · 编辑上面这个文件后按 ", None),
-                        ("Enter 重试", Some(KeyCode::Enter)),
-                    ],
-                    DIM,
-                    layout,
-                );
-            } else {
-                // One row of height is enough per entry (name + id on one line),
-                // but two keeps a long id readable when the popup is narrow.
-                let visible = ((inner.height.saturating_sub(2) / 2).max(1)) as usize;
-                let last = app.login.app_ids.len().saturating_sub(1);
-                let selected = app.login.app_id_choice.min(last);
-                // Scroll so the selection stays on screen, then clamp the window
-                // so the list never starts past its own end.
-                let mut offset = app.login.app_id_offset.min(selected);
-                if selected >= offset + visible {
-                    offset = selected + 1 - visible;
-                }
-                offset = offset.min(last.saturating_sub(visible.saturating_sub(1)));
-                app.login.app_id_offset = offset;
-                app.login.app_id_choice = selected;
-
-                for (row, entry) in app
-                    .login
-                    .app_ids
-                    .iter()
-                    .enumerate()
-                    .skip(offset)
-                    .take(visible)
-                {
-                    layout.overlay_options.push(Area::new(
-                        inner.x,
-                        inner.y.saturating_add(((row - offset) * 2) as u16),
-                        inner.width,
-                        2,
-                    ));
-                    let chosen = row == selected;
-                    lines.push(Line::from(vec![
-                        Span::styled(if chosen { " ▶ " } else { "   " }, Style::new().fg(ACCENT)),
-                        Span::styled(
-                            entry.label().to_string(),
-                            if chosen {
-                                Style::new().fg(ACCENT).bold()
-                            } else {
-                                Style::new().fg(Color::White)
-                            },
-                        ),
-                    ]));
-                    lines.push(Line::from(Span::styled(
-                        format!("     {}", entry.client_id()),
-                        Style::new().fg(DIM),
-                    )));
-                }
-                let more = app.login.app_ids.len().saturating_sub(offset + visible);
-                let tail = if app.login.app_ids.len() > visible {
-                    format!(" · 共 {} 项，下面还有 {} 项", app.login.app_ids.len(), more)
-                } else {
-                    String::new()
-                };
-                let hint_row = inner.y.saturating_add(lines.len() as u16);
-                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-                draw_hint(
-                    frame,
-                    Rect::new(inner.x, hint_row, inner.width, 1),
-                    &[
-                        (" ↑↓ 选择", None),
-                        (" · ", None),
-                        ("Enter 登录", Some(KeyCode::Enter)),
-                        (" · ", None),
-                        ("Esc 返回", Some(KeyCode::Esc)),
-                        (&tail, None),
-                    ],
-                    DIM,
-                    layout,
-                );
-            }
-        }
+    match &step {
+        LoginStep::Choose => draw_login_choose(frame, inner, app, layout),
+        LoginStep::EnterAppId => draw_login_app_id(frame, inner, app, layout),
+        LoginStep::ChooseAppIds => draw_login_saved(frame, inner, app, layout),
         LoginStep::Waiting { user_code, url } => {
-            // Rows 3 and 7 are drawn by `draw_hint` (the copy/open buttons); they
-            // stay in the paragraph as empty lines so everything below keeps its
-            // place.
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    " 1. 在浏览器打开下面地址",
-                    Style::new().fg(DIM),
-                )),
-                Line::from(Span::styled(
-                    format!("    {url}"),
-                    Style::new().fg(Color::White),
-                )),
-                Line::from(""),
-                Line::from(""),
-                Line::from(Span::styled(" 2. 输入代码", Style::new().fg(DIM))),
-                Line::from(Span::styled(
-                    format!("    {user_code}"),
-                    Style::new().fg(ACCENT).bold(),
-                )),
-                Line::from(""),
-                Line::from(""),
-                Line::from(""),
-            ];
-            let row = |index: usize| inner.y.saturating_add(index as u16);
-            let (url_row, code_row, hint_row) = (row(3), row(7), row(9));
-            frame.render_widget(Paragraph::new(lines), inner);
-            draw_hint(
-                frame,
-                Rect::new(inner.x, url_row, inner.width, 1),
-                &[
-                    (" ", None),
-                    ("o 浏览器打开", Some(KeyCode::Char('o'))),
-                    (" · ", None),
-                    ("y 复制链接", Some(KeyCode::Char('y'))),
-                ],
-                DIM,
-                layout,
-            );
-            draw_hint(
-                frame,
-                Rect::new(inner.x, code_row, inner.width, 1),
-                &[(" ", None), ("c 复制设备码", Some(KeyCode::Char('c')))],
-                DIM,
-                layout,
-            );
-            draw_hint(
-                frame,
-                Rect::new(inner.x, hint_row, inner.width, 1),
-                &[
-                    (" 等待浏览器确认… ", None),
-                    ("Esc 取消", Some(KeyCode::Esc)),
-                ],
-                DIM,
-                layout,
-            );
+            draw_login_waiting(frame, inner, layout, user_code, url);
         }
         LoginStep::Done {
             player,
             application,
-        } => {
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!(" 已登录：{player}"),
-                    Style::new().fg(ACCENT).bold(),
-                )),
-                Line::from(Span::styled(
-                    format!(" 身份：{application}"),
-                    Style::new().fg(Color::White),
-                )),
-                Line::from(""),
-            ];
-            let hint_row = inner.y.saturating_add(lines.len() as u16);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-            draw_hint(
-                frame,
-                Rect::new(inner.x, hint_row, inner.width, 1),
-                &[
-                    (" 凭据已写入 data/凭据/账户/", None),
-                    (" · ", None),
-                    ("Enter 返回", Some(KeyCode::Enter)),
-                    (" · ", None),
-                    ("Esc 关闭", Some(KeyCode::Esc)),
-                ],
-                DIM,
-                layout,
-            );
-        }
-        LoginStep::Failed(message) => {
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(" 登录失败", Style::new().fg(BROKEN).bold())),
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!(" {message}"),
-                    Style::new().fg(Color::White),
-                )),
-                Line::from(""),
-            ];
-            let hint_row = inner.y.saturating_add(lines.len() as u16);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-            draw_hint(
-                frame,
-                Rect::new(inner.x, hint_row, inner.width, 1),
-                &[
-                    (" ", None),
-                    ("Esc 返回", Some(KeyCode::Esc)),
-                    (" · 检查网络/代理后重试", None),
-                ],
-                DIM,
-                layout,
-            );
-        }
+        } => draw_login_done(frame, inner, layout, player, application),
+        LoginStep::Failed(message) => draw_login_failed(frame, inner, layout, message),
     }
+}
+
+/// The identity screen: official, custom app id, or the saved list.
+fn draw_login_choose(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut Areas) {
+    let options = [
+        (
+            "官方启动器",
+            "Minecraft Launcher 的 title client id，走设备令牌 + SISU",
+        ),
+        (
+            "自定义 app id",
+            "其他启动器的 Azure 应用 client id，走 user + XSTS",
+        ),
+        (
+            "现有凭据……",
+            "从 凭据/启动器/azure_app_ids.toml 读取的 app id 清单",
+        ),
+    ];
+    let mut lines = Vec::new();
+    for (index, (name, hint)) in options.iter().enumerate() {
+        // Two clickable rows per option: the name and its hint.
+        layout.overlay_options.push(Area::new(
+            inner.x,
+            inner.y.saturating_add((index as u16) * 2),
+            inner.width,
+            2,
+        ));
+        let chosen = app.login.choice == index;
+        lines.push(Line::from(vec![
+            Span::styled(if chosen { " ▶ " } else { "   " }, Style::new().fg(ACCENT)),
+            Span::styled(
+                *name,
+                if chosen {
+                    Style::new().fg(ACCENT).bold()
+                } else {
+                    Style::new().fg(Color::White)
+                },
+            ),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("     {hint}"),
+            Style::new().fg(DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    let hint_row = inner.y.saturating_add(lines.len() as u16);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    draw_hint(
+        frame,
+        Rect::new(inner.x, hint_row, inner.width, 1),
+        &[
+            (" ↑↓ 选择", None),
+            (" · ", None),
+            ("Enter 下一步", Some(KeyCode::Enter)),
+            (" · ", None),
+            ("Esc 取消", Some(KeyCode::Esc)),
+        ],
+        DIM,
+        layout,
+    );
+}
+
+/// The custom-app-id input. Enter is only offered once something was typed.
+fn draw_login_app_id(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut Areas) {
+    let filled = !app.login.app_id.trim().is_empty();
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            " 输入启动器的 Azure 应用 client id：",
+            Style::new().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::new()),
+            Span::styled(app.login.app_id.clone(), Style::new().fg(ACCENT)),
+            Span::styled("▏", Style::new().fg(ACCENT)),
+        ]),
+        Line::from(""),
+    ];
+    let hint_row = inner.y.saturating_add(lines.len() as u16);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    if filled {
+        draw_hint(
+            frame,
+            Rect::new(inner.x, hint_row, inner.width, 1),
+            &[
+                (" ", None),
+                ("Enter 开始登录", Some(KeyCode::Enter)),
+                (" · ", None),
+                ("Esc 返回", Some(KeyCode::Esc)),
+            ],
+            DIM,
+            layout,
+        );
+    } else {
+        // Nothing can be started yet, so only the way back is clickable.
+        draw_hint(
+            frame,
+            Rect::new(inner.x, hint_row, inner.width, 1),
+            &[
+                (
+                    " 不能为空 · 例如 Prism 的 c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb",
+                    None,
+                ),
+                (" · ", None),
+                ("Esc 返回", Some(KeyCode::Esc)),
+            ],
+            BROKEN,
+            layout,
+        );
+    }
+}
+
+/// The saved app ids, windowed so a long list scrolls under the selection.
+fn draw_login_saved(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut Areas) {
+    let mut lines = Vec::new();
+    if let Some(error) = &app.login.app_ids_error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " 没有可用的 app id",
+            Style::new().fg(BROKEN).bold(),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" {error}"),
+            Style::new().fg(Color::White),
+        )));
+        lines.push(Line::from(""));
+        let hint_row = inner.y.saturating_add(lines.len() as u16);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        draw_hint(
+            frame,
+            Rect::new(inner.x, hint_row, inner.width, 1),
+            &[
+                (" ", None),
+                ("Esc 返回", Some(KeyCode::Esc)),
+                (" · 编辑上面这个文件后按 ", None),
+                ("Enter 重试", Some(KeyCode::Enter)),
+            ],
+            DIM,
+            layout,
+        );
+    } else {
+        // One row of height is enough per entry (name + id on one line),
+        // but two keeps a long id readable when the popup is narrow.
+        let visible = ((inner.height.saturating_sub(2) / 2).max(1)) as usize;
+        let last = app.login.app_ids.len().saturating_sub(1);
+        let selected = app.login.app_id_choice.min(last);
+        // Scroll so the selection stays on screen, then clamp the window
+        // so the list never starts past its own end.
+        let mut offset = app.login.app_id_offset.min(selected);
+        if selected >= offset + visible {
+            offset = selected + 1 - visible;
+        }
+        offset = offset.min(last.saturating_sub(visible.saturating_sub(1)));
+        app.login.app_id_offset = offset;
+        app.login.app_id_choice = selected;
+
+        for (row, entry) in app
+            .login
+            .app_ids
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(visible)
+        {
+            layout.overlay_options.push(Area::new(
+                inner.x,
+                inner.y.saturating_add(((row - offset) * 2) as u16),
+                inner.width,
+                2,
+            ));
+            let chosen = row == selected;
+            lines.push(Line::from(vec![
+                Span::styled(if chosen { " ▶ " } else { "   " }, Style::new().fg(ACCENT)),
+                Span::styled(
+                    entry.label().to_string(),
+                    if chosen {
+                        Style::new().fg(ACCENT).bold()
+                    } else {
+                        Style::new().fg(Color::White)
+                    },
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("     {}", entry.client_id()),
+                Style::new().fg(DIM),
+            )));
+        }
+        let more = app.login.app_ids.len().saturating_sub(offset + visible);
+        let tail = if app.login.app_ids.len() > visible {
+            format!(" · 共 {} 项，下面还有 {} 项", app.login.app_ids.len(), more)
+        } else {
+            String::new()
+        };
+        let hint_row = inner.y.saturating_add(lines.len() as u16);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        draw_hint(
+            frame,
+            Rect::new(inner.x, hint_row, inner.width, 1),
+            &[
+                (" ↑↓ 选择", None),
+                (" · ", None),
+                ("Enter 登录", Some(KeyCode::Enter)),
+                (" · ", None),
+                ("Esc 返回", Some(KeyCode::Esc)),
+                (&tail, None),
+            ],
+            DIM,
+            layout,
+        );
+    }
+}
+
+/// Waiting for the browser: the link, the code, and the copy/open buttons.
+fn draw_login_waiting(frame: &mut Frame, inner: Rect, layout: &mut Areas, user_code: &str, url: &str) {
+    // Rows 3 and 7 are drawn by `draw_hint` (the copy/open buttons); they
+    // stay in the paragraph as empty lines so everything below keeps its
+    // place.
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            " 1. 在浏览器打开下面地址",
+            Style::new().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            format!("    {url}"),
+            Style::new().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(""),
+        Line::from(Span::styled(" 2. 输入代码", Style::new().fg(DIM))),
+        Line::from(Span::styled(
+            format!("    {user_code}"),
+            Style::new().fg(ACCENT).bold(),
+        )),
+        Line::from(""),
+        Line::from(""),
+        Line::from(""),
+    ];
+    let row = |index: usize| inner.y.saturating_add(index as u16);
+    let (url_row, code_row, hint_row) = (row(3), row(7), row(9));
+    frame.render_widget(Paragraph::new(lines), inner);
+    draw_hint(
+        frame,
+        Rect::new(inner.x, url_row, inner.width, 1),
+        &[
+            (" ", None),
+            ("o 浏览器打开", Some(KeyCode::Char('o'))),
+            (" · ", None),
+            ("y 复制链接", Some(KeyCode::Char('y'))),
+        ],
+        DIM,
+        layout,
+    );
+    draw_hint(
+        frame,
+        Rect::new(inner.x, code_row, inner.width, 1),
+        &[(" ", None), ("c 复制设备码", Some(KeyCode::Char('c')))],
+        DIM,
+        layout,
+    );
+    draw_hint(
+        frame,
+        Rect::new(inner.x, hint_row, inner.width, 1),
+        &[
+            (" 等待浏览器确认… ", None),
+            ("Esc 取消", Some(KeyCode::Esc)),
+        ],
+        DIM,
+        layout,
+    );
+}
+
+/// The success screen, after the credential file was written.
+fn draw_login_done(frame: &mut Frame, inner: Rect, layout: &mut Areas, player: &str, application: &str) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(" 已登录：{player}"),
+            Style::new().fg(ACCENT).bold(),
+        )),
+        Line::from(Span::styled(
+            format!(" 身份：{application}"),
+            Style::new().fg(Color::White),
+        )),
+        Line::from(""),
+    ];
+    let hint_row = inner.y.saturating_add(lines.len() as u16);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    draw_hint(
+        frame,
+        Rect::new(inner.x, hint_row, inner.width, 1),
+        &[
+            (" 凭据已写入 data/凭据/账户/", None),
+            (" · ", None),
+            ("Enter 返回", Some(KeyCode::Enter)),
+            (" · ", None),
+            ("Esc 关闭", Some(KeyCode::Esc)),
+        ],
+        DIM,
+        layout,
+    );
+}
+
+/// The failure screen: the reason and the way back.
+fn draw_login_failed(frame: &mut Frame, inner: Rect, layout: &mut Areas, message: &str) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(" 登录失败", Style::new().fg(BROKEN).bold())),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(" {message}"),
+            Style::new().fg(Color::White),
+        )),
+        Line::from(""),
+    ];
+    let hint_row = inner.y.saturating_add(lines.len() as u16);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    draw_hint(
+        frame,
+        Rect::new(inner.x, hint_row, inner.width, 1),
+        &[
+            (" ", None),
+            ("Esc 返回", Some(KeyCode::Esc)),
+            (" · 检查网络/代理后重试", None),
+        ],
+        DIM,
+        layout,
+    );
 }
 
 /// Turn a rendered buffer into plain text rows.
@@ -2754,11 +2828,12 @@ mod tests {
             size: 50 * 1024 * 1024,
             sha256: "a".repeat(64),
             link: "https://github.com/adoptium/x/releases/download/y/z.tar.gz".to_string(),
+            ea: major >= 28,
         }
     }
 
     #[test]
-    fn the_java_picker_lists_the_four_features_and_the_source_switch() {
+    fn the_java_picker_lists_every_feature_and_the_source_switch() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_java();
         app.handle_java_event(crate::java::Event::Listed(vec![
@@ -2766,6 +2841,7 @@ mod tests {
             java_runtime(17, "17.0.21+9"),
             java_runtime(21, "21.0.13+9"),
             java_runtime(25, "25.0.5+8"),
+            java_runtime(28, "28+23-ea-beta"),
         ]));
         let screen = render(&mut app, 100, 28).join("\n");
 
@@ -2774,6 +2850,8 @@ mod tests {
             "Java 17",
             "Java 21",
             "Java 25",
+            "Java 28 EA",
+            "28+23-ea-beta",
             "8u512-b09",
             "21.0.13+9",
             "50.0 MiB",
@@ -2787,7 +2865,7 @@ mod tests {
         }
         assert_eq!(
             app.layout.java_rows.len(),
-            4,
+            5,
             "one clickable row per feature"
         );
         assert_eq!(app.layout.java_sources.len(), 2);
@@ -2833,6 +2911,27 @@ mod tests {
         assert!(screen.contains("已安装"), "{screen}");
         assert!(screen.contains("12.0 MiB / 50.0 MiB"), "{screen}");
         assert!(screen.contains("3.5 MiB/s"), "{screen}");
+    }
+
+    #[test]
+    fn an_older_installed_build_is_offered_as_an_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let dir = crate::java::install_dir(&root.join("运行时"), "8u502-b07");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
+
+        let mut app = App::new(&root, "/acc", vec![], vec![]);
+        app.set_runtimes(root.join("运行时"));
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(
+            8,
+            "8u512-b09",
+        )]));
+        let screen = render(&mut app, 120, 28).join("\n");
+
+        assert!(screen.contains("可更新（8u502-b07）"), "{screen}");
+        assert!(screen.contains("u 全部更新（1）"), "{screen}");
     }
 
     #[test]
@@ -3252,6 +3351,29 @@ mod tests {
         assert!(screen.contains("剩余"), "{screen}");
         // The bar itself: the gauge fills half the row.
         assert!(screen.contains("█"), "no gauge bar:\n{screen}");
+    }
+
+    #[test]
+    fn the_install_screen_shows_aot_training_progress() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.screen = Screen::Installing;
+        app.download.stage = crate::app::DownloadStage::Training;
+        app.download.installed = Some(("26.3".to_string(), None));
+        app.download.aot_loaded = 1234;
+        app.download.aot_total = 43246;
+        let screen = render(&mut app, 100, 20).join("\n");
+        assert!(screen.contains("AOT 训练"), "{screen}");
+        assert!(screen.contains("1234 / 43246 个候选类"), "{screen}");
+
+        app.download.aot_preparing = true;
+        let screen = render(&mut app, 100, 20).join("\n");
+        assert!(screen.contains("准备 Java 28 EA"), "{screen}");
+        app.download.aot_preparing = false;
+
+        app.download.aot_assembling = true;
+        app.download.aot_loaded = 43246;
+        let screen = render(&mut app, 100, 20).join("\n");
+        assert!(screen.contains("组装 AOT 缓存"), "{screen}");
     }
 
     #[test]

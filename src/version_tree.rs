@@ -132,8 +132,12 @@ fn old_family(kind: &str, id: &str) -> Option<String> {
 }
 
 /// The label of a folded row: `newest ~ oldest`.
-pub fn title(versions: &[RemoteVersion], first: usize, last: usize) -> String {
-    match (versions.get(first), versions.get(last)) {
+///
+/// `first` and `last` are indices into `visible`, the filtered list, not into
+/// `all`.
+pub fn title(all: &[RemoteVersion], visible: &[usize], first: usize, last: usize) -> String {
+    let at = |index: usize| visible.get(index).and_then(|&index| all.get(index));
+    match (at(first), at(last)) {
         (Some(newest), Some(oldest)) => format!("{} ~ {}", newest.id, oldest.id),
         _ => String::new(),
     }
@@ -143,14 +147,20 @@ pub fn title(versions: &[RemoteVersion], first: usize, last: usize) -> String {
 ///
 /// `tree` is false for the other filters (and for a search), where every version
 /// keeps its own line exactly as before.
-pub fn build(versions: &[RemoteVersion], expanded: &[String], tree: bool) -> Vec<Row> {
-    let mut rows = Vec::with_capacity(versions.len().max(1));
+pub fn build(
+    all: &[RemoteVersion],
+    visible: &[usize],
+    expanded: &[String],
+    tree: bool,
+) -> Vec<Row> {
+    let version = |index: usize| &all[visible[index]];
+    let mut rows = Vec::with_capacity(visible.len().max(1));
     let mut index = 0;
-    while index < versions.len() {
-        let key = if tree { family(&versions[index]) } else { None };
+    while index < visible.len() {
+        let key = if tree { family(version(index)) } else { None };
         if let Some(key) = key {
             let mut last = index;
-            while last + 1 < versions.len() && family(&versions[last + 1]).as_deref() == Some(&key)
+            while last + 1 < visible.len() && family(version(last + 1)).as_deref() == Some(&key)
             {
                 last += 1;
             }
@@ -186,9 +196,26 @@ pub fn build(versions: &[RemoteVersion], expanded: &[String], tree: bool) -> Vec
     rows
 }
 
+/// The flat layout used by the tests below: every version is visible.
+#[cfg(test)]
+pub fn build_for_test(
+    versions: &[RemoteVersion],
+    expanded: &[String],
+    tree: bool,
+) -> Vec<Row> {
+    let visible: Vec<usize> = (0..versions.len()).collect();
+    build(versions, &visible, expanded, tree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `title` for the tests, where the visible list is the whole list.
+    fn title_of(versions: &[RemoteVersion], first: usize, last: usize) -> String {
+        let visible: Vec<usize> = (0..versions.len()).collect();
+        title(versions, &visible, first, last)
+    }
 
     fn version(id: &str, kind: &str) -> RemoteVersion {
         RemoteVersion {
@@ -247,12 +274,12 @@ mod tests {
     #[test]
     fn a_snapshot_run_folds_into_one_row_newest_first() {
         let versions = list();
-        let rows = build(&versions, &[], true);
+        let rows = build_for_test(&versions, &[], true);
         let ids: Vec<String> = rows
             .iter()
             .map(|row| match &row.kind {
                 RowKind::Version(index) => versions[*index].id.clone(),
-                RowKind::Group { first, last, .. } => title(&versions, *first, *last),
+                RowKind::Group { first, last, .. } => title_of(&versions, *first, *last),
             })
             .collect();
         assert_eq!(
@@ -271,7 +298,7 @@ mod tests {
     #[test]
     fn the_flat_view_keeps_every_version_on_its_own_row() {
         let versions = list();
-        let rows = build(&versions, &[], false);
+        let rows = build_for_test(&versions, &[], false);
         assert_eq!(rows.len(), versions.len());
         assert!(rows
             .iter()
@@ -281,13 +308,13 @@ mod tests {
     #[test]
     fn expanding_a_group_indents_its_members_under_it() {
         let versions = list();
-        let rows = build(&versions, &["1.21.9-pre".to_string()], true);
+        let rows = build_for_test(&versions, &["1.21.9-pre".to_string()], true);
         let shape: Vec<(u8, String)> = rows
             .iter()
             .map(|row| {
                 let label = match &row.kind {
                     RowKind::Version(index) => versions[*index].id.clone(),
-                    RowKind::Group { first, last, .. } => title(&versions, *first, *last),
+                    RowKind::Group { first, last, .. } => title_of(&versions, *first, *last),
                 };
                 (row.depth, label)
             })
@@ -357,12 +384,12 @@ mod tests {
         .into_iter()
         .map(|(id, kind)| version(id, kind))
         .collect();
-        let rows = build(&versions, &[], true);
+        let rows = build_for_test(&versions, &[], true);
         let labels: Vec<String> = rows
             .iter()
             .map(|row| match &row.kind {
                 RowKind::Version(index) => versions[*index].id.clone(),
-                RowKind::Group { first, last, .. } => title(&versions, *first, *last),
+                RowKind::Group { first, last, .. } => title_of(&versions, *first, *last),
             })
             .collect();
         assert_eq!(
@@ -383,7 +410,7 @@ mod tests {
             snapshot("1.21.9-pre1"),
             version("1.21.7", "release"),
         ];
-        let rows = build(&versions, &[], true);
+        let rows = build_for_test(&versions, &[], true);
         assert_eq!(rows.len(), 3);
         assert!(rows
             .iter()
@@ -400,11 +427,11 @@ mod tests {
             snapshot("24w14a"),
         ];
         // Same family, but a release in between: two runs, not one.
-        let rows = build(&versions, &[], true);
+        let rows = build_for_test(&versions, &[], true);
         assert_eq!(rows.len(), 4);
         // A different year is a different family even when adjacent.
         let versions = vec![snapshot("25w31a"), snapshot("24w14a")];
-        let rows = build(&versions, &[], true);
+        let rows = build_for_test(&versions, &[], true);
         assert_eq!(rows.len(), 2, "years do not fold together");
     }
 
@@ -415,7 +442,7 @@ mod tests {
             snapshot("1.21.9-pre8"),
             snapshot("weird-build"),
         ];
-        let rows = build(&versions, &[], true);
+        let rows = build_for_test(&versions, &[], true);
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
 }

@@ -4,6 +4,12 @@
 //! comes back as a value, and everything that needs a thread, a process, the
 //! network or a long disk walk is queued as an [`Effect`] for the main loop. That
 //! is what keeps every screen transition testable without a TTY.
+//!
+//! This module owns the shared state ([`App`], [`Screen`], [`Effect`]) and the
+//! main screen. Each full-screen flow owns its state and handlers next door:
+//! [`download`], [`java`], [`login`] and [`account_manager`]. The child modules are
+//! descendants of this one, so they can reach `App`'s private fields without the
+//! fields being opened to the crate.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -79,8 +85,13 @@ pub enum Effect {
     OpenBrowser(String),
     /// Reclaim shared libraries/assets no remaining version references.
     Sweep(Vec<String>),
-    /// Reap a spawned game and report its exit status.
-    Watch(String, std::process::Child),
+    /// Prepare and start one version, and wait for it, on a worker thread.
+    Launch {
+        dir: String,
+        credentials: launch::Credentials,
+    },
+    /// Train the AOT cache for a freshly installed vanilla version.
+    TrainAot(String),
 }
 
 /// Who is signed in, for the header.
@@ -123,421 +134,16 @@ impl Account {
     }
 }
 
-/// Steps of the login overlay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LoginStep {
-    /// Pick the identity.
-    Choose,
-    /// Type the custom application's client id.
-    EnterAppId,
-    /// Pick one of the ids listed in `azure_app_ids.toml`.
-    ChooseAppIds,
-    /// Waiting for the browser: show the code.
-    Waiting { user_code: String, url: String },
-    /// Finished, with the account that was written.
-    Done { player: String, application: String },
-    /// Finished with an error.
-    Failed(String),
-}
 
-/// Which pane of the download picker has the keyboard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickerFocus {
-    Versions,
-    Loaders,
-    Search,
-}
+mod account_manager;
+mod download;
+mod java;
+mod login;
 
-impl PickerFocus {
-    /// Tab order: versions → loaders → the filter bar → back.
-    fn next(self) -> Self {
-        match self {
-            PickerFocus::Versions => PickerFocus::Loaders,
-            PickerFocus::Loaders => PickerFocus::Search,
-            PickerFocus::Search => PickerFocus::Versions,
-        }
-    }
-}
-
-/// The kind-of-release filter above the version list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VersionFilter {
-    All,
-    Release,
-    Snapshot,
-    Old,
-}
-
-impl VersionFilter {
-    pub const ALL: [VersionFilter; 4] = [
-        VersionFilter::All,
-        VersionFilter::Release,
-        VersionFilter::Snapshot,
-        VersionFilter::Old,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            VersionFilter::All => "全部",
-            VersionFilter::Release => "正式版",
-            VersionFilter::Snapshot => "快照",
-            VersionFilter::Old => "旧版",
-        }
-    }
-
-    /// Cycles the way `f` does; the mouse picks one directly.
-    fn next(self) -> Self {
-        match self {
-            VersionFilter::All => VersionFilter::Release,
-            VersionFilter::Release => VersionFilter::Snapshot,
-            VersionFilter::Snapshot => VersionFilter::Old,
-            VersionFilter::Old => VersionFilter::All,
-        }
-    }
-
-    fn matches(self, kind: &str) -> bool {
-        match self {
-            VersionFilter::All => true,
-            VersionFilter::Release => kind == "release",
-            VersionFilter::Snapshot => kind == "snapshot",
-            VersionFilter::Old => kind.starts_with("old_"),
-        }
-    }
-}
-
-/// Where the download screen is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DownloadStage {
-    /// Waiting for the mirror's version list.
-    LoadingVersions,
-    Picking,
-    Installing,
-    Done,
-    Failed,
-}
-
-/// The download picker and the progress screen share this state.
-#[derive(Debug)]
-pub struct DownloadUi {
-    pub stage: DownloadStage,
-    /// Every version the mirror listed.
-    pub all: Vec<RemoteVersion>,
-    /// The filtered view that is actually drawn and picked from.
-    pub versions: Vec<RemoteVersion>,
-    /// Folded snapshot families, by key, that are currently opened.
-    pub expanded: Vec<String>,
-    /// The filtered list laid out as drawn lines (see [`crate::version_tree`]).
-    pub rows: Vec<crate::version_tree::Row>,
-    /// Search text, matched against the version id.
-    pub query: String,
-    pub filter: VersionFilter,
-    pub picked: usize,
-    /// Loaders compatible with the picked version, in [`LOADERS`] order.
-    pub loaders: Vec<Loader>,
-    pub loader_pick: usize,
-    pub focus: PickerFocus,
-    /// Files finished / total in the current batch.
-    pub done: usize,
-    pub total: usize,
-    /// Full size of the current batch, from the batch's opening event.
-    pub batch_total_bytes: u64,
-    pub remaining_bytes: u64,
-    /// Smoothed bytes per second.
-    pub speed: f64,
-    sample: Option<(Instant, u64)>,
-    pub error: Option<String>,
-    pub installed: Option<(String, Option<String>)>,
-}
-
-impl Default for DownloadUi {
-    fn default() -> Self {
-        DownloadUi {
-            stage: DownloadStage::LoadingVersions,
-            all: Vec::new(),
-            versions: Vec::new(),
-            expanded: Vec::new(),
-            rows: Vec::new(),
-            query: String::new(),
-            filter: VersionFilter::All,
-            picked: 0,
-            loaders: vec![Loader::None],
-            loader_pick: 0,
-            focus: PickerFocus::Versions,
-            done: 0,
-            total: 0,
-            batch_total_bytes: 0,
-            remaining_bytes: 0,
-            speed: 0.0,
-            sample: None,
-            error: None,
-            installed: None,
-        }
-    }
-}
-
-impl DownloadUi {
-    /// `0.0..=1.0` for the progress bar.
-    pub fn fraction(&self) -> f64 {
-        if self.batch_total_bytes > 0 && self.remaining_bytes <= self.batch_total_bytes {
-            let done_bytes = self.batch_total_bytes - self.remaining_bytes;
-            return (done_bytes as f64 / self.batch_total_bytes as f64).clamp(0.0, 1.0);
-        }
-        if self.total > 0 {
-            return (self.done as f64 / self.total as f64).clamp(0.0, 1.0);
-        }
-        0.0
-    }
-
-    pub fn percent(&self) -> u16 {
-        (self.fraction() * 100.0).round() as u16
-    }
-
-    pub fn picked_version(&self) -> Option<&RemoteVersion> {
-        self.versions.get(self.picked)
-    }
-
-    /// The drawn row the highlight is on.
-    ///
-    /// `picked` is a version index, and one version can be drawn twice (as the
-    /// newest member of an opened group, which is also that group's header). The
-    /// child row wins, because that is the line that stands for the version.
-    pub fn cursor(&self) -> usize {
-        self.rows
-            .iter()
-            .position(|row| matches!(row.kind, crate::version_tree::RowKind::Version(index) if index == self.picked))
-            .or_else(|| self.rows.iter().position(|row| row.anchor() == self.picked))
-            .unwrap_or(0)
-    }
-
-    /// Rows the keyboard walks: versions, and groups that are folded.
-    pub fn stops(&self) -> Vec<usize> {
-        (0..self.rows.len())
-            .filter(|index| self.rows[*index].is_stop())
-            .collect()
-    }
-
-    /// Re-lay the filtered list out. Folding only happens in the "全部" view with
-    /// no search: a search must never hide the version it matched.
-    pub fn rebuild_rows(&mut self) {
-        let tree = self.filter == VersionFilter::All && self.query.trim().is_empty();
-        self.rows = crate::version_tree::build(&self.versions, &self.expanded, tree);
-    }
-
-    /// The drawn row of the folded group the cursor is in, if any: the header
-    /// itself when the header is selected, or the one above an opened member.
-    fn group_row_at_cursor(&self) -> Option<usize> {
-        let cursor = self.cursor();
-        let rows = &self.rows;
-        if matches!(
-            rows.get(cursor)?.kind,
-            crate::version_tree::RowKind::Group { .. }
-        ) {
-            return Some(cursor);
-        }
-        rows[..cursor]
-            .iter()
-            .rposition(|row| matches!(row.kind, crate::version_tree::RowKind::Group { .. }))
-    }
-
-    pub fn picked_loader(&self) -> Loader {
-        self.loaders
-            .get(self.loader_pick)
-            .copied()
-            .unwrap_or(Loader::None)
-    }
-
-    /// Rebuild the visible list from `all`, keeping the picked id when it survives.
-    fn apply_filter(&mut self) {
-        let keep = self.picked_version().map(|version| version.id.clone());
-        let query = self.query.trim().to_lowercase();
-        let filter = self.filter;
-        self.versions = self
-            .all
-            .iter()
-            .filter(|version| filter.matches(&version.kind))
-            .filter(|version| query.is_empty() || version.id.to_lowercase().contains(&query))
-            .cloned()
-            .collect();
-
-        self.picked = keep
-            .and_then(|id| self.versions.iter().position(|version| version.id == id))
-            .unwrap_or(0)
-            .min(self.versions.len().saturating_sub(1));
-        // A new list folds back up: keeping families open across a filter change
-        // would leave rows that are no longer on screen opened.
-        self.expanded.clear();
-        self.rebuild_rows();
-        self.refresh_loaders();
-    }
-
-    /// Rebuild the loader list for the newly picked version, keeping the choice
-    /// when that loader still exists.
-    fn refresh_loaders(&mut self) {
-        let Some(version) = self.picked_version() else {
-            self.loaders = vec![Loader::None];
-            self.loader_pick = 0;
-            return;
-        };
-        let previous = self.picked_loader();
-        self.loaders = LOADERS
-            .into_iter()
-            .filter(|loader| loader.compatible(&version.id))
-            .collect();
-        self.loader_pick = self
-            .loaders
-            .iter()
-            .position(|loader| *loader == previous)
-            .unwrap_or(0);
-    }
-}
-
-/// What the Java picker is doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JavaStage {
-    /// Waiting for Adoptium's answers.
-    Loading,
-    /// The four runtimes are listed and one can be picked.
-    Picking,
-    /// A runtime is downloading.
-    Downloading,
-    /// The last download finished.
-    Done,
-    /// The last download failed.
-    Failed,
-}
-
-/// The Java runtime picker's own state.
-#[derive(Debug, Clone)]
-pub struct JavaUi {
-    pub stage: JavaStage,
-    /// Latest JRE of each offered feature, in [`crate::java::FEATURES`] order.
-    pub runtimes: Vec<crate::java::Runtime>,
-    pub selected: usize,
-    pub source: crate::java::Source,
-    /// What the user typed as a GitHub proxy; only used by [`crate::java::Source::Github`].
-    pub proxy: String,
-    /// Whether keystrokes go into the proxy field instead of the list.
-    pub editing_proxy: bool,
-    /// Bytes done, bytes total, and a smoothed speed.
-    pub progress: (u64, u64, f64),
-    /// Runtimes already on disk, newest first.
-    pub installed: Vec<(u32, std::path::PathBuf)>,
-    /// The download that is running (or just finished).
-    pub current: Option<u32>,
-    pub message: Option<String>,
-}
-
-impl Default for JavaUi {
-    fn default() -> Self {
-        JavaUi {
-            stage: JavaStage::Loading,
-            runtimes: Vec::new(),
-            selected: 0,
-            source: crate::java::Source::default(),
-            proxy: String::new(),
-            editing_proxy: false,
-            progress: (0, 0, 0.0),
-            installed: Vec::new(),
-            current: None,
-            message: None,
-        }
-    }
-}
-
-impl JavaUi {
-    /// The runtime under the cursor.
-    pub fn selected_runtime(&self) -> Option<&crate::java::Runtime> {
-        self.runtimes.get(self.selected)
-    }
-
-    /// Whether `major` is already installed.
-    pub fn is_installed(&self, major: u32) -> bool {
-        self.installed
-            .iter()
-            .any(|(installed, _)| *installed == major)
-    }
-
-    /// `12.3 / 49.6 MiB · 3.1 MiB/s`, or a dash before anything arrives.
-    pub fn progress_text(&self) -> String {
-        let (done, total, speed) = self.progress;
-        if total == 0 {
-            return String::new();
-        }
-        format!(
-            "{} / {} · {}/s",
-            crate::discover::human_size(done),
-            crate::discover::human_size(total),
-            crate::discover::human_size(speed as u64)
-        )
-    }
-}
-
-/// The account manager's own state.
-#[derive(Debug, Clone, Default)]
-pub struct AccountsUi {
-    pub selected: usize,
-    /// Set after the first `d`; a second `d` deletes the file.
-    pub confirm_delete: bool,
-}
-
-/// The login overlay's own state.
-#[derive(Debug, Clone)]
-pub struct LoginUi {
-    pub step: LoginStep,
-    /// 0 = official launcher, 1 = custom app id, 2 = the saved list.
-    pub choice: usize,
-    /// Typed client id, only used by the custom identity.
-    pub app_id: String,
-    /// The list read from `azure_app_ids.toml`, in file order.
-    pub app_ids: Vec<crate::app_ids::AppId>,
-    /// Why the list could not be read, if it could not. Shown instead of rows.
-    pub app_ids_error: Option<String>,
-    /// Selected row in [`LoginUi::app_ids`].
-    pub app_id_choice: usize,
-    /// First drawn row, so a long list can scroll under the selection.
-    pub app_id_offset: usize,
-}
-
-impl Default for LoginUi {
-    fn default() -> Self {
-        LoginUi {
-            step: LoginStep::Choose,
-            choice: 0,
-            app_id: String::new(),
-            app_ids: Vec::new(),
-            app_ids_error: None,
-            app_id_choice: 0,
-            app_id_offset: 0,
-        }
-    }
-}
-
-impl LoginUi {
-    /// Rows on the identity screen: official, custom, saved list.
-    pub const CHOICES: usize = 3;
-
-    pub fn identity(&self) -> Option<Identity> {
-        match self.step {
-            LoginStep::ChooseAppIds => {
-                let entry = self.app_ids.get(self.app_id_choice)?;
-                Some(Identity::Saved {
-                    name: entry.label().to_string(),
-                    app_id: entry.client_id().to_string(),
-                })
-            }
-            _ => match self.choice {
-                0 => Some(Identity::Official),
-                1 => {
-                    let app_id = self.app_id.trim();
-                    (!app_id.is_empty()).then(|| Identity::Custom {
-                        app_id: app_id.to_string(),
-                    })
-                }
-                _ => None,
-            },
-        }
-    }
-}
+pub use self::account_manager::AccountsUi;
+pub use self::download::{DownloadStage, DownloadUi, PickerFocus, VersionFilter};
+pub use self::java::{JavaStage, JavaUi};
+pub use self::login::{LoginStep, LoginUi};
 
 /// A rectangle in terminal cells, independent of the widget library.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1256,121 +862,6 @@ impl App {
         }
     }
 
-    // ---- login overlay ----
-
-    pub fn open_login(&mut self) {
-        // Coming from the account manager must return there, not to the main screen.
-        self.login_return = match self.screen {
-            Screen::Accounts => Screen::Accounts,
-            _ => Screen::Main,
-        };
-        self.login = LoginUi::default();
-        self.screen = Screen::Login;
-        self.status = "登录：选择身份".to_string();
-    }
-
-    /// `data/凭据/启动器/azure_app_ids.toml`, derived from the account directory
-    /// so tests and `--dir` runs keep everything inside the same tree.
-    pub fn app_ids_path(&self) -> PathBuf {
-        match self.accounts_dir.parent() {
-            Some(credentials) => crate::app_ids::path_under(credentials),
-            None => PathBuf::new(),
-        }
-    }
-
-    /// Read the app-id list, then show it. The file is re-read every time so an
-    /// edit in another window is picked up without restarting the launcher.
-    fn open_app_ids(&mut self) {
-        let path = self.app_ids_path();
-        self.login.app_id_choice = 0;
-        self.login.app_id_offset = 0;
-        match crate::app_ids::load(&path) {
-            Ok(ids) if !ids.is_empty() => {
-                self.login.app_ids = ids;
-                self.login.app_ids_error = None;
-                self.login.step = LoginStep::ChooseAppIds;
-                self.status = "登录：选择现有凭据".to_string();
-            }
-            Ok(_) => {
-                self.login.app_ids.clear();
-                self.login.app_ids_error =
-                    Some(format!("{} 里还没有可用的 [[api_keys]]", path.display()));
-                self.login.step = LoginStep::ChooseAppIds;
-                self.status = "登录：app id 清单为空".to_string();
-            }
-            Err(message) => {
-                self.login.app_ids.clear();
-                self.login.app_ids_error = Some(message.clone());
-                self.login.step = LoginStep::ChooseAppIds;
-                self.status = "登录：无法读取 app id 清单".to_string();
-                self.log(message);
-            }
-        }
-    }
-
-    pub fn close_login(&mut self) {
-        self.screen = self.login_return;
-        if matches!(self.login.step, LoginStep::Waiting { .. }) {
-            self.log("已取消登录（浏览器里仍可能显示旧代码）");
-        }
-    }
-
-    /// All keyboard handling, so a mouse click can replay a key and behave
-    /// identically to pressing it.
-    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return;
-        }
-        match self.screen {
-            Screen::Login => {
-                self.handle_login_key(code, modifiers);
-                return;
-            }
-            Screen::Accounts => {
-                self.handle_accounts_key(code, modifiers);
-                return;
-            }
-            Screen::Download | Screen::Installing => {
-                self.handle_download_key(code, modifiers);
-                return;
-            }
-            Screen::Java => {
-                self.handle_java_key(code, modifiers);
-                return;
-            }
-            Screen::Main => {}
-        }
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
-            KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
-            KeyCode::Home | KeyCode::Char('g') => self.select_first(),
-            KeyCode::End | KeyCode::Char('G') => self.select_last(),
-            KeyCode::Char('r') => self.reload(),
-            KeyCode::Char('h') => self.toggle_base_versions(),
-            KeyCode::Char('l') => self.open_login(),
-            KeyCode::Char('a') => self.open_accounts(),
-            KeyCode::Char('d') => self.open_download(),
-            // `j` already moves the selection; the Java screen gets `v` (虚拟机).
-            KeyCode::Char('v') => self.open_java(),
-            // Two presses, like removing an account: deleting a whole version
-            // directory is not something a single stray key may do.
-            KeyCode::Char('x') | KeyCode::Delete => self.request_uninstall(),
-            // Keyboard equivalent of the wheel, for terminals without mouse reporting.
-            KeyCode::PageUp => self.scroll_log(5),
-            KeyCode::PageDown => self.scroll_log_back(5),
-            KeyCode::Enter => self.request_launch(),
-            _ => {}
-        }
-        // Anything other than the uninstall key itself drops the pending
-        // confirmation, so "press x again" cannot survive the user wandering off
-        // and coming back minutes later.
-        if !matches!(code, KeyCode::Char('x') | KeyCode::Delete) {
-            self.uninstall_confirm = None;
-        }
-    }
-
     // ---- launching ----
 
     /// Enter: launch the selected version.
@@ -1463,12 +954,12 @@ impl App {
         }
     }
 
-    /// Build the command for the selected version and start the game.
+    /// Ask for the selected version to be launched.
     ///
-    /// All the deciding happens in [`launch::prepare`]; this picks the version,
-    /// logs what was chosen and spawns the process. The child gets no inherited
-    /// stdio because its output would land in the middle of the alternate screen —
-    /// the game writes its own log file anyway.
+    /// The expensive part — merging the version chain, picking a Java, running
+    /// `java -version` to confirm it, and waiting for the child — happens in
+    /// [`launch::spawn_game`] on a worker. This only records what was chosen, so
+    /// pressing Enter never freezes the screen.
     pub fn start_game(&mut self, credentials: launch::Credentials) {
         let Some(version) = self.selected_version().cloned() else {
             self.log("没有选中的版本");
@@ -1483,53 +974,39 @@ impl App {
             format!("离线（{}）", credentials.username)
         };
         self.log(format!("准备启动 {} · {session}", version.dir));
+        self.status = format!("正在准备启动 {}…", version.dir);
+        self.request(Effect::Launch {
+            dir: version.dir,
+            credentials,
+        });
+    }
 
-        let prepared =
-            match launch::prepare(&self.root, &version.dir, &credentials, &self.launch_options) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    self.status = "启动失败".to_string();
-                    self.log(format!("启动失败：{error}"));
-                    return;
-                }
-            };
-
-        self.log(format!(
-            "Java {} · {} 个 classpath 条目 · 主类 {}",
-            prepared.java_major, prepared.classpath_entries, prepared.main_class
-        ));
-        if prepared.required_major > prepared.java_major {
-            self.log(format!(
-                "警告：这个版本需要 Java {}，用 Java {} 启动很可能失败",
-                prepared.required_major, prepared.java_major
-            ));
-        }
-        let mut command = std::process::Command::new(&prepared.command.exe);
-        command
-            .args(&prepared.command.args)
-            .current_dir(&prepared.command.cwd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        match command.spawn() {
-            Ok(child) => {
-                self.status = format!("已启动 {}", version.dir);
-                self.log(format!("游戏进程已启动（pid {}）", child.id()));
-                // The main loop waits on it in a thread: spawning and dropping the
-                // handle would leave a zombie and lose the exit code.
-                self.request(Effect::Watch(version.dir.clone(), child));
+    /// Apply what the launch worker reported.
+    pub fn handle_game_event(&mut self, event: launch::GameEvent) {
+        use launch::GameEvent;
+        match event {
+            GameEvent::Started { dir, pid } => {
+                self.status = format!("已启动 {dir}");
+                self.log(format!("游戏进程已启动（pid {pid}）"));
             }
-            Err(error) => {
+            GameEvent::Failed { reason } => {
                 self.status = "启动失败".to_string();
-                self.log(format!("无法启动 Java：{error}"));
+                self.log(format!("启动失败：{reason}"));
             }
+            GameEvent::Exited { dir, status } => match status {
+                Ok(status) => self.handle_game_exit(&dir, status),
+                Err(error) => {
+                    self.status = format!("{dir} 的退出状态未知");
+                    self.log(format!("无法等待游戏进程：{error}"));
+                }
+            },
         }
     }
 
     /// Report how a game session ended.
     ///
-    /// Sent by the watcher thread the main loop starts for every spawned child,
-    /// so a crash 2 seconds in is visible here instead of looking like a launch
-    /// that worked.
+    /// Sent by [`launch::spawn_game`]'s worker when the child exits, so a crash
+    /// 2 seconds in is visible here instead of looking like a launch that worked.
     pub fn handle_game_exit(&mut self, dir: &str, status: std::process::ExitStatus) {
         // The session wrote its own logs, options and saves; the size shown in the
         // details pane is no longer the one that was cached.
@@ -1554,946 +1031,6 @@ impl App {
         }
     }
 
-    // ---- download ----
-
-    /// Label for the active download source.
-    pub fn source_label(&self) -> &'static str {
-        self.source.label()
-    }
-
-    /// Where the launcher's own Java runtimes live; launching looks there first.
-    pub fn set_runtimes(&mut self, runtimes: PathBuf) {
-        self.runtimes = runtimes.clone();
-        self.launch_options.runtimes = Some(runtimes);
-    }
-
-    /// Switch where downloads come from. Deliberately not persisted: the next
-    /// start falls back to the default (or `--mirror`), so a one-off switch does
-    /// not quietly become the new normal.
-    pub fn set_source(&mut self, source: crate::install::Source) {
-        if self.source == source {
-            return;
-        }
-        self.source = source;
-        self.log(format!("下载源：{}", source.label()));
-        self.status = format!("下载源：{}", source.label());
-    }
-
-    /// `s` in the picker: the other source.
-    pub fn toggle_source(&mut self) {
-        self.set_source(self.source.next());
-    }
-
-    /// Open the picker and ask the main loop to fetch the version list.
-    pub fn open_download(&mut self) {
-        self.download = DownloadUi::default();
-        self.screen = Screen::Download;
-        self.request(Effect::FetchVersions);
-        self.status = "下载：正在获取版本列表".to_string();
-        self.log("打开下载界面");
-    }
-
-    pub fn close_download(&mut self) {
-        self.screen = Screen::Main;
-        self.download.stage = DownloadStage::Picking;
-    }
-
-    pub fn handle_download_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let _ = modifiers;
-        match self.download.stage {
-            DownloadStage::LoadingVersions => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
-                    self.close_download();
-                }
-            }
-            DownloadStage::Picking => {
-                // The search box swallows printable keys, so it gets first say.
-                if self.download.focus == PickerFocus::Search {
-                    match code {
-                        KeyCode::Esc => {
-                            if self.download.query.is_empty() {
-                                self.download.focus = PickerFocus::Versions;
-                            } else {
-                                self.download.query.clear();
-                                self.download.apply_filter();
-                            }
-                        }
-                        KeyCode::Backspace => {
-                            if self.download.query.pop().is_some() {
-                                self.download.apply_filter();
-                            }
-                        }
-                        KeyCode::Tab => self.download.focus = self.download.focus.next(),
-                        // Arrows still walk the list while the caret is in the box.
-                        KeyCode::Up => self.picker_step(-1, true),
-                        KeyCode::Down => self.picker_step(1, true),
-                        KeyCode::Enter => self.start_install(),
-                        KeyCode::Char(c) if !c.is_control() => {
-                            self.download.query.push(c);
-                            self.download.apply_filter();
-                        }
-                        _ => {}
-                    }
-                    return true;
-                }
-                match code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
-                    KeyCode::Tab => self.download.focus = self.download.focus.next(),
-                    KeyCode::Char('/') => self.download.focus = PickerFocus::Search,
-                    KeyCode::Char('s') => self.toggle_source(),
-                    KeyCode::Char('f') => {
-                        self.download.filter = self.download.filter.next();
-                        self.download.apply_filter();
-                        self.status = format!("下载：{} 版本", self.download.filter.label());
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => self.picker_step(-1, true),
-                    KeyCode::Down | KeyCode::Char('j') => self.picker_step(1, true),
-                    // Tree controls: `←` closes, `→` opens, `Space` flips whichever
-                    // group the cursor is in (its header, or one of its members).
-                    KeyCode::Left => self.toggle_group_at_cursor(Some(false)),
-                    KeyCode::Right => self.toggle_group_at_cursor(Some(true)),
-                    KeyCode::Char(' ') => self.toggle_group_at_cursor(None),
-                    KeyCode::Enter => self.start_install(),
-                    _ => {}
-                }
-            }
-            DownloadStage::Installing => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
-                    self.screen = Screen::Main;
-                    self.log("下载转为后台进行，完成后会重新扫描版本");
-                }
-            }
-            DownloadStage::Done | DownloadStage::Failed => {
-                if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                    self.reload();
-                    self.screen = Screen::Main;
-                }
-            }
-        }
-        true
-    }
-
-    /// Move the picker selection by `delta` steps.
-    ///
-    /// The keyboard wraps (`↓` on the last row starts over) and the wheel stops at
-    /// both ends; that is the only difference, so both share this walk.
-    fn picker_step(&mut self, delta: i32, wrap: bool) {
-        let step = |position: i32, count: usize| -> usize {
-            let last = count as i32 - 1;
-            let target = position + delta;
-            (if wrap {
-                target.rem_euclid(count as i32)
-            } else {
-                target.clamp(0, last)
-            }) as usize
-        };
-        match self.download.focus {
-            // Walk the drawn rows, not the filtered list: a folded group is one
-            // stop, however many snapshots it hides, and its members are not
-            // steps either the keyboard or the wheel may land on.
-            PickerFocus::Versions | PickerFocus::Search => {
-                let stops = self.download.stops();
-                if stops.is_empty() {
-                    return;
-                }
-                let cursor = self.download.cursor();
-                let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
-                let next = step(position as i32, stops.len());
-                self.download.picked = self.download.rows[stops[next]].anchor();
-                self.download.refresh_loaders();
-            }
-            PickerFocus::Loaders => {
-                let count = self.download.loaders.len();
-                if count == 0 {
-                    return;
-                }
-                self.download.loader_pick = step(self.download.loader_pick as i32, count);
-            }
-        }
-    }
-
-    fn handle_download_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        if self.download.stage != DownloadStage::Picking {
-            return;
-        }
-        let (column, row) = (event.column, event.row);
-        // Clicks land on rows; the wheel works anywhere in the pane, so pointing
-        // at the header or the empty space below the last row still scrolls.
-        let over_versions_rows = layout.download_versions.contains(column, row);
-        let over_loaders_rows = layout.download_loaders.contains(column, row);
-        let over_versions = layout.download_versions_pane.contains(column, row);
-        let over_loaders = layout.download_loaders_pane.contains(column, row);
-        let over_search = layout.download_search.contains(column, row);
-        let chip = layout
-            .download_filters
-            .iter()
-            .position(|area| area.contains(column, row));
-        // The source switch sits inside the loader pane, so it has to be tested
-        // before the pane's rows are.
-        let source_chip = layout
-            .download_sources
-            .iter()
-            .position(|area| area.contains(column, row));
-
-        match event.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                    -WHEEL_STEP
-                } else {
-                    WHEEL_STEP
-                };
-                // The pane under the pointer takes the focus, so the highlighted
-                // border always says which list the wheel is about to move.
-                if over_versions {
-                    self.download.focus = PickerFocus::Versions;
-                    self.picker_step(delta, false);
-                } else if over_loaders {
-                    self.download.focus = PickerFocus::Loaders;
-                    self.picker_step(delta, false);
-                }
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if over_search {
-                    self.download.focus = PickerFocus::Search;
-                } else if let Some(index) = chip {
-                    self.download.filter = VersionFilter::ALL[index];
-                    self.download.apply_filter();
-                } else if let Some(index) = source_chip {
-                    // The switch lives in the loader pane, so clicking it focuses
-                    // that pane like any other click there would.
-                    self.download.focus = PickerFocus::Loaders;
-                    self.set_source(crate::install::Source::ALL[index]);
-                } else if over_versions_rows {
-                    self.download.focus = PickerFocus::Versions;
-                    let drawn =
-                        layout.download_offset + (row - layout.download_versions.y) as usize;
-                    // A folded group unfolds on the first click either way; a
-                    // second click on the same row starts the install.
-                    let now = Instant::now();
-                    let double = matches!(
-                        self.download_click,
-                        Some((at, previous))
-                            if previous == drawn && now.duration_since(at) <= DOUBLE_CLICK
-                    );
-                    if double {
-                        self.download_click = None;
-                        self.pick_version_row(drawn);
-                        self.start_install();
-                    } else {
-                        self.download_click = Some((now, drawn));
-                        self.pick_version_row(drawn);
-                    }
-                } else if over_loaders_rows {
-                    self.download.focus = PickerFocus::Loaders;
-                    let index = (row - layout.download_loaders.y) as usize;
-                    if index < self.download.loaders.len() {
-                        self.download.loader_pick = index;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Clicking a drawn row: a version selects it, a folded group opens or closes.
-    fn pick_version_row(&mut self, drawn: usize) {
-        let Some(row) = self.download.rows.get(drawn).cloned() else {
-            return;
-        };
-        match row.kind {
-            crate::version_tree::RowKind::Version(index) => {
-                self.download.picked = index;
-                self.download.refresh_loaders();
-            }
-            // The row says "there is more behind me", so clicking it is what unfolds
-            // it; clicking the opened header folds it back up.
-            crate::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
-        }
-    }
-
-    /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
-    /// `drawn` is `None`.
-    fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
-        let Some(crate::version_tree::RowKind::Group {
-            key,
-            first,
-            expanded,
-            ..
-        }) = self.download.rows.get(drawn).map(|row| row.kind.clone())
-        else {
-            return;
-        };
-        let open = expand.unwrap_or(!expanded);
-        self.download.expanded.retain(|open_key| open_key != &key);
-        if open {
-            self.download.expanded.push(key);
-        }
-        self.download.picked = first;
-        self.download.rebuild_rows();
-        self.download.refresh_loaders();
-    }
-
-    /// `←` folds the group the cursor is in, `→` unfolds it, `Space` flips it.
-    fn toggle_group_at_cursor(&mut self, expand: Option<bool>) {
-        let Some(drawn) = self.download.group_row_at_cursor() else {
-            return;
-        };
-        self.toggle_group(drawn, expand);
-    }
-
-    fn start_install(&mut self) {
-        let Some(version) = self.download.picked_version() else {
-            return;
-        };
-        let version = version.id.clone();
-        let loader = self.download.picked_loader();
-        self.download.stage = DownloadStage::Installing;
-        self.download.done = 0;
-        self.download.total = 0;
-        self.download.batch_total_bytes = 0;
-        self.download.remaining_bytes = 0;
-        self.download.speed = 0.0;
-        self.download.sample = None;
-        self.screen = Screen::Installing;
-        self.status = format!("安装 {version} · {}", loader.label());
-        self.log(format!("开始安装 {version}（{}）", loader.label()));
-        self.request(Effect::Install { version, loader });
-    }
-
-    /// Apply an event from the download worker.
-    pub fn handle_install_event(&mut self, event: InstallEvent) {
-        match event {
-            InstallEvent::Versions(versions) => {
-                self.log(format!("版本列表：{} 个", versions.len()));
-                self.download.all = versions;
-                self.download.stage = DownloadStage::Picking;
-                self.download.apply_filter();
-                self.status = "下载：选择版本与 Loader".to_string();
-            }
-            InstallEvent::Log(line) => {
-                self.log(line);
-                self.download.stage = DownloadStage::Installing;
-            }
-            InstallEvent::Progress {
-                done,
-                total,
-                remaining_bytes,
-                total_bytes,
-            } => {
-                let now = Instant::now();
-                if total_bytes > 0 {
-                    self.download.batch_total_bytes = total_bytes;
-                }
-                // Bytes per second, smoothed so the number does not flicker.
-                if let Some((previous_at, previous_remaining)) = self.download.sample {
-                    let seconds = now.duration_since(previous_at).as_secs_f64();
-                    if seconds > 0.01 {
-                        let moved = previous_remaining.saturating_sub(remaining_bytes);
-                        if moved > 0 {
-                            let instant = moved as f64 / seconds;
-                            self.download.speed = if self.download.speed > 0.0 {
-                                self.download.speed * 0.6 + instant * 0.4
-                            } else {
-                                instant
-                            };
-                        }
-                    }
-                }
-                self.download.sample = Some((now, remaining_bytes));
-                self.download.done = done;
-                self.download.total = total;
-                self.download.remaining_bytes = remaining_bytes;
-            }
-            InstallEvent::Finished { version, loader } => {
-                self.download.stage = DownloadStage::Done;
-                self.download.installed = Some((version.clone(), loader.clone()));
-                self.status = format!("安装完成：{version}");
-                self.log(format!(
-                    "安装完成：{version}{}",
-                    loader.map_or_else(String::new, |l| format!(" + {l}"))
-                ));
-                self.reload();
-            }
-            InstallEvent::Failed(message) => {
-                self.download.stage = DownloadStage::Failed;
-                self.download.error = Some(message.clone());
-                self.status = "下载失败".to_string();
-                self.log(format!("下载失败：{message}"));
-            }
-        }
-    }
-
-    /// Called on every loop iteration: drop the speed reading when updates stop.
-    ///
-    /// Returns whether anything visible changed, so the main loop can skip a
-    /// redraw for an idle launcher.
-    pub fn tick(&mut self) -> bool {
-        let mut changed = false;
-        if let Some((at, _)) = self.download.sample {
-            if at.elapsed().as_secs_f64() > 2.0 && self.download.speed > 0.0 {
-                self.download.speed = 0.0;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    // ---- java runtimes ----
-
-    /// Open the Java picker and ask the loop for Adoptium's list.
-    pub fn open_java(&mut self) {
-        self.java = JavaUi::default();
-        // The proxy is the one field of this screen that outlives it.
-        self.java.proxy = self.settings.github_proxy.clone();
-        self.java.installed = crate::java::installed(&self.runtimes);
-        self.screen = Screen::Java;
-        self.request(Effect::FetchJavaList);
-        self.status = "Java：正在查询 Adoptium".to_string();
-        self.log("打开 Java 下载界面");
-    }
-
-    pub fn close_java(&mut self) {
-        self.screen = Screen::Main;
-        // A download in flight keeps its thread; only the screen goes away.
-        self.java.editing_proxy = false;
-    }
-
-    /// `s`: the other source. Only meaningful for the artifact, so the list stays.
-    pub fn set_java_source(&mut self, source: crate::java::Source) {
-        if self.java.source == source {
-            return;
-        }
-        self.java.source = source;
-        self.java.editing_proxy = false;
-        self.status = format!("Java 下载源：{}", source.label());
-    }
-
-    /// Say why the proxy field is inert: it only applies to the GitHub source.
-    fn explain_proxy_needs_github(&mut self) {
-        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
-    }
-
-    /// Keys while the Java picker is open.
-    pub fn handle_java_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let _ = modifiers;
-        // The proxy field swallows typing, like the download search box does.
-        if self.java.editing_proxy {
-            match code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => {
-                    self.java.editing_proxy = false;
-                    self.settings.github_proxy = self.java.proxy.trim().to_string();
-                    self.status = if self.java.proxy.trim().is_empty() {
-                        "GitHub Proxy：未设置".to_string()
-                    } else {
-                        format!("GitHub Proxy: {}", self.java.proxy.trim())
-                    };
-                }
-                KeyCode::Backspace => {
-                    self.java.proxy.pop();
-                }
-                KeyCode::Char(c) if !c.is_control() && self.java.proxy.len() < 128 => {
-                    self.java.proxy.push(c);
-                }
-                _ => {}
-            }
-            return true;
-        }
-
-        match self.java.stage {
-            JavaStage::Loading => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
-                    self.close_java();
-                }
-            }
-            JavaStage::Picking | JavaStage::Done | JavaStage::Failed => match code {
-                KeyCode::Esc | KeyCode::Char('q') => self.close_java(),
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.java.selected = self.java.selected.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let last = self.java.runtimes.len().saturating_sub(1);
-                    self.java.selected = (self.java.selected + 1).min(last);
-                }
-                KeyCode::Char('s') => self.set_java_source(self.java.source.next()),
-                KeyCode::Char('p') => {
-                    if self.java.source == crate::java::Source::Github {
-                        self.java.editing_proxy = true;
-                        self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
-                    } else {
-                        self.explain_proxy_needs_github();
-                    }
-                }
-                KeyCode::Enter => self.start_java_download(),
-                _ => {}
-            },
-            JavaStage::Downloading => {
-                // Leaving does not stop the worker; the log keeps reporting.
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
-                    self.close_java();
-                    self.log("Java 下载转到后台");
-                }
-            }
-        }
-        true
-    }
-
-    /// Ask the loop to download the runtime under the cursor.
-    fn start_java_download(&mut self) {
-        let Some(runtime) = self.java.selected_runtime().cloned() else {
-            return;
-        };
-        if self.java.stage == JavaStage::Downloading {
-            return;
-        }
-        self.settings.github_proxy = self.java.proxy.trim().to_string();
-        let urls = crate::java::candidates(
-            &runtime,
-            self.java.source,
-            &self.java.proxy,
-            crate::java::platform(),
-        );
-        self.java.stage = JavaStage::Downloading;
-        self.java.current = Some(runtime.major);
-        self.java.progress = (0, 0, 0.0);
-        self.java.message = None;
-        self.status = format!("Java {}：开始下载", runtime.major);
-        self.log(format!(
-            "Java {} {}（{}）",
-            runtime.major,
-            runtime.version(),
-            self.java.source.label()
-        ));
-        self.request(Effect::InstallJava { runtime, urls });
-    }
-
-    /// Apply an event from the Java worker.
-    pub fn handle_java_event(&mut self, event: crate::java::Event) {
-        use crate::java::Event;
-        match event {
-            Event::Listed(runtimes) => {
-                self.log(format!("Adoptium：{} 个 Java 版本", runtimes.len()));
-                self.java.runtimes = runtimes;
-                self.java.selected = self
-                    .java
-                    .selected
-                    .min(self.java.runtimes.len().saturating_sub(1));
-                self.java.stage = JavaStage::Picking;
-                self.status = "Java：选择版本".to_string();
-            }
-            Event::Log(line) => self.log(line),
-            Event::Progress { done, total, speed } => {
-                self.java.progress = (done, total, speed);
-                self.status = format!(
-                    "Java {}：{}",
-                    self.java.current.unwrap_or_default(),
-                    self.java.progress_text()
-                );
-            }
-            Event::Installed {
-                major,
-                version,
-                java,
-            } => {
-                self.java.stage = JavaStage::Done;
-                self.java.progress = (0, 0, 0.0);
-                self.java.installed = crate::java::installed(&self.runtimes);
-                self.java.message = Some(format!("Java {major} {version} 已安装"));
-                self.status = format!("Java {major} 已安装：{}", java.display());
-                self.log(format!("Java {major} {version} → {}", java.display()));
-            }
-            Event::Failed(message) => {
-                self.java.stage = JavaStage::Failed;
-                self.java.progress = (0, 0, 0.0);
-                self.java.message = Some(message.clone());
-                self.status = "Java 下载失败".to_string();
-                self.log(format!("Java 下载失败：{message}"));
-            }
-        }
-    }
-
-    /// Mouse handling for the Java picker: rows, source chips, the proxy field.
-    fn handle_java_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        let (column, row) = (event.column, event.row);
-        match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if self.java.editing_proxy {
-                    self.java.editing_proxy = false;
-                }
-                if let Some(index) = layout
-                    .java_rows
-                    .iter()
-                    .position(|area| area.contains(column, row))
-                {
-                    self.java.selected = index;
-                    // Selecting is one click; downloading a 50 MiB runtime takes a
-                    // second one, the way the version list launches.
-                    let now = Instant::now();
-                    let double = matches!(
-                        self.java_click,
-                        Some((at, previous))
-                            if previous == index && now.duration_since(at) <= DOUBLE_CLICK
-                    );
-                    if double {
-                        self.java_click = None;
-                        if self.java.stage != JavaStage::Downloading {
-                            self.start_java_download();
-                        }
-                    } else {
-                        self.java_click = Some((now, index));
-                    }
-                } else if let Some(index) = layout
-                    .java_sources
-                    .iter()
-                    .position(|area| area.contains(column, row))
-                {
-                    let source = crate::java::Source::ALL[index];
-                    self.set_java_source(source);
-                } else if layout.java_proxy.contains(column, row) {
-                    if self.java.source == crate::java::Source::Github {
-                        self.java.editing_proxy = true;
-                    } else {
-                        self.explain_proxy_needs_github();
-                    }
-                }
-            }
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if layout.java_rows.iter().any(|a| a.contains(column, row)) =>
-            {
-                let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                    -1
-                } else {
-                    1
-                };
-                let last = self.java.runtimes.len().saturating_sub(1);
-                self.java.selected =
-                    (self.java.selected as i32 + delta).clamp(0, last as i32) as usize;
-            }
-            _ => {}
-        }
-    }
-
-    // ---- account manager ----
-
-    pub fn open_accounts(&mut self) {
-        self.accounts = accounts::list(&self.accounts_dir);
-        self.accounts_ui = AccountsUi::default();
-        if let Some(file) = self.account.file() {
-            if let Some(index) = self.accounts.iter().position(|a| a.file == file) {
-                self.accounts_ui.selected = index;
-            }
-        }
-        self.screen = Screen::Accounts;
-        self.status = format!("账户 {} 个", self.accounts.len());
-    }
-
-    pub fn close_accounts(&mut self) {
-        self.screen = Screen::Main;
-        self.accounts_ui.confirm_delete = false;
-    }
-
-    /// Keys while the account manager is open.
-    pub fn handle_accounts_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let count = self.accounts.len();
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') => self.close_accounts(),
-            KeyCode::Up | KeyCode::Char('k') if count > 0 => {
-                self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
-                self.accounts_ui.confirm_delete = false;
-            }
-            KeyCode::Down | KeyCode::Char('j') if count > 0 => {
-                self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
-                self.accounts_ui.confirm_delete = false;
-            }
-            KeyCode::Home | KeyCode::Char('g') => {
-                self.accounts_ui.selected = 0;
-                self.accounts_ui.confirm_delete = false;
-            }
-            KeyCode::End | KeyCode::Char('G') => {
-                self.accounts_ui.selected = count.saturating_sub(1);
-                self.accounts_ui.confirm_delete = false;
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_account(),
-            KeyCode::Char('d') | KeyCode::Delete => self.remove_selected_account(),
-            KeyCode::Char('l') => self.open_login(),
-            _ => {}
-        }
-        let _ = modifiers;
-        true
-    }
-
-    /// Make the highlighted account the active one.
-    pub fn activate_selected_account(&mut self) {
-        let Some(account) = self.accounts.get(self.accounts_ui.selected) else {
-            return;
-        };
-        self.account = Account::SignedIn {
-            name: account.player_name.clone(),
-            copy: account.copy,
-            application: account.application.clone(),
-            file: account.file.clone(),
-        };
-        let label = self.account.label();
-        self.status = format!("当前账户 {label}");
-        self.log(format!("切换账户：{label}"));
-        self.accounts_ui.confirm_delete = false;
-    }
-
-    /// Remove the highlighted account: first press asks, second press deletes.
-    pub fn remove_selected_account(&mut self) {
-        let Some(account) = self.accounts.get(self.accounts_ui.selected).cloned() else {
-            return;
-        };
-        if !self.accounts_ui.confirm_delete {
-            self.accounts_ui.confirm_delete = true;
-            self.status = format!("再按一次 d 移除 {}（会删除凭据文件）", account.name());
-            return;
-        }
-
-        match std::fs::remove_file(&account.file) {
-            Ok(()) => {
-                self.log(format!(
-                    "已移除账户 {}（{}）",
-                    account.name(),
-                    account.application
-                ));
-                self.status = format!("已移除 {}", account.name());
-            }
-            Err(error) => {
-                self.log(format!("移除失败：{error}"));
-                self.status = "移除失败".to_string();
-                self.accounts_ui.confirm_delete = false;
-                return;
-            }
-        }
-
-        let was_active = self.account.file() == Some(account.file.as_path());
-        self.accounts = accounts::list(&self.accounts_dir);
-        if was_active {
-            self.account = Account::SignedOut;
-        }
-        if self.accounts_ui.selected >= self.accounts.len() {
-            self.accounts_ui.selected = self.accounts.len().saturating_sub(1);
-        }
-        self.accounts_ui.confirm_delete = false;
-    }
-
-    /// Mouse handling for the account manager.
-    fn handle_accounts_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        let (column, row) = (event.column, event.row);
-        match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(index) = layout
-                    .account_rows
-                    .iter()
-                    .position(|area| area.contains(column, row))
-                {
-                    self.accounts_ui.selected = index;
-                    self.accounts_ui.confirm_delete = false;
-                    self.activate_selected_account();
-                    return;
-                }
-                if !layout.accounts_popup.contains(column, row) {
-                    self.close_accounts();
-                }
-            }
-            MouseEventKind::ScrollUp if layout.accounts_popup.contains(column, row) => {
-                let count = self.accounts.len();
-                if count > 0 {
-                    self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
-                    self.accounts_ui.confirm_delete = false;
-                }
-            }
-            MouseEventKind::ScrollDown if layout.accounts_popup.contains(column, row) => {
-                let count = self.accounts.len();
-                if count > 0 {
-                    self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
-                    self.accounts_ui.confirm_delete = false;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Keys while the overlay is open. Returns `true` when the key was consumed.
-    pub fn handle_login_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        match &self.login.step {
-            LoginStep::Choose => match code {
-                KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
-                    self.login.choice = self.login.choice.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
-                    self.login.choice = (self.login.choice + 1).min(LoginUi::CHOICES - 1);
-                }
-                KeyCode::Char('g') | KeyCode::Home => self.login.choice = 0,
-                KeyCode::Char('G') | KeyCode::End => self.login.choice = LoginUi::CHOICES - 1,
-                KeyCode::Enter | KeyCode::Char(' ') => match self.login.choice {
-                    1 => {
-                        self.login.step = LoginStep::EnterAppId;
-                        self.status = "登录：输入 app id".to_string();
-                    }
-                    2 => self.open_app_ids(),
-                    _ => {
-                        if let Some(identity) = self.login.identity() {
-                            self.start_login(identity);
-                        }
-                    }
-                },
-                _ => {}
-            },
-            LoginStep::ChooseAppIds => match code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.login.step = LoginStep::Choose;
-                    self.status = "登录：选择身份".to_string();
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let last = self.login.app_ids.len().saturating_sub(1);
-                    self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.login.app_id_choice = 0,
-                KeyCode::End | KeyCode::Char('G') => {
-                    self.login.app_id_choice = self.login.app_ids.len().saturating_sub(1);
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    if let Some(identity) = self.login.identity() {
-                        self.start_login(identity);
-                    } else {
-                        // An unreadable or empty file must say so, not start a
-                        // login with an id that came from nowhere.
-                        self.status = self
-                            .login
-                            .app_ids_error
-                            .clone()
-                            .unwrap_or_else(|| "没有可用的 app id".to_string());
-                    }
-                }
-                _ => {}
-            },
-            LoginStep::EnterAppId => match code {
-                KeyCode::Esc => {
-                    self.login.step = LoginStep::Choose;
-                    self.status = "登录：选择身份".to_string();
-                }
-                KeyCode::Backspace => {
-                    self.login.app_id.pop();
-                }
-                KeyCode::Enter => {
-                    if let Some(identity) = self.login.identity() {
-                        self.start_login(identity);
-                    } else {
-                        // Empty ids are refused rather than silently replaced by anything.
-                        self.status = "请输入 app id（不能为空）".to_string();
-                    }
-                }
-                KeyCode::Char(c)
-                    if !modifiers.contains(KeyModifiers::CONTROL)
-                        && self.login.app_id.len() < 64 =>
-                {
-                    self.login.app_id.push(c);
-                }
-                _ => {}
-            },
-            LoginStep::Waiting { user_code, url } => {
-                // The code and the link are what the user has to carry to the
-                // browser, so copying and opening them live on this screen.
-                let (user_code, url) = (user_code.clone(), url.clone());
-                // A blank code or link is the "asking Microsoft" placeholder, so
-                // the guards keep the buttons from copying nothing.
-                match code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
-                    KeyCode::Char('c') if !user_code.is_empty() => {
-                        self.request(Effect::Copy(user_code.clone()));
-                        self.log(format!("复制设备码：{user_code}"));
-                        self.status = "已复制设备码".to_string();
-                    }
-                    KeyCode::Char('y') if !url.is_empty() => {
-                        self.request(Effect::Copy(url.clone()));
-                        self.log(format!("复制链接：{url}"));
-                        self.status = "已复制链接".to_string();
-                    }
-                    KeyCode::Char('o') if !url.is_empty() => {
-                        self.request(Effect::OpenBrowser(url.clone()));
-                        self.log(format!("在浏览器打开：{url}"));
-                        self.status = "正在打开浏览器…".to_string();
-                    }
-                    _ => {}
-                }
-            }
-            LoginStep::Done { .. } | LoginStep::Failed(_) => {
-                if matches!(
-                    code,
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char(' ')
-                ) {
-                    self.close_login();
-                }
-            }
-        }
-        true
-    }
-
-    /// Freeze the overlay and ask the main loop for a login thread.
-    fn start_login(&mut self, identity: Identity) {
-        let label = identity.label();
-        self.login.step = LoginStep::Waiting {
-            user_code: "……".to_string(),
-            url: "正在向 Microsoft 申请设备代码".to_string(),
-        };
-        self.status = format!("登录：{label}");
-        self.log(format!("开始登录：{label}"));
-        self.request(Effect::Login(identity));
-    }
-
-    /// Apply an event from the login thread.
-    pub fn handle_login_event(&mut self, event: LoginEvent) {
-        match event {
-            LoginEvent::DeviceCode { user_code, url } => {
-                self.log(format!("打开 {url} 并输入 {user_code}"));
-                self.login.step = LoginStep::Waiting { user_code, url };
-            }
-            LoginEvent::Succeeded {
-                player_name,
-                application,
-                file,
-            } => {
-                // Re-read the directory instead of appending, so the list matches
-                // disk: it is what tells us which numbered copy this session got.
-                self.accounts = accounts::list(&self.accounts_dir);
-                let saved = self
-                    .accounts
-                    .iter()
-                    .position(|account| account.file == file)
-                    .map(|index| (index, self.accounts[index].clone()));
-                let shown = match &saved {
-                    Some((_, saved)) => saved.name(),
-                    None => player_name.clone(),
-                };
-                self.account = Account::SignedIn {
-                    name: player_name.clone(),
-                    copy: saved.as_ref().map_or(0, |(_, saved)| saved.copy),
-                    application: application.clone(),
-                    file: file.clone(),
-                };
-                self.login.step = LoginStep::Done {
-                    player: shown.clone(),
-                    application: application.clone(),
-                };
-                self.status = format!("登录成功：{shown}");
-                self.log(format!("登录成功：{shown} · {application}"));
-                self.log(format!("凭据已保存到 {}", file.display()));
-                if let Some((index, _)) = saved {
-                    self.accounts_ui.selected = index;
-                }
-            }
-            LoginEvent::Failed(message) => {
-                self.status = "登录失败".to_string();
-                self.log(format!("登录失败：{message}"));
-                self.login.step = LoginStep::Failed(message);
-            }
-        }
-    }
 }
 
 /// Whether `id` is one ordinary path component.
@@ -2524,6 +1061,13 @@ mod tests {
     }
 
     /// The one session refresh the app queued, if any.
+    fn launch_effect(app: &mut App) -> Option<(String, launch::Credentials)> {
+        app.take_effects().into_iter().find_map(|effect| match effect {
+            Effect::Launch { dir, credentials } => Some((dir, credentials)),
+            _ => None,
+        })
+    }
+
     fn refresh_effect(app: &App) -> Option<PathBuf> {
         app.effects().iter().rev().find_map(|effect| match effect {
             Effect::RefreshSession(file) => Some(file.clone()),
@@ -2970,18 +1514,29 @@ mod tests {
         app.set_runtimes(runtimes);
         app.start_game(launch::Credentials::offline("Steve"));
 
-        assert_eq!(app.status, "已启动 1.20.1", "{:?}", app.log);
-        let (dir, mut child) = app
-            .take_effects()
-            .into_iter()
-            .find_map(|effect| match effect {
-                Effect::Watch(dir, child) => Some((dir, child)),
-                _ => None,
-            })
-            .expect("the child is handed to the main loop for reaping");
+        assert_eq!(app.status, "正在准备启动 1.20.1…");
+        let (dir, credentials) =
+            launch_effect(&mut app).expect("the launch is handed to the main loop");
         assert_eq!(dir, "1.20.1");
-        let status = child.wait().expect("the fake runtime exits");
-        assert_eq!(status.code(), Some(0));
+
+        // Run exactly what the main loop runs, then feed both events back.
+        let mut started = false;
+        for event in launch::spawn_game(
+            app.root.clone(),
+            dir,
+            credentials,
+            app.launch_options.clone(),
+        ) {
+            started |= matches!(event, launch::GameEvent::Started { .. });
+            app.handle_game_event(event);
+        }
+        assert!(started, "the worker reports the process it spawned");
+        assert_eq!(app.status, "1.20.1 已退出");
+        assert!(
+            app.log.iter().any(|line| line.contains("pid")),
+            "the pid is logged: {:?}",
+            app.log
+        );
     }
 
     #[test]
@@ -3652,17 +2207,21 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         let mut app = App::new(&root, "/acc", scanned, vec![]);
         app.set_runtimes(tmp.path().join("运行时"));
         app.start_game(launch::Credentials::offline("Steve"));
+        let (dir, credentials) =
+            launch_effect(&mut app).expect("the launch is handed to the main loop");
+        for event in launch::spawn_game(
+            app.root.clone(),
+            dir,
+            credentials,
+            app.launch_options.clone(),
+        ) {
+            app.handle_game_event(event);
+        }
         assert_eq!(app.status, "启动失败");
         assert!(
             app.log.iter().any(|line| line.contains("按 v")),
             "the log points at the Java screen: {:?}",
             app.log
-        );
-        assert!(
-            !app.effects()
-                .iter()
-                .any(|effect| matches!(effect, Effect::Watch(..))),
-            "nothing was spawned without a runtime"
         );
     }
 
@@ -4041,6 +2600,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             link: format!(
                 "https://github.com/adoptium/temurin{major}-binaries/releases/download/jdk-{major}.0.1%2B1/x.tar.gz"
             ),
+            ea: major >= 28,
         }
     }
 
@@ -4082,9 +2642,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             java_runtime(17),
             java_runtime(21),
             java_runtime(25),
+            java_runtime(28),
         ]));
         assert_eq!(app.java.stage, JavaStage::Picking);
-        assert_eq!(app.java.runtimes.len(), 4);
+        assert_eq!(app.java.runtimes.len(), 5);
         assert_eq!(app.java.selected_runtime().unwrap().major, 8);
 
         app.handle_java_key(KeyCode::Down, KeyModifiers::NONE);
@@ -4105,6 +2666,61 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         );
         assert_eq!(app.java.stage, JavaStage::Downloading);
         assert_eq!(app.java.current, Some(21));
+    }
+
+    #[test]
+    fn u_updates_every_outdated_runtime_in_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes = tmp.path().join("运行时");
+        for version in ["8u502-b07", "17.0.10+1"] {
+            let dir = crate::java::install_dir(&runtimes, version);
+            std::fs::create_dir_all(dir.join("bin")).unwrap();
+            std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
+        }
+
+        let mut app = App::new(tmp.path(), "/acc", vec![], vec![]);
+        app.set_runtimes(runtimes.clone());
+        app.open_java();
+        let mut eight = java_runtime(8);
+        eight.release = "jdk8u512-b09".to_string();
+        let mut seventeen = java_runtime(17);
+        seventeen.release = "jdk-17.0.21+9".to_string();
+        app.handle_java_event(crate::java::Event::Listed(vec![eight, seventeen]));
+        assert_eq!(app.java.update_count(), 2);
+        assert!(app.status.contains("2 个可更新"), "{}", app.status);
+
+        app.handle_java_key(KeyCode::Char('u'), KeyModifiers::NONE);
+        let (first, _) = java_effect(&app).expect("the first update started");
+        assert_eq!(first.major, 8);
+
+        // Pretend the first install landed; the queue must move to 17.
+        let installed = crate::java::install_dir(&runtimes, "8u512-b09");
+        std::fs::create_dir_all(installed.join("bin")).unwrap();
+        std::fs::write(installed.join("bin/java"), b"#!/bin/sh\n").unwrap();
+        app.handle_java_event(crate::java::Event::Installed {
+            major: 8,
+            version: "8u512-b09".to_string(),
+            java: installed.join("bin/java"),
+        });
+        let (second, _) = java_effect(&app).expect("the next update started after the first");
+        assert_eq!(second.major, 17);
+
+        let installed = crate::java::install_dir(&runtimes, "17.0.21+9");
+        std::fs::create_dir_all(installed.join("bin")).unwrap();
+        std::fs::write(installed.join("bin/java"), b"#!/bin/sh\n").unwrap();
+        app.handle_java_event(crate::java::Event::Installed {
+            major: 17,
+            version: "17.0.21+9".to_string(),
+            java: installed.join("bin/java"),
+        });
+
+        assert_eq!(app.java.stage, JavaStage::Done);
+        assert_eq!(app.java.update_done, 2);
+        assert!(
+            app.java.message.as_deref().unwrap().contains("已更新 2"),
+            "{:?}",
+            app.java.message
+        );
     }
 
     #[test]
@@ -4306,9 +2922,12 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             }
         ));
         assert_eq!(
-            crate::version_tree::title(&app.download.versions, 1, 3),
+            crate::version_tree::title(&app.download.all, app.download.visible(), 1, 3),
             "1.21.9-pre3 ~ 1.21.9-pre1"
         );
+        // The title's count is cached when the rows are laid out, not scanned on
+        // every frame.
+        assert_eq!(app.download.folded_rows(), 1);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
     }
 
@@ -4387,7 +3006,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = tree_picker();
         app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE); // 正式版
         assert_eq!(app.download.filter, VersionFilter::Release);
-        assert_eq!(app.download.rows.len(), app.download.versions.len());
+        assert_eq!(app.download.rows.len(), app.download.matched());
         assert!(app
             .download
             .rows
@@ -4403,7 +3022,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         for c in "pre2".chars() {
             app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
         }
-        assert_eq!(app.download.versions.len(), 1);
+        assert_eq!(app.download.matched(), 1);
         assert_eq!(app.download.rows.len(), 1, "the match is its own row");
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
     }
@@ -4592,7 +3211,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_version_list_arrives_and_loaders_are_filtered_per_version() {
         let mut app = downloader();
         assert_eq!(app.download.stage, DownloadStage::Picking);
-        assert_eq!(app.download.versions.len(), 2);
+        assert_eq!(app.download.matched(), 2);
         // 1.20.1: Fabric, Quilt and Forge. NeoForge starts at 1.21 and LiteLoader
         // stopped at 1.12.2, so neither is offered here.
         assert!(app.download.loaders.contains(&Loader::Fabric));
@@ -4637,7 +3256,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = mixed_picker();
         type_search(&mut app, "1.19");
         assert_eq!(app.download.all.len(), 4, "the mirror list is untouched");
-        assert_eq!(app.download.versions.len(), 1);
+        assert_eq!(app.download.matched(), 1);
         assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
     }
 
@@ -4655,7 +3274,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Download, "still here");
         assert!(app.download.query.is_empty());
-        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.matched(), 4);
         assert_eq!(app.download.focus, PickerFocus::Search, "caret stays put");
 
         app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
@@ -4676,24 +3295,24 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         type_search(&mut app, "1.19");
         app.handle_download_key(KeyCode::Backspace, KeyModifiers::NONE);
         // "1.1" still matches only 1.19.2 ... until the dot goes.
-        assert_eq!(app.download.versions.len(), 1);
+        assert_eq!(app.download.matched(), 1);
         for _ in 0..2 {
             app.handle_download_key(KeyCode::Backspace, KeyModifiers::NONE);
         }
         assert_eq!(app.download.query, "1");
         // A single digit matches any id containing it: "1" is in all four.
-        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.matched(), 4);
     }
 
     #[test]
     fn f_cycles_the_kind_filter() {
         let mut app = mixed_picker();
-        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.matched(), 4);
 
         app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Release);
-        assert_eq!(app.download.versions.len(), 2);
-        assert!(app.download.versions.iter().all(|v| v.kind == "release"));
+        assert_eq!(app.download.matched(), 2);
+        assert!(app.download.versions().all(|v| v.kind == "release"));
 
         app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Snapshot);
@@ -4705,7 +3324,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::All);
-        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.matched(), 4);
     }
 
     #[test]
@@ -4724,7 +3343,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         // Clearing the search restores the full list and re-finds it.
         app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(app.download.versions.len(), 4);
+        assert_eq!(app.download.matched(), 4);
         assert_eq!(app.download.picked, 1);
     }
 
@@ -4735,7 +3354,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(app.download.loaders.contains(&Loader::Fabric));
         // Nothing left to pick: the loader list collapses to vanilla.
         app.handle_download_key(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert!(app.download.versions.is_empty());
+        assert!(app.download.matched() == 0);
         assert_eq!(app.download.loaders, vec![Loader::None]);
     }
 
@@ -4743,7 +3362,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn enter_with_no_match_does_not_start_an_install() {
         let mut app = mixed_picker();
         type_search(&mut app, "zzz");
-        assert!(app.download.versions.is_empty());
+        assert!(app.download.matched() == 0);
         app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(install_effect(&app).is_none());
         assert_eq!(app.screen, Screen::Download);
@@ -4952,6 +3571,83 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn a_modern_vanilla_install_starts_aot_training() {
+        let mut app = downloader();
+        app.handle_install_event(InstallEvent::Finished {
+            version: "26.3".to_string(),
+            loader: None,
+        });
+        assert_eq!(app.download.stage, DownloadStage::Training);
+        assert!(
+            app.effects()
+                .iter()
+                .any(|effect| matches!(effect, Effect::TrainAot(version) if version == "26.3")),
+            "training is queued for the install worker"
+        );
+
+        // Older versions and loader installs keep the old install-only path.
+        for (version, loader) in [
+            ("1.21.11", None),
+            ("26.3", Some("Fabric 0.20.1".to_string())),
+        ] {
+            let mut app = downloader();
+            app.handle_install_event(InstallEvent::Finished {
+                version: version.to_string(),
+                loader,
+            });
+            assert_eq!(app.download.stage, DownloadStage::Done, "{version}");
+            assert!(
+                !app.effects()
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::TrainAot(_))),
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn aot_progress_and_completion_land_on_the_install_screen() {
+        let mut app = downloader();
+        app.screen = Screen::Installing;
+        app.handle_install_event(InstallEvent::Finished {
+            version: "26.3".to_string(),
+            loader: None,
+        });
+        app.handle_aot_event(crate::aot::Event::Progress {
+            version: "26.3".to_string(),
+            loaded: 100,
+            total: 200,
+        });
+        assert_eq!(app.download.stage, DownloadStage::Training);
+        assert_eq!(app.download.aot_loaded, 100);
+        assert_eq!(app.download.aot_total, 200);
+
+        app.handle_aot_event(crate::aot::Event::Assembling {
+            version: "26.3".to_string(),
+        });
+        assert!(app.download.aot_assembling);
+
+        app.handle_aot_event(crate::aot::Event::Finished {
+            version: "26.3".to_string(),
+            loaded: 190,
+            total: 200,
+            java_major: 28,
+            java_version: "28+23-ea-beta".to_string(),
+        });
+        assert_eq!(app.download.stage, DownloadStage::Done);
+        assert!(!app.download.aot_assembling);
+        assert!(
+            app.download
+                .aot_note
+                .as_deref()
+                .unwrap()
+                .contains("AOT 缓存已生成"),
+            "{:?}",
+            app.download.aot_note
+        );
     }
 
     #[test]

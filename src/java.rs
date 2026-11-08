@@ -23,8 +23,52 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+/// One runtime family the picker offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Feature {
+    pub major: u32,
+    /// Early-access releases come from Adoptium's `feature_releases` endpoint
+    /// rather than `/assets/latest`, and are not on the mirror.
+    pub ea: bool,
+}
+
+impl Feature {
+    /// `Java 28 EA` / `Java 21`, the label the picker shows.
+    pub fn label(self) -> String {
+        if self.ea {
+            format!("Java {} EA", self.major)
+        } else {
+            format!("Java {}", self.major)
+        }
+    }
+}
+
 /// The Java feature versions the picker offers, newest last.
-pub const FEATURES: [u32; 4] = [8, 17, 21, 25];
+///
+/// 28 is still an early-access release (JEP 544 era); when it goes GA the flag
+/// here is the only thing that has to change.
+pub const FEATURES: [Feature; 5] = [
+    Feature {
+        major: 8,
+        ea: false,
+    },
+    Feature {
+        major: 17,
+        ea: false,
+    },
+    Feature {
+        major: 21,
+        ea: false,
+    },
+    Feature {
+        major: 25,
+        ea: false,
+    },
+    Feature {
+        major: 28,
+        ea: true,
+    },
+];
 
 /// Where the artifact comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,6 +118,8 @@ pub struct Runtime {
     pub sha256: String,
     /// The GitHub release asset the API links to.
     pub link: String,
+    /// True for an early-access build (`jdk-28+23-ea-beta`).
+    pub ea: bool,
 }
 
 impl Runtime {
@@ -124,6 +170,18 @@ pub fn api_url(feature: u32, (os, arch): (&str, &str)) -> String {
     )
 }
 
+/// The URL for an early-access release.
+///
+/// `/assets/latest/28` is empty until 28 ships GA; EA builds are only exposed
+/// through `feature_releases/<feature>/ea`.
+pub fn api_ea_url(feature: u32, (os, arch): (&str, &str)) -> String {
+    format!(
+        "{API_BASE}/assets/feature_releases/{feature}/ea\
+         ?os={os}&architecture={arch}&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk\
+         &page=0&page_size=1&sort_method=DATE&sort_order=DESC"
+    )
+}
+
 /// The same archive on Tsinghua's mirror: `<base>/<feature>/jre/<arch>/<os>/<file>`.
 pub fn tuna_url(runtime: &Runtime, (os, arch): (&str, &str)) -> String {
     format!(
@@ -160,26 +218,36 @@ pub fn candidates(
     platform: (&str, &str),
 ) -> Vec<String> {
     let mut urls = Vec::new();
+    // The Tsinghua mirror only carries GA releases; an EA build is GitHub-only,
+    // so the source switch must not produce a guaranteed 404 first.
+    if runtime.ea {
+        push_github(&mut urls, runtime, proxy);
+        urls.dedup();
+        return urls;
+    }
     match source {
         Source::Tuna => urls.push(tuna_url(runtime, platform)),
-        Source::Github => {
-            if let Some(proxy) = normalize_proxy(proxy) {
-                // `gh-proxy.com/github.com/…` is what was asked for; the form that
-                // keeps the scheme is what other proxies expect, so both are tried.
-                let bare = runtime
-                    .link
-                    .split_once("://")
-                    .map_or(runtime.link.as_str(), |(_, rest)| rest);
-                urls.push(format!("{proxy}/{bare}"));
-                urls.push(format!("{proxy}/{}", runtime.link));
-            }
-        }
+        Source::Github => push_github(&mut urls, runtime, proxy),
     }
     if !urls.iter().any(|url| url == &runtime.link) {
         urls.push(runtime.link.clone());
     }
     urls.dedup();
     urls
+}
+
+fn push_github(urls: &mut Vec<String>, runtime: &Runtime, proxy: &str) {
+    if let Some(proxy) = normalize_proxy(proxy) {
+        // `gh-proxy.com/github.com/…` is what was asked for; the form that
+        // keeps the scheme is what other proxies expect, so both are tried.
+        let bare = runtime
+            .link
+            .split_once("://")
+            .map_or(runtime.link.as_str(), |(_, rest)| rest);
+        urls.push(format!("{proxy}/{bare}"));
+        urls.push(format!("{proxy}/{}", runtime.link));
+    }
+    urls.push(runtime.link.clone());
 }
 
 /// Where one runtime lives: `data/运行时/<version>`, e.g. `…/21.0.13+9`.
@@ -197,15 +265,24 @@ pub fn major_of(name: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Every runtime this launcher installed, as `(feature, bin/java)`.
-///
-/// Sorted newest first (by feature version, then by name) so a newer runtime is
-/// offered before an older one.
-pub fn installed(runtimes: &Path) -> Vec<(u32, PathBuf)> {
+/// One runtime directory this launcher found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub major: u32,
+    /// The directory name, i.e. the version spelling (`8u512-b09`).
+    pub version: String,
+    pub java: PathBuf,
+    /// Whether the directory has the spelling [`install_dir`] writes. A
+    /// hand-made `运行时/21` is usable but not the launcher's to replace.
+    pub managed: bool,
+}
+
+/// Every runtime directory, newest first.
+pub fn installed_runtimes(runtimes: &Path) -> Vec<Installed> {
     let Ok(entries) = fs::read_dir(runtimes) else {
         return Vec::new();
     };
-    let mut found: Vec<(u32, String, PathBuf)> = entries
+    let mut found: Vec<Installed> = entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_str()?.to_string();
@@ -215,14 +292,96 @@ pub fn installed(runtimes: &Path) -> Vec<(u32, PathBuf)> {
             }
             let major = major_of(&name)?;
             let java = java_binary(&entry.path())?;
-            Some((major, name, java))
+            Some(Installed {
+                major,
+                managed: is_install_dir_name(&name),
+                version: name,
+                java,
+            })
         })
         .collect();
-    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    found.sort_by(|a, b| {
+        b.major
+            .cmp(&a.major)
+            .then_with(|| b.version.cmp(&a.version))
+    });
     found
+}
+
+/// Every runtime this launcher installed, as `(feature, bin/java)`.
+///
+/// Sorted newest first (by feature version, then by name) so a newer runtime is
+/// offered before an older one.
+pub fn installed(runtimes: &Path) -> Vec<(u32, PathBuf)> {
+    installed_runtimes(runtimes)
         .into_iter()
-        .map(|(major, _, java)| (major, java))
+        .map(|runtime| (runtime.major, runtime.java))
         .collect()
+}
+
+/// Whether `latest` is a newer build than `installed`.
+///
+/// Adoptium's spellings are numeric runs separated by `u`, `.`, `+` and `-`:
+/// `8u512-b09`, `21.0.13+9`, `28+23-ea-beta`. Comparing the numbers is enough
+/// to avoid offering a downgrade when the API lags behind a local build.
+pub fn is_newer(latest: &str, installed: &str) -> bool {
+    fn numbers(text: &str) -> Vec<u64> {
+        let mut values = Vec::new();
+        let mut current = String::new();
+        for character in text.chars() {
+            if character.is_ascii_digit() {
+                current.push(character);
+            } else if !current.is_empty() {
+                values.push(current.parse().unwrap_or(u64::MAX));
+                current.clear();
+            }
+        }
+        if !current.is_empty() {
+            values.push(current.parse().unwrap_or(u64::MAX));
+        }
+        values
+    }
+    match numbers(latest).cmp(&numbers(installed)) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        // Same numbers but a different spelling (a rebuilt EA, an LTS suffix):
+        // let the user move to what the API currently offers.
+        std::cmp::Ordering::Equal => latest != installed,
+    }
+}
+
+/// Make sure a feature's latest JRE is installed, downloading it if needed.
+///
+/// Used by the forced AOT training for Java 28 EA: it must not silently fall
+/// back to an older JVM, because the cache is tied to the exact build.
+pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Installed, String> {
+    if let Some(found) = installed_runtimes(runtimes)
+        .into_iter()
+        .find(|runtime| runtime.major == feature)
+    {
+        return Ok(found);
+    }
+    let spec = FEATURES
+        .iter()
+        .find(|spec| spec.major == feature)
+        .ok_or_else(|| format!("不提供 Java {feature}"))?;
+    let client = blocking_client()?;
+    let (sender, _receiver) = mpsc::channel();
+    let runtime = if spec.ea {
+        let url = api_ea_url(feature, platform());
+        let text = blocking_fetch(&client, &url, &sender)?;
+        parse_ea_assets(&text, feature)?
+    } else {
+        let url = api_url(feature, platform());
+        let text = blocking_fetch(&client, &url, &sender)?;
+        parse_assets(&text, feature)?
+    };
+    let urls = candidates(&runtime, Source::Tuna, proxy, platform());
+    install(&client, runtimes, &runtime, &urls, &sender)?;
+    installed_runtimes(runtimes)
+        .into_iter()
+        .find(|installed| installed.major == feature)
+        .ok_or_else(|| format!("Java {feature} 安装后没有找到 bin/java"))
 }
 
 /// `bin/java` under an unpacked runtime, if there is one.
@@ -239,9 +398,16 @@ pub fn spawn_list() -> Receiver<Event> {
         let client = blocking_client()?;
         let mut runtimes = Vec::new();
         for feature in FEATURES {
-            let url = api_url(feature, platform());
-            let text = blocking_fetch(&client, &url, &sender)?;
-            runtimes.push(parse_assets(&text, feature)?);
+            let runtime = if feature.ea {
+                let url = api_ea_url(feature.major, platform());
+                let text = blocking_fetch(&client, &url, &sender)?;
+                parse_ea_assets(&text, feature.major)?
+            } else {
+                let url = api_url(feature.major, platform());
+                let text = blocking_fetch(&client, &url, &sender)?;
+                parse_assets(&text, feature.major)?
+            };
+            runtimes.push(runtime);
         }
         let _ = sender.send(Event::Listed(runtimes));
         Ok(())
@@ -386,12 +552,12 @@ fn prune_older(runtimes: &Path, major: u32, keep: &Path, sender: &Sender<Event>)
 }
 
 /// Whether `name` is the spelling [`install_dir`] gives a downloaded runtime.
-fn is_install_dir_name(name: &str) -> bool {
+pub fn is_install_dir_name(name: &str) -> bool {
     match major_of(name) {
         // Java 8 is `8u512-b09`.
         Some(8) => name.starts_with("8u") && name.contains("-b"),
-        // Everything else is `21.0.13+9`.
-        Some(_) => name.split_once('.').is_some() && name.contains('+'),
+        // Everything else is `21.0.13+9`, and an EA build is `28+23-ea-beta`.
+        Some(_) => name.contains('+'),
         None => false,
     }
 }
@@ -577,6 +743,7 @@ pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime, String> {
         .into_iter()
         .find(|asset| asset.binary.image_type == "jre")
         .ok_or_else(|| format!("Adoptium 没有 Java {feature} 的 JRE"))?;
+    let ea = asset.release_name.contains("-ea");
     Ok(Runtime {
         major: feature,
         release: asset.release_name,
@@ -584,6 +751,34 @@ pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime, String> {
         size: asset.binary.package.size,
         sha256: asset.binary.package.checksum,
         link: asset.binary.package.link,
+        ea,
+    })
+}
+
+/// Pull one runtime out of a `/assets/feature_releases/<feature>/ea` response.
+///
+/// That endpoint returns releases with a `binaries` array, not the flat
+/// one-binary-per-asset shape of `/assets/latest`.
+pub fn parse_ea_assets(text: &str, feature: u32) -> Result<Runtime, String> {
+    let releases: Vec<EaRelease> = serde_json::from_str(text)
+        .map_err(|error| format!("Java {feature} EA 的响应无法解析：{error}"))?;
+    let release = releases
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("Adoptium 没有 Java {feature} 的 EA 版本"))?;
+    let binary = release
+        .binaries
+        .into_iter()
+        .find(|binary| binary.image_type == "jre")
+        .ok_or_else(|| format!("Adoptium 没有 Java {feature} EA 的 JRE"))?;
+    Ok(Runtime {
+        major: feature,
+        release: release.release_name,
+        name: binary.package.name,
+        size: binary.package.size,
+        sha256: binary.package.checksum,
+        link: binary.package.link,
+        ea: true,
     })
 }
 
@@ -591,6 +786,12 @@ pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime, String> {
 struct Asset {
     release_name: String,
     binary: Binary,
+}
+
+#[derive(Debug, Deserialize)]
+struct EaRelease {
+    release_name: String,
+    binaries: Vec<Binary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,6 +849,33 @@ mod tests {
             sha256: "a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd"
                 .to_string(),
             link: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz".to_string(),
+            ea: false,
+        }
+    }
+
+    #[test]
+    #[ignore = "network: queries Adoptium for every feature, including Java 28 EA"]
+    fn live_list_includes_the_ea_feature() {
+        let receiver = spawn_list();
+        match receiver
+            .recv_timeout(Duration::from_secs(120))
+            .expect("a list event")
+        {
+            Event::Listed(runtimes) => {
+                assert_eq!(runtimes.len(), FEATURES.len(), "{runtimes:?}");
+                let ea = runtimes
+                    .iter()
+                    .find(|runtime| runtime.major == 28)
+                    .expect("Java 28 is offered");
+                assert!(ea.ea, "28 is EA until it ships GA");
+                assert!(
+                    ea.name.contains("jre"),
+                    "only a JRE is downloaded: {}",
+                    ea.name
+                );
+                assert!(!ea.link.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
         }
     }
 
@@ -658,6 +886,103 @@ mod tests {
             url,
             "https://api.adoptium.net/v3/assets/latest/21/hotspot?os=linux&architecture=x64&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk"
         );
+    }
+
+    #[test]
+    fn early_access_uses_the_feature_releases_endpoint() {
+        assert_eq!(
+            api_ea_url(28, ("linux", "x64")),
+            "https://api.adoptium.net/v3/assets/feature_releases/28/ea?os=linux&architecture=x64&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk&page=0&page_size=1&sort_method=DATE&sort_order=DESC"
+        );
+        assert_eq!(
+            FEATURES.last().map(|feature| (feature.major, feature.ea)),
+            Some((28, true))
+        );
+        assert_eq!(
+            Feature {
+                major: 28,
+                ea: true
+            }
+            .label(),
+            "Java 28 EA"
+        );
+    }
+
+    #[test]
+    fn an_ea_response_has_a_binaries_array_not_a_single_binary() {
+        let text = r#"[{
+            "release_name": "jdk-28+23-ea-beta",
+            "release_type": "ea",
+            "binaries": [
+                {"image_type": "jdk", "package": {"name": "jdk.tar.gz", "size": 1, "checksum": "0", "link": "https://example/jdk"}},
+                {"image_type": "jre", "package": {"name": "OpenJDK-jre_x64_linux_hotspot_28_23-ea.tar.gz", "size": 79777499, "checksum": "b95395db6acc6aa4ff46495b0c58814356676787d2f50f64dbfed77d76ae9523", "link": "https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B23-ea-beta/OpenJDK-jre_x64_linux_hotspot_28_23-ea.tar.gz"}}
+            ]
+        }]"#;
+        let runtime = parse_ea_assets(text, 28).unwrap();
+        assert_eq!(runtime.major, 28);
+        assert!(runtime.ea);
+        assert_eq!(runtime.version(), "28+23-ea-beta");
+        assert_eq!(runtime.size, 79777499);
+        assert!(runtime.name.starts_with("OpenJDK-jre"));
+    }
+
+    #[test]
+    fn ea_is_github_only_even_when_the_mirror_is_selected() {
+        let mut ea = runtime();
+        ea.major = 28;
+        ea.ea = true;
+        ea.release = "jdk-28+23-ea-beta".to_string();
+        ea.link = "https://github.com/adoptium/temurin28-binaries/releases/download/x/y.tar.gz"
+            .to_string();
+        let urls = candidates(&ea, Source::Tuna, "", ("linux", "x64"));
+        assert_eq!(
+            urls,
+            [ea.link.clone()],
+            "no guaranteed 404 on the mirror first"
+        );
+        let urls = candidates(&ea, Source::Github, "gh-proxy.com", ("linux", "x64"));
+        assert_eq!(urls.len(), 3, "{urls:?}");
+        assert!(urls[0].starts_with("https://gh-proxy.com/github.com/"));
+    }
+
+    #[test]
+    fn ea_install_directories_are_recognised() {
+        assert!(is_install_dir_name("28+23-ea-beta"));
+        assert!(is_install_dir_name("21.0.13+9"));
+        assert!(
+            !is_install_dir_name("28"),
+            "a hand-made directory is not ours"
+        );
+    }
+
+    #[test]
+    fn newer_builds_are_compared_by_their_numbers() {
+        assert!(is_newer("8u512-b09", "8u502-b07"));
+        assert!(!is_newer("8u502-b07", "8u512-b09"));
+        assert!(!is_newer("8u512-b09", "8u512-b09"));
+        assert!(is_newer("17.0.21+9", "17.0.10+1"));
+        assert!(is_newer("28+23-ea-beta", "28+22-ea-beta"));
+        assert!(!is_newer("21.0.13+9", "21.0.13+10"));
+    }
+
+    #[test]
+    fn installed_runtimes_keep_the_version_and_whether_they_are_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        for version in ["8u502-b07", "21.0.13+9", "21"] {
+            let dir = install_dir(tmp.path(), version);
+            fs::create_dir_all(dir.join("bin")).unwrap();
+            fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
+        }
+        let found = installed_runtimes(tmp.path());
+        assert_eq!(
+            found
+                .iter()
+                .map(|runtime| runtime.version.as_str())
+                .collect::<Vec<_>>(),
+            ["21.0.13+9", "21", "8u502-b07"]
+        );
+        assert!(found[0].managed);
+        assert!(!found[1].managed, "a bare 21 is the user's own copy");
     }
 
     #[test]
@@ -764,6 +1089,41 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: downloads the Java 28 EA JRE from GitHub"]
+    fn live_install_java28_ea_produces_a_runnable_jre() {
+        let receiver = spawn_list();
+        let runtime = match receiver
+            .recv_timeout(Duration::from_secs(120))
+            .expect("a list event")
+        {
+            Event::Listed(runtimes) => runtimes
+                .into_iter()
+                .find(|runtime| runtime.major == 28)
+                .expect("Java 28 is offered"),
+            other => panic!("unexpected event: {other:?}"),
+        };
+        assert!(runtime.ea);
+        let dir = tempfile::tempdir().unwrap();
+        let urls = candidates(&runtime, Source::Tuna, "", platform());
+        let events = spawn_install(dir.path().to_path_buf(), runtime, urls);
+        let mut installed = None;
+        while let Ok(event) = events.recv_timeout(Duration::from_secs(600)) {
+            match event {
+                Event::Installed { java, version, .. } => {
+                    installed = Some((java, version));
+                    break;
+                }
+                Event::Failed(message) => panic!("Java 28 install failed: {message}"),
+                Event::Log(line) => eprintln!("{line}"),
+                Event::Progress { .. } | Event::Listed(_) => {}
+            }
+        }
+        let (java, version) = installed.expect("an Installed event");
+        assert!(java.is_file(), "{}", java.display());
+        assert!(version.starts_with("28+"), "{version}");
+    }
+
+    #[test]
     fn the_hash_check_accepts_the_api_value_and_rejects_anything_else() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("archive.bin");
@@ -812,6 +1172,17 @@ mod tests {
             "{:?}",
             found[0].1
         );
+    }
+
+    #[test]
+    fn ensure_feature_reuses_an_existing_runtime_without_network() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = install_dir(tmp.path(), "28+23-ea-beta");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
+        let found = ensure_feature(tmp.path(), 28, "").unwrap();
+        assert_eq!(found.major, 28);
+        assert_eq!(found.version, "28+23-ea-beta");
     }
 
     #[test]
