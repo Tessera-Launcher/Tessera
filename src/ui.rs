@@ -551,11 +551,15 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let loaders_inner = loaders_block.inner(loaders_area);
     frame.render_widget(loaders_block, loaders_area);
+    // Data rows only, and the first of them is the first line of the pane: unlike
+    // the version table this one has no header row, so adding one here would make
+    // every click land on the row above the pointer.
+    let loader_rows = (app.download.loaders.len() as u16).min(loaders_inner.height);
     app.layout.download_loaders = Area::new(
         loaders_inner.x,
-        loaders_inner.y.saturating_add(1),
+        loaders_inner.y,
         loaders_inner.width,
-        loaders_inner.height.saturating_sub(1),
+        loader_rows,
     );
 
     let rows: Vec<Row> = app
@@ -584,13 +588,12 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     frame.render_widget(Table::new(rows, [Constraint::Min(10)]), loaders_inner);
 
-    // A hint under the loader list: what Enter will do.
-    if loaders_inner.height > app.download.loaders.len() as u16 + 1 {
+    // A hint under the loader list: what Enter will do. It starts right below the
+    // last row, so it cannot be mistaken for one of them.
+    if loaders_inner.height > loader_rows {
         let hint_area = Rect {
-            y: loaders_inner.y + app.download.loaders.len() as u16 + 1,
-            height: loaders_inner
-                .height
-                .saturating_sub(app.download.loaders.len() as u16 + 1),
+            y: loaders_inner.y + loader_rows,
+            height: loaders_inner.height.saturating_sub(loader_rows),
             ..loaders_inner
         };
         let loader = app.download.picked_loader();
@@ -2216,13 +2219,53 @@ mod tests {
         assert_eq!(app.layout.download_filters.len(), 4);
         assert!(app.layout.download_search.width > 0);
 
-        // Both panes start below the filter row.
+        // Both panes start below the filter row. Only the version table draws a
+        // header, so its clickable rows begin one line lower than the loaders'.
         assert!(app.layout.download_versions.y > app.layout.download_search.y);
         assert!(app.layout.download_loaders.y > app.layout.download_search.y);
         assert_eq!(
-            app.layout.download_loaders.y, app.layout.download_versions.y,
-            "the two panes stay level with each other"
+            app.layout.download_versions.y,
+            app.layout.download_loaders.y + 1,
+            "the loader table has no header row to skip"
         );
+    }
+
+    #[test]
+    fn clicking_a_loader_row_selects_that_row_and_not_the_one_above() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+        ]));
+        render(&mut app, 100, 28);
+        assert!(
+            app.download.loaders.len() >= 4,
+            "need a few rows to pick from: {:?}",
+            app.download.loaders
+        );
+        let pane = app.layout.download_loaders;
+
+        // Every row, middle of the line: row i must select loader i.
+        for (index, loader) in app.download.loaders.clone().iter().enumerate() {
+            // Start somewhere else, so a no-op click cannot look like success.
+            app.download.loader_pick = (index + 1) % app.download.loaders.len();
+            app.handle_mouse(click(pane.x + 3, pane.y + index as u16));
+            assert_eq!(
+                app.download.loader_pick, index,
+                "clicking row {index} must select it, not the row above"
+            );
+            assert_eq!(app.download.picked_loader(), *loader);
+        }
+
+        // The rows end where the list ends: the hint below is not a row.
+        let below = pane.y + app.download.loaders.len() as u16;
+        app.download.loader_pick = 1;
+        app.handle_mouse(click(pane.x + 3, below));
+        assert_eq!(app.download.loader_pick, 1, "the hint row is not a loader");
     }
 
     #[test]
