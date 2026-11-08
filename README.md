@@ -45,6 +45,32 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 `v` 下载 Java（`j` 已经用来往下选了，`v` 取"虚拟机"），`a` 账户，`r` 重新扫描，
 `x` 卸载，`q/Esc` 退出，`Enter` 启动。
 
+**从文件管理器双击**：文件管理器启动程序时不给终端，`enable_raw_mode` 会失败，
+错误写进没人看的 stderr，窗口一闪都没有。`terminal.rs` 因此在 `stdin` 不是 TTY 时
+把自己重新丢进一个终端模拟器再退出；终端里启动（shell、tmux、SSH）`stdin` 是 TTY，
+这条路径不会触发，`yaml < 文件` 也照旧读文件。
+
+三个系统的情况不一样，所以只有 Linux/BSD 需要猜：
+
+- **Windows**：控制台子系统（Rust 默认）的程序被资源管理器双击时由系统分配控制台
+  窗口，本来就能跑；只有从 GUI 进程里启动时才用 `cmd /C start` 补一个。
+- **macOS**：Finder 双击 Unix 可执行文件本来就开 Terminal；从别的 App 启动时用
+  `open -a Terminal` 补上（这条不转交参数，有参数时不走）。
+- **Linux/BSD**：文件管理器一律直接 `exec`，没有终端。猜测顺序是
+  `$TERMINAL` → 桌面自己的终端（`$XDG_CURRENT_DESKTOP`：KDE→`konsole -e`、
+  GNOME/Unity/Cinnamon→`gnome-terminal --`、Xfce→`xfce4-terminal -x`、
+  MATE→`mate-terminal -x`、LXQt/LXDE→`qterminal -e`）→ 装了就用的 freedesktop 助手
+  `xdg-terminal-exec`（读 `~/.config/xdg-terminal-exec/xdg-terminals.list`）→
+  固定名单（`alacritty`、`ghostty`、`foot`、`kitty`）→ `x-terminal-emulator`。
+  每个终端的执行参数不同（`-x` / `--` / `-e`），表里的值取自 `xdg-terminal-exec`
+  自带的 `execarg_default` 名单。
+
+`xdg-terminal-exec` 排在本桌面终端之后是有意的：它是配置的正确来源，但发行版默认
+会把任何声明了 `X-TerminalArgExec` 的终端选进来——Debian 13 上 `xfce4-terminal.desktop`
+还没这个键，于是会给你一个 `uxterm`。想强制用它就把 `$TERMINAL` 设成自己的终端。
+
+桌面快捷方式当然也还有效：`.desktop` 里 `Terminal=true`、`Exec` 指向二进制即可。
+
 ### Java 运行时
 
 `v` 打开（点页脚的 `v Java` 也可以），从 Adoptium 取 **8 / 17 / 21 / 25** 四个大版本最新的 **JRE**：

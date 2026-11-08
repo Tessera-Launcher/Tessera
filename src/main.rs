@@ -16,6 +16,7 @@ mod launch;
 mod login;
 mod paths;
 mod session;
+mod terminal;
 mod ui;
 mod version_tree;
 
@@ -106,6 +107,15 @@ fn main() -> std::process::ExitCode {
     if options.once {
         print_once(&mut app, options.width, options.height);
         return std::process::ExitCode::SUCCESS;
+    }
+
+    // A double-click in a file manager starts us with no terminal at all, so
+    // `enable_raw_mode` fails and the window the user expected never appears —
+    // and stderr is a place nobody looks. Hand the TUI to a terminal instead.
+    match terminal::reopen() {
+        Ok(true) => return std::process::ExitCode::SUCCESS,
+        Ok(false) => {}
+        Err(error) => eprintln!("无法打开终端: {error}"),
     }
 
     match run(&mut app, settings) {
