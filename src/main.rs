@@ -11,6 +11,7 @@ mod cleanup;
 mod clipboard;
 mod discover;
 mod install;
+mod java;
 mod launch;
 mod login;
 mod paths;
@@ -96,6 +97,8 @@ fn main() -> std::process::ExitCode {
         app.open_login();
     } else if options.accounts {
         app.open_accounts();
+    } else if options.jre {
+        app.open_java();
     }
 
     if let Some(version) = options.print_launch.clone() {
@@ -154,6 +157,7 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
     let mut login_rx: Option<Receiver<LoginEvent>> = None;
     let mut install_rx: Option<Receiver<InstallEvent>> = None;
     let mut session_rx: Option<Receiver<SessionEvent>> = None;
+    let mut java_rx: Option<Receiver<java::Event>> = None;
     let result = loop {
         // A login thread is requested by the state machine and spawned here, so
         // `app` never needs to know about threads or runtimes.
@@ -163,6 +167,14 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 identity,
                 app.accounts_dir.clone(),
             ));
+        }
+
+        // Java work, same shape: the state machine asks, the loop spawns.
+        if std::mem::take(&mut app.pending_java_list) {
+            java_rx = Some(java::spawn_list());
+        }
+        if let Some((runtime, urls)) = app.pending_java.take() {
+            java_rx = Some(java::spawn_install(app.root.clone(), runtime, urls));
         }
 
         // Clipboard and browser are the loop's job too: the state machine only
@@ -220,6 +232,23 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 session_rx = Some(session::spawn_refresh(file));
             }
         }
+        let mut java_done = false;
+        if let Some(receiver) = &java_rx {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => app.handle_java_event(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        java_done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if java_done {
+            java_rx = None;
+        }
+
         let mut session_done = false;
         if let Some(receiver) = &session_rx {
             loop {
@@ -381,6 +410,8 @@ struct Options {
     login: bool,
     /// Open the account manager immediately (likewise).
     accounts: bool,
+    /// Open the Java runtime picker immediately (likewise).
+    jre: bool,
     source: Source,
     /// `--java`: skip discovery and use this executable.
     java: Option<PathBuf>,
@@ -399,6 +430,7 @@ impl Options {
         let mut once = false;
         let mut login = false;
         let mut accounts = false;
+        let mut jre = false;
         let mut source = Source::default();
         let mut java = None;
         let mut memory = 2048;
@@ -418,6 +450,7 @@ impl Options {
                 "--once" => once = true,
                 "--login" => login = true,
                 "--accounts" => accounts = true,
+                "--jre" => jre = true,
                 "--java" => {
                     java = Some(PathBuf::from(
                         argv.next()
@@ -472,6 +505,7 @@ impl Options {
             once,
             login,
             accounts,
+            jre,
             source,
             java,
             memory,
@@ -493,6 +527,7 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   --once            渲染一帧后退出，不需要 TTY
   --login           启动时直接打开登录面板
   --accounts        启动时直接打开账户管理
+  --jre             启动时直接打开 Java 下载界面
   --mirror <源>     bmclapi（默认）或 mojang，决定从哪下载
   --java <路径>     指定 Java（默认扫 JAVA_HOME 与 PATH，挑版本够新的）
   --memory <MiB>    堆大小（默认 2048）

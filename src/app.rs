@@ -40,6 +40,8 @@ pub enum Screen {
     Download,
     /// A download is running.
     Installing,
+    /// The Java runtime picker.
+    Java,
 }
 
 /// Who is signed in, for the header.
@@ -350,6 +352,87 @@ impl DownloadUi {
     }
 }
 
+/// What the Java picker is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaStage {
+    /// Waiting for Adoptium's answers.
+    Loading,
+    /// The four runtimes are listed and one can be picked.
+    Picking,
+    /// A runtime is downloading.
+    Downloading,
+    /// The last download finished.
+    Done,
+    /// The last download failed.
+    Failed,
+}
+
+/// The Java runtime picker's own state.
+#[derive(Debug, Clone)]
+pub struct JavaUi {
+    pub stage: JavaStage,
+    /// Latest JRE of each offered feature, in [`crate::java::FEATURES`] order.
+    pub runtimes: Vec<crate::java::Runtime>,
+    pub selected: usize,
+    pub source: crate::java::Source,
+    /// What the user typed as a GitHub proxy; only used by [`crate::java::Source::Github`].
+    pub proxy: String,
+    /// Whether keystrokes go into the proxy field instead of the list.
+    pub editing_proxy: bool,
+    /// Bytes done, bytes total, and a smoothed speed.
+    pub progress: (u64, u64, f64),
+    /// Runtimes already on disk, newest first.
+    pub installed: Vec<(u32, std::path::PathBuf)>,
+    /// The download that is running (or just finished).
+    pub current: Option<u32>,
+    pub message: Option<String>,
+}
+
+impl Default for JavaUi {
+    fn default() -> Self {
+        JavaUi {
+            stage: JavaStage::Loading,
+            runtimes: Vec::new(),
+            selected: 0,
+            source: crate::java::Source::default(),
+            proxy: String::new(),
+            editing_proxy: false,
+            progress: (0, 0, 0.0),
+            installed: Vec::new(),
+            current: None,
+            message: None,
+        }
+    }
+}
+
+impl JavaUi {
+    /// The runtime under the cursor.
+    pub fn selected_runtime(&self) -> Option<&crate::java::Runtime> {
+        self.runtimes.get(self.selected)
+    }
+
+    /// Whether `major` is already installed.
+    pub fn is_installed(&self, major: u32) -> bool {
+        self.installed
+            .iter()
+            .any(|(installed, _)| *installed == major)
+    }
+
+    /// `12.3 / 49.6 MiB · 3.1 MiB/s`, or a dash before anything arrives.
+    pub fn progress_text(&self) -> String {
+        let (done, total, speed) = self.progress;
+        if total == 0 {
+            return String::new();
+        }
+        format!(
+            "{} / {} · {}/s",
+            crate::discover::human_size(done),
+            crate::discover::human_size(total),
+            crate::discover::human_size(speed as u64)
+        )
+    }
+}
+
 /// The account manager's own state.
 #[derive(Debug, Clone, Default)]
 pub struct AccountsUi {
@@ -480,6 +563,10 @@ pub struct Layout {
     pub download_filters: Vec<Area>,
     /// One area per source chip in the picker's bottom-right switch.
     pub download_sources: Vec<Area>,
+    /// The Java picker: one area per row, one per source chip, and the proxy field.
+    pub java_rows: Vec<Area>,
+    pub java_sources: Vec<Area>,
+    pub java_proxy: Area,
     /// Clickable key hints in the footer.
     pub buttons: Vec<Button>,
 }
@@ -537,6 +624,12 @@ pub struct App {
     pub last_launch: Option<launch::Launch>,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
+    /// Set when the Java picker wants Adoptium's list.
+    pub pending_java_list: bool,
+    /// Set when a Java runtime should be downloaded; the loop spawns the worker.
+    pub pending_java: Option<(crate::java::Runtime, Vec<String>)>,
+    /// The Java picker's state.
+    pub java: JavaUi,
     /// Text the user asked to copy; the main loop hands it to the terminal.
     pub pending_clipboard: Option<String>,
     /// URL the user asked to open in a browser; the main loop spawns the opener.
@@ -590,6 +683,9 @@ impl App {
             last_credentials: None,
             last_launch: None,
             pending_login: None,
+            pending_java_list: false,
+            pending_java: None,
+            java: JavaUi::default(),
             pending_clipboard: None,
             pending_browser: None,
             layout: Layout::default(),
@@ -956,6 +1052,7 @@ impl App {
             Screen::Login => self.handle_login_mouse(event),
             Screen::Accounts => self.handle_accounts_mouse(event),
             Screen::Download => self.handle_download_mouse(event),
+            Screen::Java => self.handle_java_mouse(event),
             // Downloads run in the background; the progress screen has no targets.
             Screen::Installing => {}
         }
@@ -1137,6 +1234,10 @@ impl App {
                 self.handle_download_key(code, modifiers);
                 return;
             }
+            Screen::Java => {
+                self.handle_java_key(code, modifiers);
+                return;
+            }
             Screen::Main => {}
         }
         match code {
@@ -1150,6 +1251,8 @@ impl App {
             KeyCode::Char('l') => self.open_login(),
             KeyCode::Char('a') => self.open_accounts(),
             KeyCode::Char('d') => self.open_download(),
+            // `j` already moves the selection; Java gets the shifted one.
+            KeyCode::Char('J') => self.open_java(),
             // Two presses, like removing an account: deleting a whole version
             // directory is not something a single stray key may do.
             KeyCode::Char('x') | KeyCode::Delete => self.request_uninstall(),
@@ -1695,6 +1798,225 @@ impl App {
             if at.elapsed().as_secs_f64() > 2.0 {
                 self.download.speed = 0.0;
             }
+        }
+    }
+
+    // ---- java runtimes ----
+
+    /// Open the Java picker and ask the loop for Adoptium's list.
+    pub fn open_java(&mut self) {
+        self.java = JavaUi::default();
+        self.java.installed = crate::java::installed(&self.root);
+        self.screen = Screen::Java;
+        self.pending_java_list = true;
+        self.status = "Java：正在查询 Adoptium".to_string();
+        self.log("打开 Java 下载界面");
+    }
+
+    pub fn close_java(&mut self) {
+        self.screen = Screen::Main;
+        // A download in flight keeps its thread; only the screen goes away.
+        self.java.editing_proxy = false;
+    }
+
+    /// `s`: the other source. Only meaningful for the artifact, so the list stays.
+    pub fn set_java_source(&mut self, source: crate::java::Source) {
+        if self.java.source == source {
+            return;
+        }
+        self.java.source = source;
+        self.java.editing_proxy = false;
+        self.status = format!("Java 下载源：{}", source.label());
+    }
+
+    /// Keys while the Java picker is open.
+    pub fn handle_java_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let _ = modifiers;
+        // The proxy field swallows typing, like the download search box does.
+        if self.java.editing_proxy {
+            match code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => {
+                    self.java.editing_proxy = false;
+                    self.status = if self.java.proxy.trim().is_empty() {
+                        "GitHub Proxy：未设置".to_string()
+                    } else {
+                        format!("GitHub Proxy: {}", self.java.proxy.trim())
+                    };
+                }
+                KeyCode::Backspace => {
+                    self.java.proxy.pop();
+                }
+                KeyCode::Char(c) if !c.is_control() && self.java.proxy.len() < 128 => {
+                    self.java.proxy.push(c);
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        match self.java.stage {
+            JavaStage::Loading => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.close_java();
+                }
+            }
+            JavaStage::Picking | JavaStage::Done | JavaStage::Failed => match code {
+                KeyCode::Esc | KeyCode::Char('q') => self.close_java(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.java.selected = self.java.selected.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let last = self.java.runtimes.len().saturating_sub(1);
+                    self.java.selected = (self.java.selected + 1).min(last);
+                }
+                KeyCode::Char('s') => self.set_java_source(self.java.source.next()),
+                KeyCode::Char('p') => {
+                    if self.java.source == crate::java::Source::Github {
+                        self.java.editing_proxy = true;
+                        self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
+                    } else {
+                        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
+                    }
+                }
+                KeyCode::Enter => self.start_java_download(),
+                _ => {}
+            },
+            JavaStage::Downloading => {
+                // Leaving does not stop the worker; the log keeps reporting.
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.close_java();
+                    self.log("Java 下载转到后台");
+                }
+            }
+        }
+        true
+    }
+
+    /// Ask the loop to download the runtime under the cursor.
+    fn start_java_download(&mut self) {
+        let Some(runtime) = self.java.selected_runtime().cloned() else {
+            return;
+        };
+        if self.java.stage == JavaStage::Downloading {
+            return;
+        }
+        let urls = crate::java::candidates(
+            &runtime,
+            self.java.source,
+            &self.java.proxy,
+            crate::java::platform(),
+        );
+        self.java.stage = JavaStage::Downloading;
+        self.java.current = Some(runtime.major);
+        self.java.progress = (0, 0, 0.0);
+        self.java.message = None;
+        self.status = format!("Java {}：开始下载", runtime.major);
+        self.log(format!(
+            "Java {} {}（{}）",
+            runtime.major,
+            runtime.version(),
+            self.java.source.label()
+        ));
+        self.pending_java = Some((runtime, urls));
+    }
+
+    /// Apply an event from the Java worker.
+    pub fn handle_java_event(&mut self, event: crate::java::Event) {
+        use crate::java::Event;
+        match event {
+            Event::Listed(runtimes) => {
+                self.log(format!("Adoptium：{} 个 Java 版本", runtimes.len()));
+                self.java.runtimes = runtimes;
+                self.java.selected = self
+                    .java
+                    .selected
+                    .min(self.java.runtimes.len().saturating_sub(1));
+                self.java.stage = JavaStage::Picking;
+                self.status = "Java：选择版本".to_string();
+            }
+            Event::Log(line) => self.log(line),
+            Event::Progress { done, total, speed } => {
+                self.java.progress = (done, total, speed);
+                self.status = format!(
+                    "Java {}：{}",
+                    self.java.current.unwrap_or_default(),
+                    self.java.progress_text()
+                );
+            }
+            Event::Installed {
+                major,
+                version,
+                java,
+            } => {
+                self.java.stage = JavaStage::Done;
+                self.java.progress = (0, 0, 0.0);
+                self.java.installed = crate::java::installed(&self.root);
+                self.java.message = Some(format!("Java {major} {version} 已安装"));
+                self.status = format!("Java {major} 已安装：{}", java.display());
+                self.log(format!("Java {major} {version} → {}", java.display()));
+            }
+            Event::Failed(message) => {
+                self.java.stage = JavaStage::Failed;
+                self.java.progress = (0, 0, 0.0);
+                self.java.message = Some(message.clone());
+                self.status = "Java 下载失败".to_string();
+                self.log(format!("Java 下载失败：{message}"));
+            }
+        }
+    }
+
+    /// Mouse handling for the Java picker: rows, source chips, the proxy field.
+    fn handle_java_mouse(&mut self, event: MouseEvent) {
+        let (column, row) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.java.editing_proxy {
+                    self.java.editing_proxy = false;
+                }
+                if let Some(index) = self
+                    .layout
+                    .java_rows
+                    .iter()
+                    .position(|area| area.contains(column, row))
+                {
+                    self.java.selected = index;
+                    // A click downloads, like Enter, unless it is already running.
+                    if self.java.stage != JavaStage::Downloading {
+                        self.start_java_download();
+                    }
+                } else if let Some(index) = self
+                    .layout
+                    .java_sources
+                    .iter()
+                    .position(|area| area.contains(column, row))
+                {
+                    let source = crate::java::Source::ALL[index];
+                    self.set_java_source(source);
+                } else if self.layout.java_proxy.contains(column, row) {
+                    if self.java.source == crate::java::Source::Github {
+                        self.java.editing_proxy = true;
+                    } else {
+                        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self
+                    .layout
+                    .java_rows
+                    .iter()
+                    .any(|a| a.contains(column, row)) =>
+            {
+                let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
+                    -1
+                } else {
+                    1
+                };
+                let last = self.java.runtimes.len().saturating_sub(1);
+                self.java.selected =
+                    (self.java.selected as i32 + delta).clamp(0, last as i32) as usize;
+            }
+            _ => {}
         }
     }
 
@@ -3251,6 +3573,188 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.login.choice, 1);
         app.handle_mouse(wheel(true, 30, 12));
         assert_eq!(app.login.choice, 0);
+    }
+
+    // ---- java runtimes ----
+
+    fn java_runtime(major: u32) -> crate::java::Runtime {
+        let (os, arch) = crate::java::platform();
+        crate::java::Runtime {
+            major,
+            release: format!("jdk-{major}.0.1+1"),
+            name: format!("OpenJDK{major}U-jre_{arch}_{os}_hotspot_{major}.0.1_1.tar.gz"),
+            size: 50 * 1024 * 1024,
+            sha256: "a".repeat(64),
+            link: format!(
+                "https://github.com/adoptium/temurin{major}-binaries/releases/download/jdk-{major}.0.1%2B1/x.tar.gz"
+            ),
+        }
+    }
+
+    #[test]
+    fn opening_the_java_picker_asks_for_the_list() {
+        let mut app = app();
+        app.open_java();
+        assert_eq!(app.screen, Screen::Java);
+        assert_eq!(app.java.stage, JavaStage::Loading);
+        assert!(app.pending_java_list, "the loop fetches Adoptium's list");
+        assert!(app.java.runtimes.is_empty());
+        assert_eq!(app.java.source, crate::java::Source::Tuna, "清华源默认");
+        assert!(app.java.installed.is_empty(), "nothing downloaded yet");
+    }
+
+    #[test]
+    fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
+        let mut app = app();
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![
+            java_runtime(8),
+            java_runtime(17),
+            java_runtime(21),
+            java_runtime(25),
+        ]));
+        assert_eq!(app.java.stage, JavaStage::Picking);
+        assert_eq!(app.java.runtimes.len(), 4);
+        assert_eq!(app.java.selected_runtime().unwrap().major, 8);
+
+        app.handle_java_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_java_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.java.selected_runtime().unwrap().major, 21);
+
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        let (runtime, urls) = app.pending_java.clone().expect("a download started");
+        assert_eq!(runtime.major, 21);
+        assert!(
+            urls[0].starts_with("https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/"),
+            "{urls:?}"
+        );
+        assert_eq!(
+            urls.last().unwrap(),
+            &runtime.link,
+            "GitHub is the fallback"
+        );
+        assert_eq!(app.java.stage, JavaStage::Downloading);
+        assert_eq!(app.java.current, Some(21));
+    }
+
+    #[test]
+    fn the_java_source_and_the_proxy_decide_the_urls() {
+        let mut app = app();
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+
+        // The proxy is only consulted by the GitHub source.
+        app.handle_java_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert!(!app.java.editing_proxy, "not while the mirror is selected");
+        assert!(app.status.contains("官方源"), "{}", app.status);
+
+        app.handle_java_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(app.java.source, crate::java::Source::Github);
+
+        app.handle_java_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert!(app.java.editing_proxy);
+        for c in "gh-proxy.com".chars() {
+            app.handle_java_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.java.editing_proxy, "Enter leaves the field");
+        assert_eq!(app.java.proxy, "gh-proxy.com");
+
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        let (_, urls) = app.pending_java.clone().expect("a download started");
+        assert!(
+            urls[0].starts_with("https://gh-proxy.com/github.com/adoptium/"),
+            "the proxy is simply put in front: {urls:?}"
+        );
+        assert!(urls[1].starts_with("https://gh-proxy.com/https://github.com/"));
+        assert!(urls.last().unwrap().starts_with("https://github.com/"));
+    }
+
+    #[test]
+    fn a_finished_java_download_is_recorded_and_shown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let dir = crate::java::install_dir(&root, 21);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
+
+        let mut app = App::new(&root, "/acc", vec![], vec![]);
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        app.handle_java_event(crate::java::Event::Progress {
+            done: 10 * 1024 * 1024,
+            total: 50 * 1024 * 1024,
+            speed: 3.0 * 1024.0 * 1024.0,
+        });
+        assert!(app.status.contains("Java 21"), "{}", app.status);
+        assert!(
+            app.java.progress_text().contains("MiB/s"),
+            "{}",
+            app.java.progress_text()
+        );
+
+        app.handle_java_event(crate::java::Event::Installed {
+            major: 21,
+            version: "21.0.1+1".to_string(),
+            java: dir.join("bin/java"),
+        });
+        assert_eq!(app.java.stage, JavaStage::Done);
+        assert!(app.java.is_installed(21));
+        assert!(app.java.message.as_ref().unwrap().contains("21.0.1+1"));
+        assert_eq!(app.java.progress, (0, 0, 0.0));
+
+        app.handle_java_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn a_failed_java_download_keeps_the_reason_on_screen() {
+        let mut app = app();
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(17)]));
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_event(crate::java::Event::Failed("哈希不匹配".to_string()));
+
+        assert_eq!(app.java.stage, JavaStage::Failed);
+        assert_eq!(app.java.message.as_deref(), Some("哈希不匹配"));
+        assert!(app.log.iter().any(|line| line.contains("哈希不匹配")));
+        // Esc still leaves, and a second Enter retries.
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.pending_java.is_some(), "retrying is one key away");
+    }
+
+    #[test]
+    fn the_java_picker_takes_clicks_and_wheel() {
+        let mut app = app();
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![
+            java_runtime(8),
+            java_runtime(17),
+            java_runtime(21),
+            java_runtime(25),
+        ]));
+        app.layout.java_rows = (0..4)
+            .map(|index| Area::new(2, 5 + index as u16, 40, 1))
+            .collect();
+        app.layout.java_sources = vec![Area::new(50, 12, 8, 1), Area::new(58, 12, 18, 1)];
+        app.layout.java_proxy = Area::new(20, 13, 40, 1);
+
+        app.handle_mouse(wheel(false, 10, 5));
+        assert_eq!(app.java.selected, 1, "one row per notch");
+
+        app.handle_mouse(click(10, 7));
+        assert_eq!(app.java.selected, 2);
+        assert!(app.pending_java.is_some(), "a click starts the download");
+
+        app.pending_java = None;
+        app.handle_mouse(click(60, 12));
+        assert_eq!(app.java.source, crate::java::Source::Github);
+
+        app.handle_mouse(click(25, 13));
+        assert!(app.java.editing_proxy, "clicking the field starts editing");
+        assert!(!app.layout.java_proxy.contains(0, 0));
     }
 
     // ---- download ----

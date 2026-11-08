@@ -137,7 +137,7 @@ pub fn prepare(
             })?;
             (path.clone(), major)
         }
-        None => find_java(required)?,
+        None => find_java_in(root, required)?,
     };
 
     let version_dir = root.join("versions").join(version_id);
@@ -759,6 +759,23 @@ fn find_natives(version_dir: &Path, version_id: &str, parents: &[String]) -> Opt
 
 // ===== Java discovery =====
 
+/// Runtimes this launcher downloaded, plus `JAVA_HOME` and `PATH`.
+///
+/// The downloaded ones come first: the user picked one of them on purpose, while
+/// whatever happens to be on `PATH` is an accident of the environment.
+pub fn java_candidates_in(root: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = crate::java::installed(root)
+        .into_iter()
+        .map(|(_, java)| java)
+        .collect();
+    for candidate in java_candidates() {
+        if !found.contains(&candidate) {
+            found.push(candidate);
+        }
+    }
+    found
+}
+
 /// Every `java` we can find, `JAVA_HOME` first and then `PATH` order.
 pub fn java_candidates() -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -800,9 +817,13 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
 
 /// Find a Java that can run a profile asking for `required`.
 ///
-/// An exact version wins; otherwise the smallest acceptable one is used.
-pub fn find_java(required: u32) -> Result<(PathBuf, u32), String> {
-    let candidates = java_candidates();
+/// An exact version wins; otherwise the smallest acceptable one is used. The
+/// runtimes this launcher downloaded come first, then `JAVA_HOME` and `PATH`.
+pub fn find_java_in(root: &Path, required: u32) -> Result<(PathBuf, u32), String> {
+    find_java_from(java_candidates_in(root), required)
+}
+
+fn find_java_from(candidates: Vec<PathBuf>, required: u32) -> Result<(PathBuf, u32), String> {
     if candidates.is_empty() {
         return Err("没有找到 Java：设置 JAVA_HOME，或把 java 放进 PATH".to_string());
     }
@@ -901,7 +922,37 @@ mod tests {
     }
 
     #[test]
-    fn java_version_parsing_handles_both_numbering_schemes() {
+    fn a_downloaded_runtime_wins_over_the_ones_on_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // `<root>/java/21/bin/java`, the layout the Java picker installs.
+        let bin = root.join("java/21/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let java = bin.join("java");
+        std::fs::write(
+            &java,
+            "#!/bin/sh\necho 'openjdk version \"21.0.13\" 2026-01-01' >&2\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&java).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&java, perms).unwrap();
+        }
+
+        assert_eq!(crate::java::installed(root), vec![(21, java.clone())]);
+        let candidates = java_candidates_in(root);
+        assert_eq!(candidates.first(), Some(&java), "{candidates:?}");
+        // And it is what a 21 profile actually picks.
+        let (found, major) = find_java_in(root, 21).expect("a runtime was found");
+        assert_eq!(found, java);
+        assert_eq!(major, 21);
+    }
+
+    #[test]
+    fn java_majors_are_accepted_the_way_the_game_needs_them() {
         assert_eq!(
             parse_java_major("openjdk version \"25.0.1\" 2026-01-20"),
             Some(25)

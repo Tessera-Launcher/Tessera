@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::Accounts => draw_accounts(frame, frame.area(), app),
         Screen::Download => draw_download(frame, frame.area(), app),
         Screen::Installing => draw_installing(frame, frame.area(), app),
+        Screen::Java => draw_java(frame, frame.area(), app),
         Screen::Main => {}
     }
 }
@@ -350,7 +351,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
             ("d 下载".to_string(), KeyCode::Char('d')),
             ("x 卸载".to_string(), KeyCode::Char('x')),
             ("a 账户".to_string(), KeyCode::Char('a')),
-            ("h 基础版本".to_string(), KeyCode::Char('h')),
+            ("J Java".to_string(), KeyCode::Char('J')),
+            ("h 基础".to_string(), KeyCode::Char('h')),
             ("r 刷新".to_string(), KeyCode::Char('r')),
             ("q 退出".to_string(), KeyCode::Char('q')),
         ],
@@ -365,17 +367,28 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
             ("Esc/右键 取消".to_string(), KeyCode::Esc),
         ],
         Screen::Installing => vec![("Esc/右键 后台运行".to_string(), KeyCode::Esc)],
+        // The Java picker is a full-screen pane, so its keys are drawn inside it.
+        Screen::Java => Vec::new(),
         Screen::Login => vec![("Esc/右键 取消".to_string(), KeyCode::Esc)],
     };
 
     let sep = " · ";
-    // Buttons hug the right edge and never move; the status gets what is left.
-    // Otherwise every status message would drag the whole row sideways.
-    let buttons_width: usize = entries
-        .iter()
-        .map(|(text, _)| cell_width_of(text))
-        .sum::<usize>()
-        + cell_width_of(sep) * entries.len().saturating_sub(1);
+    // Drop whole entries from the left until the row fits, separator included: a
+    // narrow terminal loses a hint instead of ending with a dangling `· `.
+    let mut entries = entries;
+    let mut buttons_width = 0usize;
+    while !entries.is_empty() {
+        buttons_width = entries
+            .iter()
+            .map(|(text, _)| cell_width_of(text))
+            .sum::<usize>()
+            + cell_width_of(sep) * entries.len().saturating_sub(1);
+        // One column of breathing room, so the row never starts flush left.
+        if buttons_width < area.width as usize {
+            break;
+        }
+        entries.remove(0);
+    }
     let area_width = area.width as usize;
     // Two columns of breathing room, so a long status never touches the buttons.
     let status_room = area_width.saturating_sub(buttons_width + 2);
@@ -899,6 +912,187 @@ fn draw_version_rows(
         inner,
     );
     (offset, hit)
+}
+
+/// The Java runtime picker: four feature versions, a source switch and the proxy
+/// field the GitHub source uses.
+fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
+    frame.render_widget(Clear, area);
+    app.layout.java_rows.clear();
+    app.layout.java_sources.clear();
+    app.layout.java_proxy = Area::default();
+
+    let block = Block::bordered()
+        .title(
+            Line::from(format!(" 下载 Java（{}） ", app.java.source.label()))
+                .style(Style::new().fg(ACCENT).bold()),
+        )
+        .border_style(Style::new().fg(ACCENT));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [table_area, switch_area, proxy_area, hint_area] = Layout::vertical([
+        Constraint::Min(6),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let (os, arch) = crate::java::platform();
+    let table_block = Block::bordered()
+        .title(Line::from(format!(
+            " Java 运行时 · {os}/{arch} → {} ",
+            app.root.join("java").display()
+        )))
+        .border_style(Style::new().fg(DIM));
+    let table_inner = table_block.inner(table_area);
+    frame.render_widget(table_block, table_area);
+
+    let header = Line::from(Span::styled(
+        "  版本        最新 JRE              大小        状态".to_string(),
+        Style::new().fg(DIM).bold(),
+    ));
+    let mut lines = vec![header];
+
+    for (index, feature) in crate::java::FEATURES.iter().enumerate() {
+        let selected = app.java.selected == index && !app.java.runtimes.is_empty();
+        let runtime = app.java.runtimes.iter().find(|r| r.major == *feature);
+        let version = runtime.map_or("—".to_string(), |r| r.version());
+        let size = runtime.map_or("—".to_string(), |r| crate::discover::human_size(r.size));
+        let installed = app.java.is_installed(*feature);
+        let running = app.java.stage == crate::app::JavaStage::Downloading
+            && app.java.current == Some(*feature);
+        let status = if running {
+            format!("下载中 {}", app.java.progress_text())
+        } else if installed {
+            "已安装".to_string()
+        } else {
+            match (&app.java.message, app.java.current) {
+                (Some(message), Some(current))
+                    if *feature == current && app.java.stage == crate::app::JavaStage::Failed =>
+                {
+                    message.clone()
+                }
+                _ => "未安装".to_string(),
+            }
+        };
+        let status_style = if running {
+            Style::new().fg(ACCENT)
+        } else if app.java.stage == crate::app::JavaStage::Failed
+            && app.java.current == Some(*feature)
+        {
+            Style::new().fg(BROKEN)
+        } else if installed {
+            Style::new().fg(ACCENT)
+        } else {
+            Style::new().fg(DIM)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
+            Span::styled(
+                format!("Java {feature:<3} "),
+                if selected {
+                    Style::new().fg(ACCENT).bold()
+                } else {
+                    Style::new().fg(Color::White)
+                },
+            ),
+            Span::styled(format!("{version:<20}"), Style::new().fg(Color::White)),
+            Span::styled(format!("{size:<11}"), Style::new().fg(DIM)),
+            Span::styled(status, status_style),
+        ]));
+    }
+
+    // Row hit areas: the header takes the first line of the table, the rows follow.
+    let rows_top = table_inner.y.saturating_add(1);
+    for index in 0..crate::java::FEATURES.len() {
+        app.layout.java_rows.push(Area::new(
+            table_inner.x,
+            rows_top + index as u16,
+            table_inner.width,
+            1,
+        ));
+    }
+    if app.java.stage == crate::app::JavaStage::Loading {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  正在向 Adoptium 查询最新 JRE…",
+            Style::new().fg(DIM),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), table_inner);
+
+    // ---- source switch ----
+    let mut spans = vec![Span::styled(" 下载源 ", Style::new().fg(DIM))];
+    let mut column = switch_area.x + cell_width_of(" 下载源 ") as u16;
+    for source in crate::java::Source::ALL {
+        let text = format!(" {} ", source.label());
+        let width = cell_width_of(&text) as u16;
+        app.layout
+            .java_sources
+            .push(Area::new(column, switch_area.y, width, 1));
+        spans.push(Span::styled(
+            text,
+            if app.java.source == source {
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(DIM)
+            },
+        ));
+        column += width;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(switch_area.x, switch_area.y, switch_area.width, 1),
+    );
+
+    // ---- proxy field ----
+    let active = app.java.source == crate::java::Source::Github;
+    let mut spans = vec![Span::styled(" GitHub Proxy ", Style::new().fg(DIM))];
+    if app.java.proxy.is_empty() {
+        spans.push(Span::styled(
+            if active {
+                "如 gh-proxy.com"
+            } else {
+                "（仅官方源使用）"
+            },
+            Style::new().fg(DIM),
+        ));
+    } else {
+        spans.push(Span::styled(
+            app.java.proxy.clone(),
+            Style::new().fg(if active { ACCENT } else { DIM }),
+        ));
+    }
+    if app.java.editing_proxy {
+        spans.push(Span::styled(
+            "▏",
+            Style::new().fg(ACCENT).add_modifier(Modifier::SLOW_BLINK),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(proxy_area.x, proxy_area.y, proxy_area.width, 1),
+    );
+    app.layout.java_proxy = Area::new(proxy_area.x, proxy_area.y, proxy_area.width, 1);
+
+    // ---- keys ----
+    let hint = if app.java.editing_proxy {
+        " 输入代理地址 · Enter/Esc 结束编辑".to_string()
+    } else {
+        " ↑↓ 选择 · Enter 下载 · s 换源 · p 改代理 · Esc 返回".to_string()
+    };
+    draw_hint(
+        frame,
+        Rect::new(hint_area.x, hint_area.y, hint_area.width, 1),
+        &[(" ", None), (&hint, None)],
+        DIM,
+        app,
+    );
 }
 
 /// The running install: log in the middle, progress pinned at the bottom.
@@ -2404,6 +2598,109 @@ mod tests {
         assert_eq!(app.layout.account.y, 1, "{:?}", app.layout.account);
         assert!(app.layout.account.height == 1);
         assert!(app.layout.account.x + app.layout.account.width <= 99);
+    }
+
+    fn java_runtime(major: u32, version: &str) -> crate::java::Runtime {
+        crate::java::Runtime {
+            major,
+            release: format!("jdk-{version}"),
+            name: format!("OpenJDK{major}U-jre_x64_linux_hotspot.tar.gz"),
+            size: 50 * 1024 * 1024,
+            sha256: "a".repeat(64),
+            link: "https://github.com/adoptium/x/releases/download/y/z.tar.gz".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_java_picker_lists_the_four_features_and_the_source_switch() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![
+            java_runtime(8, "8u512-b09"),
+            java_runtime(17, "17.0.21+9"),
+            java_runtime(21, "21.0.13+9"),
+            java_runtime(25, "25.0.5+8"),
+        ]));
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        for text in [
+            "Java 8",
+            "Java 17",
+            "Java 21",
+            "Java 25",
+            "8u512-b09",
+            "21.0.13+9",
+            "50.0 MiB",
+            "未安装",
+            "清华源",
+            "官方源（GitHub）",
+            "GitHub Proxy",
+            "/mc/java",
+        ] {
+            assert!(screen.contains(text), "missing {text:?}:\n{screen}");
+        }
+        assert_eq!(
+            app.layout.java_rows.len(),
+            4,
+            "one clickable row per feature"
+        );
+        assert_eq!(app.layout.java_sources.len(), 2);
+        assert!(app.layout.java_proxy.width > 0);
+
+        // The active source is highlighted, the other one is dim.
+        let chips = app.layout.java_sources.clone();
+        assert_eq!(
+            colors_at(&mut app, (100, 28), chips[0].x, chips[0].y).1,
+            ACCENT,
+            "清华源 is the default"
+        );
+        assert_ne!(
+            colors_at(&mut app, (100, 28), chips[1].x, chips[1].y).1,
+            ACCENT
+        );
+    }
+
+    #[test]
+    fn the_java_picker_shows_progress_and_what_is_already_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let dir = crate::java::install_dir(&root, 17);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
+
+        let mut app = App::new(&root, "/acc", vec![], vec![]);
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![
+            java_runtime(17, "17.0.21+9"),
+            java_runtime(21, "21.0.13+9"),
+        ]));
+        // Start the 21 download, then pretend a third of it arrived.
+        app.java.selected = 1;
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_event(crate::java::Event::Progress {
+            done: 12 * 1024 * 1024,
+            total: 50 * 1024 * 1024,
+            speed: 3.5 * 1024.0 * 1024.0,
+        });
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("已安装"), "{screen}");
+        assert!(screen.contains("12.0 MiB / 50.0 MiB"), "{screen}");
+        assert!(screen.contains("3.5 MiB/s"), "{screen}");
+    }
+
+    #[test]
+    fn a_java_failure_is_shown_in_its_row() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(
+            21,
+            "21.0.13+9",
+        )]));
+        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_event(crate::java::Event::Failed("哈希不匹配".to_string()));
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("哈希不匹配"), "{screen}");
+        assert!(screen.contains("Esc 返回"), "{screen}");
     }
 
     #[test]
