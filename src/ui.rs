@@ -165,6 +165,7 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let offset = app.list_offset();
     let end = (offset + rows_visible).min(app.versions.len());
     let selected = app.selected;
+    let confirming = app.uninstall_confirm().map(str::to_string);
     let rows: Vec<Row> = app.versions[offset..end]
         .iter()
         .enumerate()
@@ -180,6 +181,12 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
             );
             if !version.has_jar && version.inherits.is_none() {
                 id = id.fg(BROKEN);
+            }
+            // The row waiting for the second `x` is repainted, so the question in
+            // the status bar has something on screen pointing at it.
+            let is_confirming = confirming.as_deref() == Some(version.id.as_str());
+            if is_confirming {
+                id = id.fg(BROKEN).add_modifier(Modifier::BOLD | Modifier::REVERSED);
             }
             let marker = if is_selected { "▶ " } else { "  " };
             let mut row = Row::new(vec![
@@ -328,6 +335,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     let entries: Vec<(String, KeyCode)> = match app.screen {
         Screen::Main => vec![
             ("d 下载".to_string(), KeyCode::Char('d')),
+            ("x 卸载".to_string(), KeyCode::Char('x')),
             ("a 账户".to_string(), KeyCode::Char('a')),
             ("h 基础版本".to_string(), KeyCode::Char('h')),
             ("r 刷新".to_string(), KeyCode::Char('r')),
@@ -1469,6 +1477,67 @@ mod tests {
         let button = find(&app, KeyCode::Char('q'));
         app.handle_mouse(click(button.area.x, button.area.y));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn the_main_footer_offers_a_clickable_uninstall() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![version("1.20.1", "release", 17, None)],
+            vec![],
+        );
+        render(&mut app, 100, 28);
+
+        let button = app
+            .layout
+            .buttons
+            .iter()
+            .find(|button| button.code == KeyCode::Char('x'))
+            .copied()
+            .expect("uninstall button");
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: button.area.x,
+            row: button.area.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.uninstall_confirm(), Some("1.20.1"));
+        assert!(app.status.contains("再按一次 x"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_row_waiting_for_the_second_x_is_emphasised() {
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![
+                version("1.20.1", "release", 17, None),
+                version("1.8.9", "release", 8, None),
+            ],
+            vec![],
+        );
+        app.request_uninstall();
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let emphasised = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                buffer[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+            .count();
+
+        assert!(
+            emphasised >= "1.20.1".len(),
+            "the id awaiting confirmation must be painted, found {emphasised} cells"
+        );
     }
 
     #[test]

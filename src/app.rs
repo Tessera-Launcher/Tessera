@@ -1,6 +1,6 @@
 //! Screen state. No I/O and no terminal, so every transition is testable headless.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::time::Instant;
 
@@ -434,6 +434,8 @@ pub struct App {
     pub log_scroll: usize,
     /// When and where the last left click landed in the version list.
     last_click: Option<(Instant, usize)>,
+    /// Version id awaiting the second `x`, cleared by anything else.
+    uninstall_confirm: Option<String>,
 }
 
 impl App {
@@ -474,6 +476,7 @@ impl App {
             list_offset: 0,
             log_scroll: 0,
             last_click: None,
+            uninstall_confirm: None,
         };
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
@@ -500,6 +503,7 @@ impl App {
 
     pub fn reload(&mut self) {
         let keep = self.selected_version().map(|v| v.id.clone());
+        self.uninstall_confirm = None;
         self.all_versions = discover::scan(&self.root);
         self.apply_version_filter();
         self.selected = keep
@@ -535,6 +539,7 @@ impl App {
     /// Show or hide loader bases (`h`).
     pub fn toggle_base_versions(&mut self) {
         self.show_base_versions = !self.show_base_versions;
+        self.uninstall_confirm = None;
         let keep = self.selected_version().map(|v| v.id.clone());
         self.apply_version_filter();
         if let Some(id) = keep {
@@ -553,12 +558,14 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
+        self.uninstall_confirm = None;
         if !self.versions.is_empty() {
             self.selected = (self.selected + 1) % self.versions.len();
         }
     }
 
     pub fn select_prev(&mut self) {
+        self.uninstall_confirm = None;
         if !self.versions.is_empty() {
             self.selected = (self.selected + self.versions.len() - 1) % self.versions.len();
         }
@@ -570,6 +577,7 @@ impl App {
     /// because spinning past the bottom and landing at the top of a long list
     /// reads as a bug.
     pub fn select_by(&mut self, delta: i32) {
+        self.uninstall_confirm = None;
         if self.versions.is_empty() {
             return;
         }
@@ -578,10 +586,12 @@ impl App {
     }
 
     pub fn select_first(&mut self) {
+        self.uninstall_confirm = None;
         self.selected = 0;
     }
 
     pub fn select_last(&mut self) {
+        self.uninstall_confirm = None;
         self.selected = self.versions.len().saturating_sub(1);
     }
 
@@ -643,6 +653,126 @@ impl App {
             natives: dir.join(format!("{}-natives", version.id)),
             dir,
         })
+    }
+
+    // ---- uninstalling ----
+
+    /// The version id waiting for a second `x`, if any.
+    ///
+    /// Read by the renderer to repaint that row, and by tests to assert that a
+    /// confirmation is pending (and that everything else cancels it).
+    pub fn uninstall_confirm(&self) -> Option<&str> {
+        self.uninstall_confirm.as_deref()
+    }
+
+    /// `x`: ask, then delete on the second press.
+    ///
+    /// Only `versions/<id>` goes away. Assets, libraries and the JVM are shared
+    /// between versions, so a per-version delete has no business touching them.
+    /// Loader profiles that inherit from the chosen version are removed with it:
+    /// once their base is gone they cannot start, and leaving them behind would
+    /// only fill the list with rows that fail at launch.
+    pub fn request_uninstall(&mut self) {
+        let Some(version) = self.selected_version().cloned() else {
+            self.log("没有可卸载的版本");
+            return;
+        };
+
+        let dependents = self.dependents_of(&version.id);
+        if self.uninstall_confirm.as_deref() != Some(version.id.as_str()) {
+            self.uninstall_confirm = Some(version.id.clone());
+            self.status = if dependents.is_empty() {
+                format!(
+                    "再按一次 x 卸载 {}（删除 versions/{}）",
+                    version.id, version.id
+                )
+            } else {
+                format!(
+                    "再按一次 x 卸载 {}，连同依赖它的 {}",
+                    version.id,
+                    dependents.join("、")
+                )
+            };
+            return;
+        }
+
+        self.uninstall_confirm = None;
+        self.uninstall(&version.id, &dependents);
+    }
+
+    /// Installed profiles that cannot start without `id`.
+    fn dependents_of(&self, id: &str) -> Vec<String> {
+        self.all_versions
+            .iter()
+            .filter(|version| version.id != id && version.base_version() == id)
+            .map(|version| version.id.clone())
+            .collect()
+    }
+
+    /// Remove `id` and `dependents` from disk, then from the in-memory list.
+    ///
+    /// A failure stops the batch rather than skipping the entry, and the caller
+    /// is told what was already gone, so a half-finished uninstall never looks
+    /// like a complete one.
+    fn uninstall(&mut self, id: &str, dependents: &[String]) {
+        let mut removed: Vec<String> = Vec::new();
+        let mut freed = 0u64;
+        let mut failure: Option<(String, std::io::Error)> = None;
+
+        for target in std::iter::once(id.to_string()).chain(dependents.iter().cloned()) {
+            if !is_plain_component(&target) {
+                failure = Some((
+                    target,
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "不是合法的版本目录名"),
+                ));
+                break;
+            }
+            let dir = self.root.join("versions").join(&target);
+            let size = discover::dir_size(&dir);
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    self.log(format!("已删除 {}", dir.display()));
+                    freed += size;
+                    removed.push(target);
+                }
+                Err(error) => {
+                    failure = Some((target, error));
+                    break;
+                }
+            }
+        }
+
+        if removed.is_empty() {
+            self.status = match failure {
+                Some((target, error)) => format!("卸载 {target} 失败：{error}"),
+                None => "没有可卸载的版本".to_string(),
+            };
+            self.log(self.status.clone());
+            return;
+        }
+
+        // Rescan rather than filtering in memory: `is_base_only` is derived from
+        // what is on disk, and a base whose last dependant just disappeared has
+        // to become visible again (`h` would otherwise show a phantom base).
+        self.all_versions = discover::scan(&self.root);
+        self.apply_version_filter();
+        self.selected = self.selected.min(self.versions.len().saturating_sub(1));
+
+        // `removed` starts with the selected version, so index 0 is the one the
+        // user asked for.
+        let what = if removed.len() == 1 {
+            removed[0].clone()
+        } else {
+            format!("{} 及其 {} 个依赖版本", removed[0], removed.len() - 1)
+        };
+        let size = discover::human_size(freed);
+        self.status = match failure {
+            None => format!("已卸载 {what}（释放 {size}）"),
+            Some((target, error)) => {
+                format!("已卸载 {what}（释放 {size}），{target} 失败：{error}")
+            }
+        };
+        self.log(self.status.clone());
     }
 
     // ---- mouse ----
@@ -824,11 +954,20 @@ impl App {
             KeyCode::Char('l') => self.open_login(),
             KeyCode::Char('a') => self.open_accounts(),
             KeyCode::Char('d') => self.open_download(),
+            // Two presses, like removing an account: deleting a whole version
+            // directory is not something a single stray key may do.
+            KeyCode::Char('x') | KeyCode::Delete => self.request_uninstall(),
             // Keyboard equivalent of the wheel, for terminals without mouse reporting.
             KeyCode::PageUp => self.scroll_log(5),
             KeyCode::PageDown => self.scroll_log_back(5),
             KeyCode::Enter => self.request_launch(),
             _ => {}
+        }
+        // Anything other than the uninstall key itself drops the pending
+        // confirmation, so "press x again" cannot survive the user wandering off
+        // and coming back minutes later.
+        if !matches!(code, KeyCode::Char('x') | KeyCode::Delete) {
+            self.uninstall_confirm = None;
         }
     }
 
@@ -1543,6 +1682,20 @@ pub struct SelectedPaths {
     pub natives: PathBuf,
 }
 
+/// Whether `id` is one ordinary path component.
+///
+/// Version ids are directory names read off disk, but [`LocalVersion`] is a
+/// public struct, so a hand-made `..`, `/`, or absolute path must not turn a
+/// version delete into an arbitrary `remove_dir_all`.
+fn is_plain_component(id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', '\0']) {
+        return false;
+    }
+    let mut components = Path::new(id).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,6 +1754,178 @@ mod tests {
         assert_eq!(paths.json, Path::new("/mc/versions/a/a.json"));
         assert_eq!(paths.jar, Path::new("/mc/versions/a/a.jar"));
         assert_eq!(paths.natives, Path::new("/mc/versions/a/a-natives"));
+    }
+
+    // ---- uninstalling ----
+
+    fn write_version(root: &Path, id: &str, json: &str) {
+        let dir = root.join("versions").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), json).unwrap();
+    }
+
+    /// Put the selection on `id`, wherever the scan happened to sort it.
+    fn select(app: &mut App, id: &str) {
+        app.selected = app
+            .versions
+            .iter()
+            .position(|v| v.id == id)
+            .unwrap_or_else(|| panic!("{id} is not listed"));
+        app.uninstall_confirm = None;
+    }
+
+    #[test]
+    fn uninstall_asks_once_then_removes_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_version(root, "1.20.1", r#"{"id":"1.20.1"}"#);
+        write_version(root, "1.8.9", r#"{"id":"1.8.9"}"#);
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        select(&mut app, "1.20.1");
+
+        app.request_uninstall();
+        assert_eq!(app.uninstall_confirm(), Some("1.20.1"));
+        assert!(
+            root.join("versions/1.20.1").is_dir(),
+            "the first press must only ask"
+        );
+
+        app.request_uninstall();
+        assert!(!root.join("versions/1.20.1").exists());
+        assert!(root.join("versions/1.8.9").is_dir(), "neighbour survived");
+        assert_eq!(app.versions.len(), 1);
+        assert!(app.uninstall_confirm().is_none());
+        assert!(app.status.contains("已卸载"), "{}", app.status);
+        assert!(
+            app.log.iter().any(|line| line.contains("versions/1.20.1")),
+            "log must name the deleted directory: {:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn uninstall_takes_dependent_loader_profiles_with_the_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_version(root, "1.20.1", r#"{"id":"1.20.1"}"#);
+        write_version(
+            root,
+            "1.20.1+Fabric0.15.11",
+            r#"{"id":"1.20.1+Fabric0.15.11","inheritsFrom":"1.20.1"}"#,
+        );
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        app.toggle_base_versions();
+        select(&mut app, "1.20.1");
+
+        app.request_uninstall();
+        assert!(
+            app.status.contains("1.20.1+Fabric0.15.11"),
+            "the question must name the dependants: {}",
+            app.status
+        );
+        app.request_uninstall();
+
+        assert!(!root.join("versions/1.20.1").exists());
+        assert!(
+            !root.join("versions/1.20.1+Fabric0.15.11").exists(),
+            "a profile without its base cannot start, so it goes too"
+        );
+        assert!(app.versions.is_empty(), "list must not keep stale rows");
+    }
+
+    #[test]
+    fn uninstalling_a_loader_profile_leaves_its_base_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_version(root, "1.20.1", r#"{"id":"1.20.1"}"#);
+        write_version(
+            root,
+            "1.20.1+Fabric0.15.11",
+            r#"{"id":"1.20.1+Fabric0.15.11","inheritsFrom":"1.20.1"}"#,
+        );
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        select(&mut app, "1.20.1+Fabric0.15.11");
+
+        app.request_uninstall();
+        app.request_uninstall();
+
+        assert!(!root.join("versions/1.20.1+Fabric0.15.11").exists());
+        assert!(
+            root.join("versions/1.20.1").is_dir(),
+            "the vanilla base is a separate install"
+        );
+        assert_eq!(app.all_versions.len(), 1);
+        assert_eq!(
+            app.versions.len(),
+            1,
+            "the base is no longer hidden now that nothing inherits it"
+        );
+        assert_eq!(app.hidden_base_count(), 0);
+    }
+
+    #[test]
+    fn moving_the_selection_cancels_a_pending_uninstall() {
+        let mut app = app();
+        app.request_uninstall();
+        assert_eq!(app.uninstall_confirm(), Some("a"));
+        app.select_next();
+        assert!(app.uninstall_confirm().is_none());
+
+        // The mouse wheel path clears it too.
+        app.request_uninstall();
+        app.select_by(1);
+        assert!(app.uninstall_confirm().is_none());
+    }
+
+    #[test]
+    fn any_other_key_cancels_a_pending_uninstall() {
+        let mut app = app();
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(app.uninstall_confirm(), Some("a"));
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert!(app.uninstall_confirm().is_none());
+    }
+
+    #[test]
+    fn uninstall_is_inert_without_versions() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.request_uninstall();
+        assert!(app.uninstall_confirm().is_none());
+        assert_eq!(app.status, "扫描 /mc", "status left untouched");
+    }
+
+    #[test]
+    fn uninstall_refuses_ids_that_are_not_one_path_component() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("mc");
+        std::fs::create_dir_all(root.join("versions")).unwrap();
+        let canary = root.join("canary");
+        std::fs::write(&canary, b"keep me").unwrap();
+
+        // A hand-made id must not reach outside `versions/`.
+        let mut app = App::new(&root, "/acc", vec![version("..")], vec![]);
+        app.request_uninstall();
+        app.request_uninstall();
+
+        assert!(canary.is_file(), "`..` escaped the versions directory");
+        assert!(root.join("versions").is_dir());
+        assert!(app.status.contains("失败"), "{}", app.status);
+        assert_eq!(app.versions.len(), 1, "failed delete keeps the row");
+    }
+
+    #[test]
+    fn a_missing_directory_reports_failure_and_keeps_the_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("versions")).unwrap();
+        // Scanned never, listed by hand: the directory is gone already.
+        let mut app = App::new(root, "/acc", vec![version("ghost")], vec![]);
+        app.request_uninstall();
+        app.request_uninstall();
+
+        assert!(app.status.contains("失败"), "{}", app.status);
+        assert_eq!(app.versions.len(), 1);
+        assert!(app.uninstall_confirm().is_none());
     }
 
     #[test]
