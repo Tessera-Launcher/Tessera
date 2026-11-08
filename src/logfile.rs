@@ -69,7 +69,9 @@ mod tests {
         let path = path(&tmp.path().join("日志"));
 
         let mut first = LogFile::open(&path).unwrap();
-        first.write_lines(&["one".to_string(), "two".to_string()]).unwrap();
+        first
+            .write_lines(&["one".to_string(), "two".to_string()])
+            .unwrap();
         drop(first);
 
         let mut second = LogFile::open(&path).unwrap();

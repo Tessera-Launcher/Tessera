@@ -160,8 +160,7 @@ pub fn build(
         let key = if tree { family(version(index)) } else { None };
         if let Some(key) = key {
             let mut last = index;
-            while last + 1 < visible.len() && family(version(last + 1)).as_deref() == Some(&key)
-            {
+            while last + 1 < visible.len() && family(version(last + 1)).as_deref() == Some(&key) {
                 last += 1;
             }
             // A "group" of one is just a version; folding it would only add a
@@ -198,11 +197,7 @@ pub fn build(
 
 /// The flat layout used by the tests below: every version is visible.
 #[cfg(test)]
-pub fn build_for_test(
-    versions: &[RemoteVersion],
-    expanded: &[String],
-    tree: bool,
-) -> Vec<Row> {
+pub fn build_for_test(versions: &[RemoteVersion], expanded: &[String], tree: bool) -> Vec<Row> {
     let visible: Vec<usize> = (0..versions.len()).collect();
     build(versions, &visible, expanded, tree)
 }

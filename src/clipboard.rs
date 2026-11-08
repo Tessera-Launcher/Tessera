@@ -123,9 +123,9 @@ pub fn outcome(
         } else {
             "OSC 52".to_string()
         }),
-        (Err(tool_error), Err(error)) => {
-            Err(format!("没有可用的剪贴板工具（{tool_error}），OSC 52 也写不出去：{error}"))
-        }
+        (Err(tool_error), Err(error)) => Err(format!(
+            "没有可用的剪贴板工具（{tool_error}），OSC 52 也写不出去：{error}"
+        )),
     }
 }
 

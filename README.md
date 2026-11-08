@@ -293,12 +293,25 @@ Mod Loader 安装都不做这一步。
   JVM 发正常终止信号；JVM 在退出时组装缓存，这期间进度条显示“组装 AOT 缓存…”
 - 缓存写在 `versions/<id>/<id>.aot`，旁边 `<id>.aot.json` 记录 `java_major`、
   `java_version`、`unsigned_jar`、`agent`。下次启动只有**同一 Java build**、去签名副本
-  和 agent 都在时才加 `-XX:AOTCache`/`-javaagent` 并强制用同一个 Java；缺一样就忽略缓存
+  和 agent 都在时才加 `-XX:AOTCache`/`-javaagent` 并强制用同一个 Java；缺一样就忽略缓存。
+  26.x 的 fastmenu agent 也同时出现在训练和启动命令里，避免参数不一致导致缓存失效
 - 实测 26.3 全量缓存约 **454 MB**，训练+组装约 **4 分钟**；缓存大小随版本/库变化
 - 训练失败、Java 下载失败、没有图形显示（SSH/headless），或系统不让进程正常退出，都
   **不影响安装本身**；结果页会写明“安装完成，AOT 训练失败/跳过”，缓存不完整时不会写元数据
 - 只对原版有意义：Fabric 的 Knot、Forge/NeoForge 的 ModLauncher 是自定义
   ClassLoader，JEP 483 不缓存这些类，所以 Loader 安装直接跳过
+
+### 26.x 菜单淡入跳过
+
+26.x 的类名没有混淆，所以启动器给所有 **26.x**（`26.0` 起，含快照和 Loader profile）
+启动都带一个小 Java agent：`data/缓存/fastmenu-agent.jar`。
+
+- `LoadingOverlay` 的 1 秒淡出 + 1 秒 logo 淡出、`TitleScreen` 的 2 秒控件淡入，
+  在资源加载完成后只是表现层等待；agent 通过反射把 `fadeOutStart`/`fadeInStart`
+  拨到过去，并把 `TitleScreen.fading` 置 false，菜单直接以最终不透明度出现
+- 只读反射、不修改 client jar；字段改名/不存在就静默 no-op，不会阻止启动
+- 对 26.x 原版、Fabric/Forge/NeoForge 等 profile 都生效（只要 26.x 类名不变）
+- Agent 同时参与 AOT 训练和生产启动，保证 AOT cache 的 JVM 参数一致
 
 ### 卸载
 

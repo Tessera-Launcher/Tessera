@@ -87,6 +87,8 @@ impl Credentials {
 #[derive(Debug, Clone)]
 pub struct Options {
     pub memory_mb: u32,
+    /// Shared fast-menu agent for 26.x; `None` in tests.
+    pub fastmenu_agent: Option<PathBuf>,
     pub width: u32,
     pub height: u32,
     /// `data/运行时`: where the launcher's own JREs live. There is deliberately no
@@ -99,6 +101,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             memory_mb: 2048,
+            fastmenu_agent: None,
             width: 854,
             height: 480,
             runtimes: None,
@@ -345,6 +348,13 @@ fn prepare_inner(
         args.push(options.height.to_string());
     }
 
+    if crate::fastmenu::eligible(&merged.id) {
+        if let Some(agent) = &options.fastmenu_agent {
+            if crate::fastmenu::ensure(agent).is_ok() {
+                args.insert(0, format!("-javaagent:{}", agent.display()));
+            }
+        }
+    }
     if let Some(selection) = &aot {
         args.insert(0, format!("-XX:AOTCache={}", selection.cache.display()));
         args.insert(1, format!("-javaagent:{}", selection.agent.display()));

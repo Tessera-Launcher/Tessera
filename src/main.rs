@@ -5,12 +5,13 @@
 //! file per account.
 
 mod accounts;
+mod aot;
 mod app;
 mod app_ids;
-mod aot;
 mod cleanup;
 mod clipboard;
 mod discover;
+mod fastmenu;
 mod install;
 mod java;
 mod launch;
@@ -82,6 +83,7 @@ fn main() -> std::process::ExitCode {
     );
     app.source = options.source;
     app.set_runtimes(data.runtimes());
+    app.launch_options.fastmenu_agent = Some(data.root().join("缓存").join("fastmenu-agent.jar"));
 
     // Settings outlive a run; flags override them for this run and are written
     // back, so a one-off `--memory` does not have to be repeated.

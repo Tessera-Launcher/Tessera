@@ -134,7 +134,6 @@ impl Account {
     }
 }
 
-
 mod account_manager;
 mod download;
 mod java;
@@ -1030,7 +1029,6 @@ impl App {
             }
         }
     }
-
 }
 
 /// Whether `id` is one ordinary path component.
@@ -1062,10 +1060,12 @@ mod tests {
 
     /// The one session refresh the app queued, if any.
     fn launch_effect(app: &mut App) -> Option<(String, launch::Credentials)> {
-        app.take_effects().into_iter().find_map(|effect| match effect {
-            Effect::Launch { dir, credentials } => Some((dir, credentials)),
-            _ => None,
-        })
+        app.take_effects()
+            .into_iter()
+            .find_map(|effect| match effect {
+                Effect::Launch { dir, credentials } => Some((dir, credentials)),
+                _ => None,
+            })
     }
 
     fn refresh_effect(app: &App) -> Option<PathBuf> {

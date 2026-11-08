@@ -893,7 +893,12 @@ fn draw_version_rows(
                     ));
                     let kind = version(*first).kind.as_str();
                     (
-                        crate::version_tree::title(&download.all, download.visible(), *first, *last),
+                        crate::version_tree::title(
+                            &download.all,
+                            download.visible(),
+                            *first,
+                            *last,
+                        ),
                         Span::styled(group_kind_label(kind), Style::new().fg(kind_color(kind))),
                         format!("{} 个", last - first + 1),
                     )
@@ -1213,15 +1218,13 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
                 .installed
                 .clone()
                 .unwrap_or_else(|| ("?".to_string(), None));
-            let mut lines = vec![
-                Line::from(Span::styled(
-                    format!(
-                        "{version}{} 已安装",
-                        loader.map_or_else(String::new, |l| format!(" + {l}"))
-                    ),
-                    Style::new().fg(ACCENT),
-                )),
-            ];
+            let mut lines = vec![Line::from(Span::styled(
+                format!(
+                    "{version}{} 已安装",
+                    loader.map_or_else(String::new, |l| format!(" + {l}"))
+                ),
+                Style::new().fg(ACCENT),
+            ))];
             if let Some(note) = &download.aot_note {
                 lines.push(Line::from(Span::styled(note.clone(), Style::new().fg(DIM))));
             }
@@ -1781,7 +1784,13 @@ fn draw_login_saved(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut 
 }
 
 /// Waiting for the browser: the link, the code, and the copy/open buttons.
-fn draw_login_waiting(frame: &mut Frame, inner: Rect, layout: &mut Areas, user_code: &str, url: &str) {
+fn draw_login_waiting(
+    frame: &mut Frame,
+    inner: Rect,
+    layout: &mut Areas,
+    user_code: &str,
+    url: &str,
+) {
     // Rows 3 and 7 are drawn by `draw_hint` (the copy/open buttons); they
     // stay in the paragraph as empty lines so everything below keeps its
     // place.
@@ -1841,7 +1850,13 @@ fn draw_login_waiting(frame: &mut Frame, inner: Rect, layout: &mut Areas, user_c
 }
 
 /// The success screen, after the credential file was written.
-fn draw_login_done(frame: &mut Frame, inner: Rect, layout: &mut Areas, player: &str, application: &str) {
+fn draw_login_done(
+    frame: &mut Frame,
+    inner: Rect,
+    layout: &mut Areas,
+    player: &str,
+    application: &str,
+) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
