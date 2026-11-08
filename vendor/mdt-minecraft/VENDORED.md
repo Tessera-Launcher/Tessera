@@ -148,6 +148,26 @@ the same object more than once (1.8.9: 734 names, 722 hashes).
   already pointing at this source" as success — that is the state it was creating, and nothing is
   written. A link pointing anywhere else is still refused.
 
+### 8. HTTP/2 is compiled out (opt-in via this crate's `http2` feature)
+
+Upstream's manifest took `reqwest`'s default features, and those include `http2`. Combined with
+`minecraft-auth`'s explicit `features = ["…", "http2"]`, that linked the `h2` crate into every
+build even though section 6 makes HTTP/1.1 the transport actually used — the h2 code path was
+unreachable, and `http1_only` existed only to turn it *off*.
+
+- `Cargo.toml`: `reqwest` is now `default-features = false` with
+  `["json", "stream", "charset", "system-proxy"]`. `charset` stays because the code uses
+  `Response::text()`; `system-proxy` stays so the ambient proxy configuration keeps working.
+- New `http2` feature (`["reqwest?/http2"]`), off by default. `http.rs` gates the adaptive-window
+  call on it, so `http1_only(false)` still compiles (and harmlessly stays on HTTP/1.1) when the
+  feature is off.
+- `minecraft-auth` drops its own `http2` too: auth is a handful of JSON POSTs, so multiplexing
+  never paid for itself.
+
+Measured on the same 219-object sample used for the concurrency work, with the whole tree rebuilt
+from scratch: the release binary went from 4.8 MB to 4.6 MB (`h2` plus `hyper`'s http2 plumbing),
+and install speed is unchanged because the h2 path was dead code at `http1_only(true)`.
+
 ## Tests added
 
 `src/asset.rs`: `legacy_index_flags_are_parsed`,

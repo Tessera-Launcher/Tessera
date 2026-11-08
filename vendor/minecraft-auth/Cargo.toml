@@ -22,7 +22,10 @@ tokio = { version = "1", features = ["sync", "time"] }
 # http, and every https request fails inside hyper-util with the misleading
 # "invalid URL, scheme is not http". Upstream's manifest left it out because its
 # consumers happened to enable it themselves (Cargo unifies features).
-reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls", "http2"] }
+# `http2` is deliberately absent: auth is a handful of JSON POSTs to login.live
+# .com / xboxlive.com, and the multiplexed transport only adds the h2 crate to
+# every build (see ../mdt-minecraft/VENDORED.md section 8).
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

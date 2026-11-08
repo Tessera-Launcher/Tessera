@@ -61,7 +61,15 @@ pub fn build_client(
     } else {
         // The h2 path is the slower one for assets; when it is requested, at least let the window
         // grow to the BDP instead of staying at the 64 KiB default (30.2 s vs 32.2 s measured).
-        builder = builder.http2_adaptive_window(true);
+        //
+        // This crate no longer enables reqwest's `http2` feature by default (VENDORED.md section
+        // 8), so the method only exists when the `http2` feature is opted into. Without it, ALPN
+        // never offers h2 and `http1_only(false)` degrades to the same transport as
+        // `http1_only(true)`.
+        #[cfg(feature = "http2")]
+        {
+            builder = builder.http2_adaptive_window(true);
+        }
     }
 
     if let Some(proxy) = proxy {
@@ -95,6 +103,20 @@ mod tests {
             Duration::from_secs(30),
             16,
             true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn build_client_accepts_multiplexing_request_even_without_http2() {
+        // `http1_only(false)` must stay compilable when the `http2` feature is
+        // off: ALPN then never offers h2 and the flag is a no-op.
+        let _client = build_client(
+            None,
+            Duration::from_secs(15),
+            Duration::from_secs(30),
+            16,
+            false,
         )
         .unwrap();
     }

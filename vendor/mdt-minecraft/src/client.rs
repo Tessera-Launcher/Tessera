@@ -685,7 +685,8 @@ impl MdtClientBuilder {
     /// HTTP/2 puts every stream on one connection, and for the asset CDN that is measurably
     /// slower than a pool of HTTP/1.1 connections — see the table in [`crate::http`]. Set this to
     /// `false` for a mirror that prefers multiplexing; the h2 path also enables the adaptive
-    /// window.
+    /// window. Multiplexing requires this crate's `http2` feature (off by default, see
+    /// `VENDORED.md` section 8); without it the flag is accepted but stays on HTTP/1.1.
     #[must_use]
     pub fn http1_only(mut self, http1_only: bool) -> Self {
         self.http1_only = http1_only;

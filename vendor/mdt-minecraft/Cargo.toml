@@ -22,6 +22,8 @@ name = "mdt"
 default = ["tokio"]
 tokio = ["dep:tokio", "dep:reqwest"]
 blocking = ["dep:ureq"]
+# Opt-in: HTTP/2 multiplexing (see `http.rs` — it measured half speed for assets).
+http2 = ["reqwest?/http2"]
 minimal = []
 cli = ["tui", "dep:clap"]
 tui = ["dep:crossterm", "dep:ratatui"]
@@ -29,7 +31,13 @@ tui = ["dep:crossterm", "dep:ratatui"]
 [dependencies]
 mdt-macros = { version = "0.4.3", path = "mdt-macros" }
 tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "fs", "io-util", "time"], optional = true }
-reqwest = { version = "0.13.5", features = ["json", "stream"], optional = true }
+# `default-features = false`: upstream took reqwest's defaults, which include
+# `http2`. HTTP/1.1 is the faster transport for Minecraft assets (see
+# `VENDORED.md` section 6), so h2 is opt-in through this crate's `http2` feature
+# instead of compiled in for everyone. `charset` and `system-proxy` are kept
+# because the code relies on `Response::text()` decoding and on picking up the
+# ambient proxy configuration.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "charset", "system-proxy"], optional = true }
 ureq = { version = "2.10", features = ["json"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
