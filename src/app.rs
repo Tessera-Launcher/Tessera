@@ -535,6 +535,10 @@ pub struct App {
     pub last_launch: Option<launch::Launch>,
     /// Set when the UI wants a login thread; the main loop takes it and spawns one.
     pub pending_login: Option<Identity>,
+    /// Text the user asked to copy; the main loop hands it to the terminal.
+    pub pending_clipboard: Option<String>,
+    /// URL the user asked to open in a browser; the main loop spawns the opener.
+    pub pending_browser: Option<String>,
     /// Filled by the renderer every frame; read by the mouse handler.
     pub layout: Layout,
     /// First visible row of the version list.
@@ -584,6 +588,8 @@ impl App {
             last_credentials: None,
             last_launch: None,
             pending_login: None,
+            pending_clipboard: None,
+            pending_browser: None,
             layout: Layout::default(),
             list_offset: 0,
             log_scroll: 0,
@@ -1885,9 +1891,30 @@ impl App {
                 }
                 _ => {}
             },
-            LoginStep::Waiting { .. } => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
-                    self.close_login();
+            LoginStep::Waiting { user_code, url } => {
+                // The code and the link are what the user has to carry to the
+                // browser, so copying and opening them live on this screen.
+                let (user_code, url) = (user_code.clone(), url.clone());
+                // A blank code or link is the "asking Microsoft" placeholder, so
+                // the guards keep the buttons from copying nothing.
+                match code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
+                    KeyCode::Char('c') if !user_code.is_empty() => {
+                        self.pending_clipboard = Some(user_code.clone());
+                        self.log(format!("复制设备码：{user_code}"));
+                        self.status = "已复制设备码".to_string();
+                    }
+                    KeyCode::Char('y') if !url.is_empty() => {
+                        self.pending_clipboard = Some(url.clone());
+                        self.log(format!("复制链接：{url}"));
+                        self.status = "已复制链接".to_string();
+                    }
+                    KeyCode::Char('o') if !url.is_empty() => {
+                        self.pending_browser = Some(url.clone());
+                        self.log(format!("在浏览器打开：{url}"));
+                        self.status = "正在打开浏览器…".to_string();
+                    }
+                    _ => {}
                 }
             }
             LoginStep::Done { .. } | LoginStep::Failed(_) => {
@@ -2596,6 +2623,66 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert_eq!(app.account, Account::SignedOut);
         assert_eq!(app.accounts.len(), 1, "the namesake is not touched");
         assert_eq!(app.accounts[0].label(), "Steve · Minecraft Launcher");
+    }
+
+    /// A login sitting on the device-code screen.
+    fn waiting_app() -> App {
+        let mut app = app();
+        app.open_login();
+        app.handle_login_event(LoginEvent::DeviceCode {
+            user_code: "ABCD-1234".to_string(),
+            url: "https://www.microsoft.com/link?otc=ABCD1234".to_string(),
+        });
+        app
+    }
+
+    #[test]
+    fn the_device_code_screen_can_copy_and_open_what_it_shows() {
+        let mut app = waiting_app();
+
+        app.handle_login_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("ABCD-1234"),
+            "the code, not the link"
+        );
+        assert!(app.status.contains("设备码"), "{}", app.status);
+
+        app.pending_clipboard = None;
+        app.handle_login_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("https://www.microsoft.com/link?otc=ABCD1234")
+        );
+
+        app.pending_browser = None;
+        app.handle_login_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        assert_eq!(
+            app.pending_browser.as_deref(),
+            Some("https://www.microsoft.com/link?otc=ABCD1234")
+        );
+        assert!(app.log.iter().any(|line| line.contains("在浏览器打开")));
+
+        // Everything else still cancels, and nothing was started by copying.
+        assert!(app.pending_login.is_none());
+        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Main);
+    }
+
+    #[test]
+    fn the_placeholder_code_cannot_be_copied() {
+        // The screen shows "……" before Microsoft answers; that is not a code.
+        let mut app = app();
+        app.open_login();
+        app.login.step = LoginStep::Waiting {
+            user_code: String::new(),
+            url: String::new(),
+        };
+        app.handle_login_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        assert!(app.pending_clipboard.is_none());
+        assert!(app.pending_browser.is_none());
     }
 
     #[test]

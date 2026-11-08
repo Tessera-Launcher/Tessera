@@ -1128,7 +1128,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 (app.login.app_ids.len().min(SAVED_ROWS) * 2 + 4) as u16
             }
         }
-        LoginStep::Waiting { .. } => 10,
+        LoginStep::Waiting { .. } => 12,
         LoginStep::Done { .. } | LoginStep::Failed(_) => 8,
     }
     .min(area.height);
@@ -1365,6 +1365,9 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         LoginStep::Waiting { user_code, url } => {
+            // Rows 3 and 7 are drawn by `draw_hint` (the copy/open buttons); they
+            // stay in the paragraph as empty lines so everything below keeps its
+            // place.
             let lines = vec![
                 Line::from(""),
                 Line::from(Span::styled(
@@ -1376,15 +1379,38 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::new().fg(Color::White),
                 )),
                 Line::from(""),
+                Line::from(""),
                 Line::from(Span::styled(" 2. 输入代码", Style::new().fg(DIM))),
                 Line::from(Span::styled(
                     format!("    {user_code}"),
                     Style::new().fg(ACCENT).bold(),
                 )),
                 Line::from(""),
+                Line::from(""),
+                Line::from(""),
             ];
-            let hint_row = inner.y.saturating_add(lines.len() as u16);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            let row = |index: usize| inner.y.saturating_add(index as u16);
+            let (url_row, code_row, hint_row) = (row(3), row(7), row(9));
+            frame.render_widget(Paragraph::new(lines), inner);
+            draw_hint(
+                frame,
+                Rect::new(inner.x, url_row, inner.width, 1),
+                &[
+                    (" ", None),
+                    ("o 浏览器打开", Some(KeyCode::Char('o'))),
+                    (" · ", None),
+                    ("y 复制链接", Some(KeyCode::Char('y'))),
+                ],
+                DIM,
+                app,
+            );
+            draw_hint(
+                frame,
+                Rect::new(inner.x, code_row, inner.width, 1),
+                &[(" ", None), ("c 复制设备码", Some(KeyCode::Char('c')))],
+                DIM,
+                app,
+            );
             draw_hint(
                 frame,
                 Rect::new(inner.x, hint_row, inner.width, 1),
@@ -1706,6 +1732,52 @@ mod tests {
         assert!(screen.contains("ABCD-EFGH"), "{screen}");
         assert!(screen.contains("microsoft.com/link"), "{screen}");
         assert!(screen.contains("等待"), "{screen}");
+    }
+
+    #[test]
+    fn the_waiting_screen_offers_copy_and_open_buttons_under_what_they_copy() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_login();
+        app.handle_login_event(crate::login::LoginEvent::DeviceCode {
+            user_code: "ABCD-EFGH".to_string(),
+            url: "https://www.microsoft.com/link?otc=ABCDEFGH".to_string(),
+        });
+        let screen = render(&mut app, 100, 30).join("\n");
+
+        // Under the link: open it, or copy it. Under the code: copy the code.
+        assert!(screen.contains("o 浏览器打开"), "{screen}");
+        assert!(screen.contains("y 复制链接"), "{screen}");
+        assert!(screen.contains("c 复制设备码"), "{screen}");
+
+        // Each label is one clickable button that replays its key.
+        let click_key = |app: &mut App, code: KeyCode| {
+            let area = app
+                .layout
+                .buttons
+                .iter()
+                .find(|button| {
+                    button.code == code && app.layout.overlay.contains(button.area.x, button.area.y)
+                })
+                .map(|button| button.area)
+                .unwrap_or_else(|| panic!("no {code:?} button in the popup"));
+            app.handle_mouse(click(area.x + area.width - 1, area.y));
+        };
+        click_key(&mut app, KeyCode::Char('y'));
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("https://www.microsoft.com/link?otc=ABCDEFGH")
+        );
+
+        render(&mut app, 100, 30);
+        click_key(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.pending_clipboard.as_deref(), Some("ABCD-EFGH"));
+
+        render(&mut app, 100, 30);
+        click_key(&mut app, KeyCode::Char('o'));
+        assert_eq!(
+            app.pending_browser.as_deref(),
+            Some("https://www.microsoft.com/link?otc=ABCDEFGH")
+        );
     }
 
     #[test]

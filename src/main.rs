@@ -8,6 +8,7 @@ mod accounts;
 mod app;
 mod app_ids;
 mod cleanup;
+mod clipboard;
 mod discover;
 mod install;
 mod launch;
@@ -115,6 +116,27 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// Hand `url` to the desktop's default browser.
+///
+/// Only the opener is started; nothing waits for it, so a slow browser cannot
+/// freeze the launcher.
+fn open_in_browser(url: &str) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let (program, args) = ("open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let (program, args) = ("cmd", vec!["/C", "start", "", url]);
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let (program, args) = ("xdg-open", vec![url]);
+
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
 /// Interactive loop: collect events, then draw.
 fn run(app: &mut App, settings: Settings) -> io::Result<()> {
     let mut terminal = enter()?;
@@ -141,6 +163,21 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 identity,
                 app.accounts_dir.clone(),
             ));
+        }
+
+        // Clipboard and browser are the loop's job too: the state machine only
+        // records what the user asked for, so it stays testable without a tty.
+        if let Some(text) = app.pending_clipboard.take() {
+            if let Err(error) = clipboard::copy(&text) {
+                app.log(format!("复制失败：{error}"));
+                app.status = "复制失败".to_string();
+            }
+        }
+        if let Some(url) = app.pending_browser.take() {
+            if let Err(error) = open_in_browser(&url) {
+                app.log(format!("打开浏览器失败：{error}（可按 y 复制链接）"));
+                app.status = "打开浏览器失败".to_string();
+            }
         }
 
         // Download work, same shape: the state machine asks, the loop spawns.
