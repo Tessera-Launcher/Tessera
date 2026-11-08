@@ -537,6 +537,12 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let versions_inner = versions_block.inner(versions_area);
     frame.render_widget(versions_block, versions_area);
+    app.layout.download_versions_pane = Area::new(
+        versions_area.x,
+        versions_area.y,
+        versions_area.width,
+        versions_area.height,
+    );
     let visible = versions_inner.height.saturating_sub(1) as usize;
     if app.download.rows.is_empty() {
         app.layout.download_versions = Area::default();
@@ -572,6 +578,12 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let loaders_inner = loaders_block.inner(loaders_area);
     frame.render_widget(loaders_block, loaders_area);
+    app.layout.download_loaders_pane = Area::new(
+        loaders_area.x,
+        loaders_area.y,
+        loaders_area.width,
+        loaders_area.height,
+    );
     // Data rows only, and the first of them is the first line of the pane: unlike
     // the version table this one has no header row, so adding one here would make
     // every click land on the row above the pointer.

@@ -468,6 +468,11 @@ pub struct Layout {
     /// The download picker's two panes, data rows only (no header, no border).
     pub download_versions: Area,
     pub download_loaders: Area,
+    /// The same panes including their header and title, which is what the wheel
+    /// hit-tests against: scrolling should not stop because the pointer is on the
+    /// header row.
+    pub download_versions_pane: Area,
+    pub download_loaders_pane: Area,
     /// First visible row of the picker's version list, as rendered.
     pub download_offset: usize,
     /// The picker's search box and one area per kind filter, in `VersionFilter::ALL` order.
@@ -1435,13 +1440,17 @@ impl App {
         match self.download.focus {
             // The wheel over the filter bar is not a thing; treat it as versions.
             PickerFocus::Versions | PickerFocus::Search => {
-                let count = self.download.versions.len();
-                if count == 0 {
+                // Scroll by drawn row, not by version: a folded cycle is one row
+                // and its hidden members are not steps the wheel may land on.
+                // Unlike `↑↓`, the wheel stops at both ends instead of wrapping.
+                let stops = self.download.stops();
+                if stops.is_empty() {
                     return;
                 }
-                let last = count - 1;
-                self.download.picked =
-                    (self.download.picked as i32 + delta).clamp(0, last as i32) as usize;
+                let cursor = self.download.cursor();
+                let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
+                let next = (position as i32 + delta).clamp(0, stops.len() as i32 - 1) as usize;
+                self.download.picked = self.download.rows[stops[next]].anchor();
                 self.download.refresh_loaders();
             }
             PickerFocus::Loaders => {
@@ -1461,8 +1470,12 @@ impl App {
             return;
         }
         let (column, row) = (event.column, event.row);
-        let over_versions = self.layout.download_versions.contains(column, row);
-        let over_loaders = self.layout.download_loaders.contains(column, row);
+        // Clicks land on rows; the wheel works anywhere in the pane, so pointing
+        // at the header or the empty space below the last row still scrolls.
+        let over_versions_rows = self.layout.download_versions.contains(column, row);
+        let over_loaders_rows = self.layout.download_loaders.contains(column, row);
+        let over_versions = self.layout.download_versions_pane.contains(column, row);
+        let over_loaders = self.layout.download_loaders_pane.contains(column, row);
         let over_search = self.layout.download_search.contains(column, row);
         let chip = self
             .layout
@@ -1493,12 +1506,12 @@ impl App {
                 } else if let Some(index) = chip {
                     self.download.filter = VersionFilter::ALL[index];
                     self.download.apply_filter();
-                } else if over_versions {
+                } else if over_versions_rows {
                     self.download.focus = PickerFocus::Versions;
                     let drawn = self.layout.download_offset
                         + (row - self.layout.download_versions.y) as usize;
                     self.pick_version_row(drawn);
-                } else if over_loaders {
+                } else if over_loaders_rows {
                     self.download.focus = PickerFocus::Loaders;
                     let index = (row - self.layout.download_loaders.y) as usize;
                     if index < self.download.loaders.len() {
@@ -3155,6 +3168,8 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.layout.download_offset = 0;
         app.layout.download_versions = Area::new(1, 5, 40, 10);
         app.layout.download_loaders = Area::new(45, 5, 20, 10);
+        app.layout.download_versions_pane = Area::new(0, 4, 42, 11);
+        app.layout.download_loaders_pane = Area::new(44, 4, 22, 11);
         app
     }
 
@@ -3172,6 +3187,8 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.layout.download_offset = 0;
         app.layout.download_versions = Area::new(1, 5, 40, 10);
         app.layout.download_loaders = Area::new(45, 5, 20, 10);
+        app.layout.download_versions_pane = Area::new(0, 4, 42, 11);
+        app.layout.download_loaders_pane = Area::new(44, 4, 22, 11);
         app
     }
 
@@ -3309,6 +3326,65 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.download.focus, PickerFocus::Versions);
         app.handle_mouse(wheel(true, 10, 6));
         assert_eq!(app.download.picked, 0, "the pane under the pointer moves");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_drawn_rows_so_a_folded_cycle_is_one_notch() {
+        let mut app = tree_picker();
+        // One notch is `WHEEL_STEP` rows and there are three rows, so one notch
+        // lands on the last one; no scroll may leave the highlight where it was.
+        app.handle_mouse(wheel(false, 10, 6));
+        assert_eq!(
+            app.download.picked_version().unwrap().id,
+            "1.21.7",
+            "the folded cycle was stepped over as a row, not as three versions"
+        );
+
+        // It stops at the end instead of wrapping.
+        app.handle_mouse(wheel(false, 10, 6));
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.7");
+
+        app.handle_mouse(wheel(true, 10, 6));
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
+        app.handle_mouse(wheel(true, 10, 6));
+        assert_eq!(
+            app.download.picked_version().unwrap().id,
+            "1.21.8",
+            "top end"
+        );
+
+        // An opened cycle puts its members on the wheel's path too.
+        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
+        app.handle_download_key(KeyCode::Right, KeyModifiers::NONE);
+        app.handle_download_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
+        app.handle_mouse(wheel(false, 10, 6));
+        assert_eq!(
+            app.download.picked_version().unwrap().id,
+            "1.21.9-pre1",
+            "the wheel landed on a member of the opened cycle, not on its header"
+        );
+    }
+
+    #[test]
+    fn the_wheel_works_anywhere_in_the_pane_not_just_on_a_row() {
+        let mut app = laid_out_picker();
+        // Pointing at the table header must still scroll the list.
+        app.handle_mouse(wheel(false, 10, 4));
+        assert_eq!(app.download.picked, WHEEL_STEP as usize, "header row");
+        // And so must the empty space below the last row.
+        let empty = app.layout.download_versions.y + 9;
+        app.handle_mouse(wheel(false, 10, empty));
+        assert!(
+            app.download.picked > WHEEL_STEP as usize,
+            "empty space below the rows"
+        );
+
+        // A click, unlike the wheel, only lands on a row.
+        let before = app.download.picked;
+        app.handle_mouse(click(10, 4));
+        assert_eq!(app.download.picked, before, "the header is not a version");
     }
 
     #[test]
