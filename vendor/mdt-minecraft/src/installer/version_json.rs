@@ -541,6 +541,7 @@ mod tests {
             mirror: Mirror::Mojang,
             target_dir: None,
             reporter: std::sync::Arc::new(StderrReporter::default()),
+            java: None,
         };
         let urls = ManifestUrls::try_new(&Mirror::Mojang).unwrap();
         let http = test_client();

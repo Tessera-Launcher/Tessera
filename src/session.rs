@@ -4,7 +4,7 @@
 //! session 写回文件，否则下一次启动就会拿着一个已经失效的 refresh token。
 //! 和登录/下载一样跑在自己的线程上，结果通过 channel 回报。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use minecraft_auth::java::JavaAuthManager;
@@ -124,12 +124,13 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
 }
 
 /// Replace a credential file without ever leaving a truncated one behind.
-fn write_atomic(path: &PathBuf, document: &serde_json::Value) -> Result<(), String> {
+fn write_atomic(path: &Path, document: &serde_json::Value) -> Result<(), String> {
     let body =
         serde_json::to_vec_pretty(document).map_err(|error| format!("序列化凭据失败: {error}"))?;
-    let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, body).map_err(|error| format!("写入凭据失败: {error}"))?;
-    std::fs::rename(&temp, path).map_err(|error| format!("替换凭据失败: {error}"))?;
+    // Same private, atomic write the login flow uses: a rotated refresh token is
+    // just as sensitive as a fresh one.
+    crate::accounts::write_private(path, &body)
+        .map_err(|error| format!("写入凭据失败: {error}"))?;
     Ok(())
 }
 

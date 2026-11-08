@@ -27,6 +27,7 @@ pub async fn install_via_official_installer(
     registry_dir: Option<&Path>,
     rel_path: &str,
     reporter: &dyn ProgressReporter,
+    java: Option<&Path>,
 ) -> Result<(), MdtError> {
     let temp_dir = root_dir.join(".mdt-installer-tmp");
     ensure_empty_dir(&temp_dir).await?;
@@ -44,7 +45,12 @@ pub async fn install_via_official_installer(
     )
     .await?;
 
-    let java = detect_java().await?;
+    // A caller-supplied runtime wins over `JAVA_HOME`/`PATH`: a launcher that manages its own JVMs
+    // must not depend on whatever happens to be installed system-wide.
+    let java = match java {
+        Some(java) => java.to_path_buf(),
+        None => detect_java().await?,
+    };
     run_java_installer(&java, &installer_jar, root_dir).await?;
 
     let _ = crate::io::remove_dir_all(&temp_dir).await;

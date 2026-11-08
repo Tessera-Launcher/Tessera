@@ -38,6 +38,7 @@ pub async fn install(
         Some(&reg_dir),
         &rel_path,
         req.reporter.as_ref(),
+        req.java.as_deref(),
     )
     .await?;
 

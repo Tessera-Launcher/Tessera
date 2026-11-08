@@ -74,6 +74,9 @@ impl Account {
 ///
 /// Written to a temporary file in the same directory and renamed, so a crash
 /// mid-write cannot leave a truncated credential file behind.
+///
+/// Both the file and the directory are made private (`0600` / `0700` on Unix):
+/// the document holds a refresh token, and the file name is the player's name.
 pub fn save(
     dir: &Path,
     application: &str,
@@ -83,6 +86,7 @@ pub fn save(
     session: &serde_json::Value,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
+    restrict_dir(dir);
     let (path, copy) = free_slot(dir, &safe_file_stem(player_name));
 
     let document = serde_json::json!({
@@ -97,10 +101,53 @@ pub fn save(
     let body = serde_json::to_vec_pretty(&document)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
 
-    let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, body)?;
-    std::fs::rename(&temp, &path)?;
+    write_private(&path, &body)?;
     Ok(path)
+}
+
+/// Replace `path` with `body` atomically, readable only by its owner.
+///
+/// The temporary file is created with `0600` *before* anything is written, so
+/// the token is never briefly world-readable; the rename then makes the swap
+/// atomic. Used for account files by both the login flow and session refresh.
+pub fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let temp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp)?;
+    file.write_all(body)?;
+    file.flush()?;
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // `mode()` only applies when the file is created; a leftover temp file
+        // from an earlier crash keeps whatever mode it had.
+        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&temp, path)?;
+    Ok(())
+}
+
+/// Keep a credential directory closed to everyone but its owner (Unix only).
+///
+/// Best effort: a directory shared on purpose (a synced folder, say) is not
+/// worth failing a login over.
+pub fn restrict_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// List every readable account file, sorted by player name.
@@ -227,6 +274,21 @@ mod tests {
         assert_eq!(doc["player"]["name"], "Steve");
         assert_eq!(doc["app_id"], "00000000402b5328");
         assert_eq!(doc["session"]["_save_version"], 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_credential_file_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = save_steve(tmp.path());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "refresh token must not be group/world readable"
+        );
+        let dir_mode = std::fs::metadata(tmp.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "the account directory is private too");
     }
 
     #[test]

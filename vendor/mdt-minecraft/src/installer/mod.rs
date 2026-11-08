@@ -103,6 +103,8 @@ pub struct InstallRequest {
     pub target_dir: Option<PathBuf>,
     /// Progress/status reporter for this install.
     pub reporter: std::sync::Arc<dyn ProgressReporter>,
+    /// JVM for official installers (Forge/NeoForge). `None` detects one from `JAVA_HOME`/`PATH`.
+    pub java: Option<std::path::PathBuf>,
 }
 
 #[cfg(not(feature = "minimal"))]

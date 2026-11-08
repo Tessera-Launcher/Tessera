@@ -23,6 +23,35 @@ const SAVED_ROWS: usize = 6;
 
 /// Render one frame.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // Hit areas belong to the screen that recorded them. A full-screen pane does
+    // not draw the main screen underneath, so a stale footer must not stay
+    // clickable behind it.
+    app.layout.buttons.clear();
+
+    // Download, Installing and Java cover the whole terminal. Drawing the main
+    // screen first would waste a frame's layout work (and a directory walk for the
+    // size cell) only to paint over it.
+    let full_screen = matches!(
+        app.screen,
+        Screen::Download | Screen::Installing | Screen::Java
+    );
+    if !full_screen {
+        draw_main(frame, app);
+    }
+
+    match app.screen {
+        Screen::Login => draw_login(frame, frame.area(), app),
+        Screen::Accounts => draw_accounts(frame, frame.area(), app),
+        Screen::Download => draw_download(frame, frame.area(), app),
+        Screen::Installing => draw_installing(frame, frame.area(), app),
+        Screen::Java => draw_java(frame, frame.area(), app),
+        Screen::Main => {}
+    }
+}
+
+/// The main screen, drawn under the popups (login, accounts) but not under the
+/// full-screen panes.
+fn draw_main(frame: &mut Frame, app: &mut App) {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(10),
@@ -40,15 +69,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_log(frame, log, app);
 
     draw_footer(frame, footer, app);
-
-    match app.screen {
-        Screen::Login => draw_login(frame, frame.area(), app),
-        Screen::Accounts => draw_accounts(frame, frame.area(), app),
-        Screen::Download => draw_download(frame, frame.area(), app),
-        Screen::Installing => draw_installing(frame, frame.area(), app),
-        Screen::Java => draw_java(frame, frame.area(), app),
-        Screen::Main => {}
-    }
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -198,9 +218,11 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
             }
             // The row waiting for the second `x` is repainted, so the question in
             // the status bar has something on screen pointing at it.
-            let is_confirming = confirming.as_deref() == Some(version.id.as_str());
+            let is_confirming = confirming.as_deref() == Some(version.dir.as_str());
             if is_confirming {
-                id = id.fg(BROKEN).add_modifier(Modifier::BOLD | Modifier::REVERSED);
+                id = id
+                    .fg(BROKEN)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED);
             }
             let marker = if is_selected { "▶ " } else { "  " };
             let mut row = Row::new(vec![
@@ -240,14 +262,14 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(table, inner);
 }
 
-fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_details(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .title(Line::from(" 详情 "))
         .border_style(Style::new().fg(DIM));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(version) = app.selected_version() else {
+    let Some(version) = app.selected_version().cloned() else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled("未选择版本", Style::new().fg(DIM))))
                 .alignment(Alignment::Center),
@@ -256,10 +278,13 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let paths = app.selected_paths();
+    // Cached by directory: walking the tree on every frame is a syscall storm on
+    // a version with a full `mods/` folder, and nothing changes between frames.
+    let size = app.selected_size();
 
     let mut rows = vec![
         kv("ID", version.id.clone()),
-        kv("类型", kind_label(version)),
+        kv("类型", kind_label(&version)),
         kv("基础版本", version.base_version().to_string()),
         kv(
             "Java",
@@ -276,7 +301,6 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ];
     if let Some(paths) = &paths {
-        let size = discover::dir_size(&paths.dir);
         rows.push(kv("目录", paths.dir.display().to_string()));
         rows.push(kv("大小", discover::human_size(size)));
     }
@@ -295,11 +319,9 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::bordered()
-        .title(Line::from(" 日志 "))
-        .border_style(Style::new().fg(DIM));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // The border carries the scroll state, so it can only be drawn once the
+    // position is known; `inner` is the same either way.
+    let inner = Block::bordered().inner(area);
 
     app.layout.log = Area::new(inner.x, inner.y, inner.width, inner.height);
 
@@ -325,12 +347,13 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
             Style::new().fg(if scroll > 0 { ACCENT } else { DIM }),
         )))
         .border_style(Style::new().fg(if scroll > 0 { ACCENT } else { DIM }));
-    // Redraw the frame so the title reflects the scroll position.
-    frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
-    let lines: Vec<Line> = app.log[start..end]
+    let lines: Vec<Line> = app
+        .log
         .iter()
+        .skip(start)
+        .take(end - start)
         .map(|line| {
             Line::from(Span::styled(
                 format!("  {line}"),
@@ -342,8 +365,6 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
-    app.layout.buttons.clear();
-
     // (key, label) per screen: the label is what is drawn, the key is what a click
     // replays, so the hint and the binding cannot drift apart.
     let entries: Vec<(String, KeyCode)> = match app.screen {
@@ -1881,6 +1902,7 @@ mod tests {
 
     fn version(id: &str, kind: &str, java: u32, inherits: Option<&str>) -> LocalVersion {
         LocalVersion {
+            dir: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             java: Some(java),
@@ -1931,6 +1953,29 @@ mod tests {
             "footer buttons missing:\n{screen}"
         );
         assert!(screen.contains("▶"), "selection marker missing:\n{screen}");
+    }
+
+    #[test]
+    fn full_screen_panes_do_not_draw_the_main_screen_underneath() {
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![version("1.20.1", "release", 17, None)],
+            vec![],
+        );
+
+        app.screen = Screen::Java;
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("下载 Java"), "{screen}");
+        assert!(
+            !screen.contains("详情") && !screen.contains(" yaml "),
+            "the main screen is skipped, not painted over:\n{screen}"
+        );
+
+        app.screen = Screen::Download;
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("下载 BMCLAPI"), "{screen}");
+        assert!(!screen.contains("详情"), "{screen}");
     }
 
     #[test]

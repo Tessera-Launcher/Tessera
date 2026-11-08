@@ -111,6 +111,8 @@ impl Paths {
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.game())?;
         std::fs::create_dir_all(self.accounts())?;
+        // Refresh tokens land here, and the file names are player names.
+        crate::accounts::restrict_dir(&self.accounts());
         std::fs::create_dir_all(self.launchers())?;
         std::fs::create_dir_all(self.runtimes())?;
         std::fs::create_dir_all(self.logs())?;
@@ -180,6 +182,16 @@ mod tests {
         assert!(paths.logs().is_dir());
         assert!(paths.runtimes().is_dir());
         assert!(paths.launchers().is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(paths.accounts())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700, "the credential directory is private");
+        }
         // Seeded once, and never overwritten afterwards.
         assert_eq!(
             std::fs::read_to_string(paths.app_ids()).unwrap(),

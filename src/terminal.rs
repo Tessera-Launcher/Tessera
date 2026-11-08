@@ -23,6 +23,8 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::Command;
+#[cfg(any(unix, target_os = "windows"))]
+use std::time::{Duration, Instant};
 
 /// Re-run ourselves inside a terminal emulator when `stdin` is not a TTY.
 ///
@@ -147,14 +149,16 @@ fn spawn(exe: &Path, args: &[OsString]) -> io::Result<bool> {
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
 
     for candidate in candidates(terminal.as_deref(), &desktop) {
-        let spawned = Command::new(&candidate.program)
-            .arg(&candidate.exec_arg)
-            .arg(exe)
-            .args(args)
-            .status();
-        match spawned {
-            Ok(_) => return Ok(true),
-            // Not installed: the next candidate may be.
+        let mut argv: Vec<OsString> = Vec::with_capacity(args.len() + 2);
+        argv.push(OsString::from(&candidate.exec_arg));
+        argv.push(exe.as_os_str().to_os_string());
+        argv.extend(args.iter().cloned());
+
+        match run_detached(&candidate.program, &argv) {
+            Ok(true) => return Ok(true),
+            // Ran but rejected its arguments: the next candidate may behave.
+            Ok(false) => continue,
+            // Not installed: same.
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         }
@@ -164,6 +168,27 @@ fn spawn(exe: &Path, args: &[OsString]) -> io::Result<bool> {
     Ok(false)
 }
 
+/// Start `program` and decide whether it took the job.
+///
+/// `status()` blocks until the terminal window is closed, so the original
+/// double-clicked process would linger for the whole session. Spawning and then
+/// watching for a moment distinguishes the two useful outcomes: an immediate
+/// non-zero exit means the arguments were rejected (try the next terminal), while
+/// still running — or exiting 0, as terminals that fork do — means the window is
+/// up and this process can go away.
+#[cfg(any(unix, target_os = "windows"))]
+fn run_detached(program: &str, args: &[OsString]) -> io::Result<bool> {
+    let mut child = Command::new(program).args(args).spawn()?;
+    let deadline = Instant::now() + Duration::from_millis(400);
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status.success()),
+            None if Instant::now() >= deadline => return Ok(true),
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn spawn(exe: &Path, args: &[OsString]) -> io::Result<bool> {
     // `open -a` has no way to forward our arguments, and dropping them silently
@@ -171,26 +196,26 @@ fn spawn(exe: &Path, args: &[OsString]) -> io::Result<bool> {
     if !args.is_empty() {
         return Ok(false);
     }
-    Command::new("open")
-        .arg("-a")
-        .arg("Terminal")
-        .arg(exe)
-        .status()
-        .map(|_| true)
+    let argv = vec![
+        OsString::from("-a"),
+        OsString::from("Terminal"),
+        exe.as_os_str().to_os_string(),
+    ];
+    run_detached("open", &argv)
 }
 
 #[cfg(target_os = "windows")]
 fn spawn(exe: &Path, args: &[OsString]) -> io::Result<bool> {
     // `start` gives a console program a fresh console window; the empty argument
     // is `start`'s window-title slot, which it would otherwise take from `exe`.
-    Command::new("cmd")
-        .arg("/C")
-        .arg("start")
-        .arg("")
-        .arg(exe)
-        .args(args)
-        .status()
-        .map(|_| true)
+    let mut argv: Vec<OsString> = vec![
+        OsString::from("/C"),
+        OsString::from("start"),
+        OsString::from(""),
+        exe.as_os_str().to_os_string(),
+    ];
+    argv.extend(args.iter().cloned());
+    run_detached("cmd", &argv)
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
@@ -250,6 +275,28 @@ mod tests {
             seen.dedup();
             assert_eq!(seen.len(), total, "duplicate in plan for {desktop}");
         }
+    }
+
+    #[test]
+    fn a_terminal_that_rejects_its_arguments_is_not_reported_as_started() {
+        let argv = [OsString::from("-c"), OsString::from("exit 2")];
+        assert!(
+            !run_detached("sh", &argv).unwrap(),
+            "a quick non-zero exit means the window never opened"
+        );
+    }
+
+    #[test]
+    fn a_terminal_that_hands_the_window_off_counts_as_started() {
+        // Terminals that fork exit 0 immediately; they accepted the job.
+        let argv = [OsString::from("-c"), OsString::from("exit 0")];
+        assert!(run_detached("sh", &argv).unwrap());
+    }
+
+    #[test]
+    fn a_missing_program_is_reported_not_swallowed() {
+        let error = run_detached("yaml-no-such-terminal", &[]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

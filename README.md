@@ -104,6 +104,10 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 - 下载/校验/解包都在后台线程，Esc 可以退出界面继续下
 - 启动时**只在 `data/运行时/` 里挑**（按版本号，够用就行；8 的档位仍然钉死 8）。
   `JAVA_HOME` / `PATH` 一律不看，`--java` 已移除（传了会明确报错）
+- **Forge / NeoForge 的安装器也用同一个运行时**：这两个 Loader 靠官方的 installer jar
+  安装，要跑一个 JVM。挑哪个 Java 和启动时是同一条规则（版本 json 的 `javaVersion`，
+  没有就按版本号推），装不了就在日志里说"还没有下载 Java N：按 v 打开 Java 下载界面"。
+  Fabric / Quilt / LiteLoader 不跑 JVM，不需要 Java
 - 这个选择**不持久化**：下次打开回到清华源（和 `--mirror` 决定的是两件不同的事）
 
 ### 启动
@@ -134,6 +138,9 @@ yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
   rules 求值；缺 `--width/--height` 时补上
 - 内存 `-Xmx`、`-Dminecraft.launcher.brand/version`，macOS 自动加 `-XstartOnFirstThread`
 - 启动失败不会静默：缺库、缺 jar、Java 版本不对都会在日志里说明原因
+- 游戏进程由启动器后台 `wait`：退出后状态栏和日志会写明退出码，非 0 时给出
+  `versions/<id>/logs/latest.log` 的位置（没 wait 的话既会留僵尸进程，也看不出
+  游戏是不是两秒就崩了）
 
 **Java 选择**：只用启动器自己下载的运行时（`data/运行时/`），**不再查 `JAVA_HOME` 或
 `PATH`，也没有 `--java`**。理由很直接：游戏跑在哪个 Java 上，启动器必须知道并能解释——
@@ -201,6 +208,8 @@ yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
 - 滚轮按**绘制行**滚（一次 3 行，折起的一组只算一行），在版本面板内任意位置都有效，
   两端不循环；`↑↓` 仍是一次一行、到两端会绕回
 - Loader 列表按版本过滤（Fabric/Quilt ≥1.14、NeoForge ≥1.21、LiteLoader ≤1.12.2）
+- Forge / NeoForge 的官方安装器跑在 `data/运行时/` 里的 Java 上（见“Java 运行时”），
+  系统里有没有 `java` 都不影响
 - Loader 版本自动取该 MC 版本的最新构建，并在日志里写明选中的版本
 - 换版本时若原 Loader 仍可用就保留选择，否则回落到"无"
 - **下载源可以在面板里切换**：右下角（"安装内容"面板最后一行）是 `下载源 官方源 BMCLAPI`
@@ -257,6 +266,8 @@ yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
   释放，否则如实报“N 个文件是硬链接，数据还有别的名字”，不虚报
 - 移动选择、按任意其他键、`r` 刷新、`h` 切换都会取消待确认——"再按一次"不能跨过
   别的操作生效
+- 库/资源/缓存的清理**在后台线程**跑（要遍历并逐文件 stat 上万项，放 UI 线程会
+  卡住整屏），完成后日志和状态栏再补上释放量；卸载本身立刻返回
 - 失败会说明原因并保留列表行；删到一半失败时，状态栏会写清楚哪些已经删掉了
 - 版本 id 必须是一个普通路径分量（`..`、`/` 之类直接拒绝），避免误删 `versions/` 外面
 
@@ -273,6 +284,8 @@ yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
 | `Esc` / 点击面板外 | 关闭 |
 
 删掉当前账户会自动变成"未登录"——只有被删的那一个会话，同名的另一个还在。
+
+凭据文件按 `0600` 写（目录 `0700`），文件名就是玩家名，refresh token 只给属主看。
 
 **同一个玩家可以登录任意多次**，不管用的是哪个 app id：第一次写 `Steve.json`，
 第二次 `Steve (1).json`，第三次 `Steve (2).json`…… 文件永不被覆盖，各自的

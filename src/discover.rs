@@ -10,7 +10,16 @@ use std::path::Path;
 /// One installed version directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalVersion {
-    /// Directory name, e.g. `1.8.9` or `1.20.1+Fabric0.15.11`.
+    /// Directory name under `versions/`: the identity every path is built from.
+    ///
+    /// A hand-written profile may put a different `id` inside its JSON, and then
+    /// the directory is the only name that still points at the files; everything
+    /// that touches the disk must use this field.
+    pub dir: String,
+    /// The profile's own `id`, which is what `inheritsFrom` refers to.
+    ///
+    /// Normally the same as [`LocalVersion::dir`]; it is kept separate because
+    /// `inheritsFrom` names a profile, not a directory.
     pub id: String,
     /// `release` / `snapshot` / `old_beta` / `old_alpha`, or `-` when absent.
     pub kind: String,
@@ -75,9 +84,10 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
         };
         let has_jar = dir.join(format!("{id}.jar")).is_file();
         found.push(match read_profile(&dir, &id) {
-            Some(profile) => LocalVersion { has_jar, ..profile },
+            Some(profile) => profile,
             None => LocalVersion {
-                id: id.clone(),
+                dir: id.clone(),
+                id,
                 kind: "-".to_string(),
                 java: None,
                 inherits: None,
@@ -119,6 +129,7 @@ fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
     let string = |key: &str| json.get(key).and_then(|v| v.as_str()).map(str::to_string);
 
     Some(LocalVersion {
+        dir: id.to_string(),
         id: string("id").unwrap_or_else(|| id.to_string()),
         kind: string("type").unwrap_or_else(|| "-".to_string()),
         java: json
@@ -255,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn version_json_id_wins_over_the_directory_name() {
+    fn a_profile_id_may_differ_from_its_directory_but_paths_follow_the_directory() {
         let tmp = tempfile::tempdir().unwrap();
         write(
             tmp.path(),
@@ -263,7 +274,12 @@ mod tests {
             r#"{"id":"real-id","type":"release"}"#,
         );
         let versions = scan(tmp.path());
+        // The JSON id is what the UI shows and what `inheritsFrom` names…
         assert_eq!(versions[0].id, "real-id");
+        // …but the directory is the only name that resolves on disk, so every
+        // launch, uninstall and cleanup path is built from it.
+        assert_eq!(versions[0].dir, "dir-name");
+        assert!(tmp.path().join("versions").join(&versions[0].dir).is_dir());
     }
 
     #[test]

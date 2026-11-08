@@ -168,6 +168,19 @@ Measured on the same 219-object sample used for the concurrency work, with the w
 from scratch: the release binary went from 4.8 MB to 4.6 MB (`h2` plus `hyper`'s http2 plumbing),
 and install speed is unchanged because the h2 path was dead code at `http1_only(true)`.
 
+### 9. The launcher's own JVM can run the official loader installers
+
+`detect_java()` looked at `JAVA_HOME` then `PATH`, so a Forge/NeoForge install silently depended
+on a system Java — while the launcher that vendors this crate refuses to launch a game on anything
+but the JREs it downloaded itself. A user with no system Java, or an old one, could not install
+Forge at all.
+
+- `MdtClientBuilder::java(path)` (and `MdtClient::java()`) reserves a runtime for official
+  installers; `InstallRequest` carries it as `java: Option<PathBuf>`.
+- `install_via_official_installer` takes `java: Option<&Path>` and uses it instead of
+  `detect_java()`. `None` keeps upstream's detection, so the crate still works standalone.
+- Forge and NeoForge pass `req.java`; Fabric, Quilt and LiteLoader never start a JVM and ignore it.
+
 ## Tests added
 
 `src/asset.rs`: `legacy_index_flags_are_parsed`,

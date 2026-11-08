@@ -75,6 +75,7 @@ async fn install_modern(
         Some(&reg_dir),
         &rel_path,
         req.reporter.as_ref(),
+        req.java.as_deref(),
     )
     .await?;
 

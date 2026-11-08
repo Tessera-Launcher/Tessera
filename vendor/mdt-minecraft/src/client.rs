@@ -80,6 +80,9 @@ pub struct MdtClient {
     proxy: Option<String>,
     connect_timeout: Duration,
     read_timeout: Duration,
+    /// Java used to run official loader installers (Forge/NeoForge); `None` means detect one
+    /// from `JAVA_HOME`/`PATH`.
+    java: Option<PathBuf>,
 }
 
 impl MdtClient {
@@ -318,6 +321,7 @@ impl MdtClient {
             mirror: self.mirror.clone(),
             target_dir,
             reporter: self.reporter.clone(),
+            java: self.java.clone(),
         };
         installer::install_modloader(self.downloader.as_ref(), req).await
     }
@@ -627,6 +631,7 @@ pub struct MdtClientBuilder {
     proxy: Option<String>,
     connect_timeout: Duration,
     read_timeout: Duration,
+    java: Option<PathBuf>,
 }
 
 impl MdtClientBuilder {
@@ -644,7 +649,19 @@ impl MdtClientBuilder {
             proxy: None,
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(30),
+            java: None,
         }
+    }
+
+    /// Pick the Java that runs official loader installers (Forge/NeoForge).
+    ///
+    /// Without this MDT detects a JVM from `JAVA_HOME` then `PATH`, which is wrong for a launcher
+    /// that ships its own runtimes: the user may have no system Java at all, or one too old for the
+    /// installer. Installers that do not run a JVM (Fabric/Quilt/LiteLoader) ignore it.
+    #[must_use]
+    pub fn java(mut self, java: impl Into<PathBuf>) -> Self {
+        self.java = Some(java.into());
+        self
     }
 
     /// Pick a mirror (default: [`Mirror::BMCLAPI`]).
@@ -782,6 +799,7 @@ impl MdtClientBuilder {
             proxy: self.proxy,
             connect_timeout: self.connect_timeout,
             read_timeout: self.read_timeout,
+            java: self.java,
         })
     }
 }

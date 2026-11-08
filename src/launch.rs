@@ -123,16 +123,22 @@ pub struct Launch {
 }
 
 /// Merge the chain, resolve Java and build the command.
+///
+/// `version_dir_name` is the profile's directory under `versions/` (not the
+/// `id` inside its JSON): a hand-written profile may disagree with its folder,
+/// and every path a launch uses has to come from the folder.
 pub fn prepare(
     root: &Path,
-    version_id: &str,
+    version_dir_name: &str,
     creds: &Credentials,
     options: &Options,
 ) -> Result<Launch, String> {
-    let merged = merge_chain(root, version_id)?;
+    let merged = merge_chain(root, version_dir_name)?;
     // The profile's own `javaVersion` wins; older metadata gets the legacy rules.
+    // The JSON id is the better fallback than the folder name: a folder may be
+    // named anything (`my-instance`) while the id still says `1.20.1`.
     let required = required_java(
-        version_id,
+        &merged.id,
         (merged.java_version > 0).then_some(merged.java_version),
     );
     let runtimes = options
@@ -141,15 +147,16 @@ pub fn prepare(
         .ok_or_else(|| "没有配置 Java 运行时目录".to_string())?;
     let (java, java_major) = find_java(&runtimes, required)?;
 
-    let version_dir = root.join("versions").join(version_id);
+    let version_dir = root.join("versions").join(version_dir_name);
     // A loader install copies the parent's client jar without renaming it, so the
     // jar next to a `26.3+Fabric…` profile is still `26.3.jar`.
-    let client_jar = client_jar(&version_dir, version_id, &merged.parents).ok_or_else(|| {
-        format!(
-            "缺少客户端 jar：{}（重新安装这个版本）",
-            version_dir.display()
-        )
-    })?;
+    let client_jar =
+        client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
+            format!(
+                "缺少客户端 jar：{}（重新安装这个版本）",
+                version_dir.display()
+            )
+        })?;
 
     let libraries_dir = root.join("libraries");
     let mut classpath: Vec<PathBuf> = Vec::new();
@@ -166,19 +173,19 @@ pub fn prepare(
     }
     classpath.push(client_jar);
 
-    let natives = find_natives(&version_dir, version_id, &merged.parents);
+    let natives = find_natives(&version_dir, version_dir_name, &merged.parents);
     // Absolute, because the game runs with the version directory as its cwd: a
     // relative `java.library.path` would be resolved against that directory and
     // the natives would land somewhere nobody looks.
-    let natives_string = std::path::absolute(natives.as_deref().unwrap_or(&version_dir.join("natives")))
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| {
-            natives
-                .as_ref()
-                .map_or_else(|| version_dir.join("natives").display().to_string(), |path| {
-                    path.display().to_string()
-                })
-        });
+    let natives_string =
+        std::path::absolute(natives.as_deref().unwrap_or(&version_dir.join("natives")))
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| {
+                natives.as_ref().map_or_else(
+                    || version_dir.join("natives").display().to_string(),
+                    |path| path.display().to_string(),
+                )
+            });
     let separator = if cfg!(windows) { ";" } else { ":" };
     let classpath_string = classpath
         .iter()
@@ -256,8 +263,15 @@ pub fn prepare(
     if !args.iter().any(|arg| arg == "-XstartOnFirstThread") {
         args.push("-XstartOnFirstThread".to_string());
     }
-    args.push("-cp".to_string());
-    args.push(classpath_string);
+    // Only if the profile did not put the classpath in its own jvm arguments:
+    // every 1.13+ profile already ends with `-cp ${classpath}`, and appending a
+    // second one only makes `--print-launch` look broken. The comparison is
+    // against the resolved string, so a profile that passes something else to
+    // `-cp` still gets ours (the last one wins).
+    if !args.iter().any(|arg| arg == &classpath_string) {
+        args.push("-cp".to_string());
+        args.push(classpath_string);
+    }
 
     args.push(merged.main_class.clone());
 
@@ -471,14 +485,17 @@ pub struct References {
     pub asset_index: Option<String>,
 }
 
-/// The files `version_id` may need, for the cleaner in [`crate::cleanup`].
+/// The files the profile in `version_dir_name` may need, for the cleaner in
+/// [`crate::cleanup`].
+///
+/// `version_dir_name` is the directory under `versions/`, not the JSON `id`.
 ///
 /// Deliberately a superset of what this machine's launch would use: every
 /// declared classifier (not just this OS's) and the Maven-derived path for
 /// libraries without a `downloads` block. A cleaner may only delete what this
 /// set leaves out, so being generous here is what makes the sweep safe.
-pub fn references(root: &Path, version_id: &str) -> Result<References, String> {
-    let merged = merge_chain(root, version_id)?;
+pub fn references(root: &Path, version_dir_name: &str) -> Result<References, String> {
+    let merged = merge_chain(root, version_dir_name)?;
     let libraries_dir = root.join("libraries");
     let mut libraries = Vec::new();
 
@@ -644,10 +661,14 @@ fn substitute(text: &str, vars: &HashMap<&str, String>) -> String {
     out
 }
 
-/// Read `versions/<id>/<id>.json` and follow `inheritsFrom`, child first.
-fn load_chain(root: &Path, version_id: &str) -> Result<Vec<RawVersion>, String> {
+/// Read `versions/<dir>/<dir>.json` and follow `inheritsFrom`, child first.
+///
+/// The first path component is the directory name; every further hop is a
+/// profile `id`, which is what `inheritsFrom` names (and is a directory name for
+/// anything an installer wrote).
+fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>, String> {
     let mut chain = Vec::new();
-    let mut current = version_id.to_string();
+    let mut current = version_dir_name.to_string();
     for _ in 0..8 {
         let path = root
             .join("versions")
@@ -670,8 +691,8 @@ fn load_chain(root: &Path, version_id: &str) -> Result<Vec<RawVersion>, String> 
     Ok(chain)
 }
 
-fn merge_chain(root: &Path, version_id: &str) -> Result<Merged, String> {
-    let chain = load_chain(root, version_id)?;
+fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged, String> {
+    let chain = load_chain(root, version_dir_name)?;
     let child = chain.first().ok_or("版本链为空")?;
     let mut merged = Merged {
         id: child.id.clone(),
@@ -1233,8 +1254,8 @@ mod tests {
         let natives = root.join("versions/26.3/26.3-natives");
 
         assert!(
-            args.iter().any(|arg| arg
-                == &format!("-Djava.library.path={}/java", natives.display())),
+            args.iter()
+                .any(|arg| arg == &format!("-Djava.library.path={}/java", natives.display())),
             "the profile's own flag must point at the real directory: {args:?}"
         );
         assert!(
@@ -1302,6 +1323,101 @@ mod tests {
             .iter()
             .any(|arg| arg.starts_with("-Djava.library.path=")));
         assert!(launch.command.args.iter().any(|arg| arg == "-Xmx2048M"));
+    }
+
+    #[test]
+    fn a_modern_profile_gets_the_classpath_from_its_own_jvm_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Every 1.13+ profile ends its jvm arguments with `-cp ${classpath}`. The
+        // launcher must not append a second one.
+        write_version(
+            root,
+            "1.20.1",
+            serde_json::json!({
+                "id": "1.20.1",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "majorVersion": 17 },
+                "arguments": {
+                    "jvm": [
+                        "-Djava.library.path=${natives_directory}",
+                        "-cp",
+                        "${classpath}"
+                    ],
+                    "game": ["--username", "${auth_player_name}"]
+                },
+                "libraries": [
+                    { "name": "com.example:x:1.0", "downloads": { "artifact": { "path": "com/example/x/1.0/x-1.0.jar" } } }
+                ]
+            }),
+        );
+        let library = root.join("libraries/com/example/x/1.0/x-1.0.jar");
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"jar").unwrap();
+        std::fs::write(root.join("versions/1.20.1/1.20.1.jar"), b"jar").unwrap();
+
+        let options = Options {
+            runtimes: Some(managed_runtime(root, 17)),
+            ..Options::default()
+        };
+        let launch = prepare(root, "1.20.1", &Credentials::offline("Steve"), &options).unwrap();
+        assert_eq!(
+            launch
+                .command
+                .args
+                .iter()
+                .filter(|arg| *arg == "-cp")
+                .count(),
+            1,
+            "one classpath flag, not two: {:?}",
+            launch.command.args
+        );
+    }
+
+    #[test]
+    fn a_profile_whose_id_disagrees_with_its_directory_still_uses_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A hand-written instance: the folder is `my-instance`, the profile calls
+        // itself `1.20.1` and still inherits from nothing.
+        write_version(
+            root,
+            "my-instance",
+            serde_json::json!({
+                "id": "1.20.1",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "arguments": { "game": ["--username", "${auth_player_name}"] },
+                "libraries": []
+            }),
+        );
+        std::fs::write(root.join("versions/my-instance/my-instance.jar"), b"jar").unwrap();
+
+        let options = Options {
+            runtimes: Some(managed_runtime(root, 17)),
+            ..Options::default()
+        };
+        let launch = prepare(
+            root,
+            "my-instance",
+            &Credentials::offline("Steve"),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(launch.command.cwd, root.join("versions/my-instance"));
+        assert!(
+            launch
+                .command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--username", "Steve"]),
+            "game arguments are substituted from the profile: {:?}",
+            launch.command.args
+        );
+        // No `javaVersion` in the JSON, so the id it declares (1.20.1 → 17) has to
+        // drive the runtime choice, not the folder name.
+        assert_eq!(launch.required_major, 17);
     }
 
     #[test]

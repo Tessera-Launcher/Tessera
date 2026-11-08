@@ -1,5 +1,6 @@
 //! Screen state. No I/O and no terminal, so every transition is testable headless.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use std::time::Instant;
@@ -603,7 +604,8 @@ pub struct App {
     pub accounts: Vec<SavedAccount>,
     pub selected: usize,
     pub status: String,
-    pub log: Vec<String>,
+    /// Rolling log pane contents, oldest first.
+    pub log: VecDeque<String>,
     pub should_quit: bool,
     pub account: Account,
     pub screen: Screen,
@@ -622,6 +624,14 @@ pub struct App {
     pub launch_options: launch::Options,
     /// Account file whose session should be refreshed before launching.
     pub pending_refresh: Option<(String, PathBuf)>,
+    /// Version directories whose shared libraries/assets may now be unpacked.
+    /// The main loop takes it and runs the sweep on a worker thread.
+    pub pending_sweep: Option<Vec<String>>,
+    /// Children this app spawned (the game) with the version directory they run,
+    /// still to be reaped. The main loop takes them and waits on a worker thread,
+    /// so the launcher never leaves zombies behind and can report how a session
+    /// ended.
+    pub pending_watches: Vec<(String, std::process::Child)>,
     /// Credentials used by the most recent launch attempt (for tests/diagnostics).
     pub last_credentials: Option<launch::Credentials>,
     /// The command built by the most recent launch attempt.
@@ -654,6 +664,8 @@ pub struct App {
     /// MDT's `MDT_HOME` when it lives inside this installation's data directory,
     /// i.e. the download cache a sweep may prune. `None` leaves it alone.
     pub cache: Option<PathBuf>,
+    /// Last `dir_size` answer, keyed by the version directory it was measured in.
+    size_cache: Option<(PathBuf, u64)>,
 }
 
 impl App {
@@ -677,7 +689,7 @@ impl App {
             show_base_versions: false,
             accounts,
             selected: 0,
-            log: Vec::new(),
+            log: VecDeque::new(),
             should_quit: false,
             account: Account::SignedOut,
             screen: Screen::Main,
@@ -690,6 +702,8 @@ impl App {
             source: crate::install::Source::default(),
             launch_options: launch::Options::default(),
             pending_refresh: None,
+            pending_sweep: None,
+            pending_watches: Vec::new(),
             last_credentials: None,
             last_launch: None,
             pending_login: None,
@@ -706,6 +720,7 @@ impl App {
             java_click: None,
             uninstall_confirm: None,
             cache: None,
+            size_cache: None,
         };
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
@@ -734,12 +749,15 @@ impl App {
     // ---- main screen ----
 
     pub fn reload(&mut self) {
-        let keep = self.selected_version().map(|v| v.id.clone());
+        // The directory name is the stable key: two sessions of the same profile
+        // id cannot exist, but the id inside a JSON is not what the paths use.
+        let keep = self.selected_version().map(|v| v.dir.clone());
         self.uninstall_confirm = None;
+        self.size_cache = None;
         self.all_versions = discover::scan(&self.root);
         self.apply_version_filter();
         self.selected = keep
-            .and_then(|id| self.versions.iter().position(|v| v.id == id))
+            .and_then(|dir| self.versions.iter().position(|v| v.dir == dir))
             .unwrap_or(0);
         self.status = format!("已刷新：{} 个版本", self.versions.len());
         self.log(self.status.clone());
@@ -772,10 +790,10 @@ impl App {
     pub fn toggle_base_versions(&mut self) {
         self.show_base_versions = !self.show_base_versions;
         self.uninstall_confirm = None;
-        let keep = self.selected_version().map(|v| v.id.clone());
+        let keep = self.selected_version().map(|v| v.dir.clone());
         self.apply_version_filter();
-        if let Some(id) = keep {
-            self.selected = self.versions.iter().position(|v| v.id == id).unwrap_or(0);
+        if let Some(dir) = keep {
+            self.selected = self.versions.iter().position(|v| v.dir == dir).unwrap_or(0);
         }
         self.status = if self.show_base_versions {
             format!("显示全部 {} 个版本（含基础版本）", self.versions.len())
@@ -871,20 +889,43 @@ impl App {
 
     pub fn log(&mut self, line: impl Into<String>) {
         if self.log.len() == LOG_CAPACITY {
-            self.log.remove(0);
+            self.log.pop_front();
         }
-        self.log.push(line.into());
+        self.log.push_back(line.into());
     }
 
     pub fn selected_paths(&self) -> Option<SelectedPaths> {
         let version = self.selected_version()?;
-        let dir = self.root.join("versions").join(&version.id);
+        // Everything is named after the directory, not the JSON id: a profile
+        // whose own id disagrees with its folder still lives in the folder.
+        let dir = self.root.join("versions").join(&version.dir);
         Some(SelectedPaths {
-            json: dir.join(format!("{}.json", version.id)),
-            jar: dir.join(format!("{}.jar", version.id)),
-            natives: dir.join(format!("{}-natives", version.id)),
+            json: dir.join(format!("{}.json", version.dir)),
+            jar: dir.join(format!("{}.jar", version.dir)),
+            natives: dir.join(format!("{}-natives", version.dir)),
             dir,
         })
+    }
+
+    /// Size of the selected version directory, measured at most once per
+    /// selection.
+    ///
+    /// Walking the tree is cheap for a vanilla install and not so cheap for a
+    /// version with a filled `mods/`; the renderer asks on every frame, so the
+    /// answer is cached by directory. Any change to what is on disk goes through
+    /// [`App::reload`] or [`App::uninstall`], which drop the cache.
+    pub fn selected_size(&mut self) -> u64 {
+        let Some(paths) = self.selected_paths() else {
+            return 0;
+        };
+        if let Some((dir, size)) = &self.size_cache {
+            if *dir == paths.dir {
+                return *size;
+            }
+        }
+        let size = discover::dir_size(&paths.dir);
+        self.size_cache = Some((paths.dir, size));
+        size
     }
 
     // ---- uninstalling ----
@@ -899,7 +940,7 @@ impl App {
 
     /// `x`: ask, then delete on the second press.
     ///
-    /// Only `versions/<id>` goes away. Assets, libraries and the JVM are shared
+    /// Only `versions/<dir>` goes away. Assets, libraries and the JVM are shared
     /// between versions, so a per-version delete has no business touching them.
     /// Loader profiles that inherit from the chosen version are removed with it:
     /// once their base is gone they cannot start, and leaving them behind would
@@ -910,18 +951,18 @@ impl App {
             return;
         };
 
-        let dependents = self.dependents_of(&version.id);
-        if self.uninstall_confirm.as_deref() != Some(version.id.as_str()) {
-            self.uninstall_confirm = Some(version.id.clone());
+        let dependents = self.dependents_of(&version);
+        if self.uninstall_confirm.as_deref() != Some(version.dir.as_str()) {
+            self.uninstall_confirm = Some(version.dir.clone());
             self.status = if dependents.is_empty() {
                 format!(
                     "再按一次 x 卸载 {}（删除 versions/{}）",
-                    version.id, version.id
+                    version.dir, version.dir
                 )
             } else {
                 format!(
                     "再按一次 x 卸载 {}，连同依赖它的 {}",
-                    version.id,
+                    version.dir,
                     dependents.join("、")
                 )
             };
@@ -929,15 +970,15 @@ impl App {
         }
 
         self.uninstall_confirm = None;
-        self.uninstall(&version.id, &dependents);
+        self.uninstall(&version.dir, &dependents);
     }
 
-    /// Installed profiles that cannot start without `id`.
-    fn dependents_of(&self, id: &str) -> Vec<String> {
+    /// Directories of installed profiles that cannot start without `target`.
+    fn dependents_of(&self, target: &LocalVersion) -> Vec<String> {
         self.all_versions
             .iter()
-            .filter(|version| version.id != id && version.base_version() == id)
-            .map(|version| version.id.clone())
+            .filter(|version| version.dir != target.dir && version.base_version() == target.id)
+            .map(|version| version.dir.clone())
             .collect()
     }
 
@@ -991,20 +1032,16 @@ impl App {
 
         // `libraries/` and `assets/` are shared by every version, so the delete
         // above only freed the profile. Reclaim what nothing on disk still
-        // references — the alternative is a `.minecraft` that never shrinks.
-        let installed: Vec<String> = self
-            .all_versions
-            .iter()
-            .map(|version| version.id.clone())
-            .collect();
-        let sweep = cleanup::sweep(&self.root, self.cache.as_deref(), &installed);
-        let note = sweep.note();
-        if !note.is_empty() {
-            self.log(format!("清理库/资源{s}", s = note.trim_start_matches('；')));
-        }
-        if let Some(detail) = sweep.detail() {
-            self.log(detail);
-        }
+        // references — the alternative is a `.minecraft` that never shrinks. The
+        // sweep stats and deletes thousands of files, so the main loop runs it on
+        // a worker thread and reports back through [`App::handle_sweep`].
+        self.size_cache = None;
+        self.pending_sweep = Some(
+            self.all_versions
+                .iter()
+                .map(|version| version.dir.clone())
+                .collect(),
+        );
         self.selected = self.selected.min(self.versions.len().saturating_sub(1));
 
         // `removed` starts with the selected version, so index 0 is the one the
@@ -1016,12 +1053,29 @@ impl App {
         };
         let size = discover::human_size(freed);
         self.status = match failure {
-            None => format!("已卸载 {what}（释放 {size}）{note}"),
+            None => format!("已卸载 {what}（释放 {size}）"),
             Some((target, error)) => {
-                format!("已卸载 {what}（释放 {size}），{target} 失败：{error}{note}")
+                format!("已卸载 {what}（释放 {size}），{target} 失败：{error}")
             }
         };
         self.log(self.status.clone());
+        self.log("正在清理共享库和资源…");
+    }
+
+    /// Apply the result of the background sweep an uninstall started.
+    pub fn handle_sweep(&mut self, sweep: cleanup::Sweep) {
+        let note = sweep.note();
+        if !note.is_empty() {
+            self.log(format!("清理库/资源{s}", s = note.trim_start_matches('；')));
+        }
+        if let Some(detail) = sweep.detail() {
+            self.log(detail);
+        }
+        // The status may already describe something else; only append when it is
+        // still the uninstall this sweep belongs to.
+        if self.status.starts_with("已卸载") {
+            self.status.push_str(&note);
+        }
     }
 
     // ---- mouse ----
@@ -1304,8 +1358,8 @@ impl App {
         match account_file {
             Some(file) => {
                 self.status = "刷新登录令牌…".to_string();
-                self.log(format!("启动前刷新 {} 的令牌", version.id));
-                self.pending_refresh = Some((version.id, file));
+                self.log(format!("启动前刷新 {} 的令牌", version.dir));
+                self.pending_refresh = Some((version.dir, file));
             }
             None => {
                 let name = match &self.account {
@@ -1391,7 +1445,7 @@ impl App {
         self.last_credentials = Some(credentials.clone());
 
         let prepared =
-            match launch::prepare(&self.root, &version.id, &credentials, &self.launch_options) {
+            match launch::prepare(&self.root, &version.dir, &credentials, &self.launch_options) {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     self.status = "启动失败".to_string();
@@ -1407,7 +1461,7 @@ impl App {
         };
         self.log(format!(
             "启动 {} · {session} · Java {} · {} 个 classpath 条目 · 主类 {}",
-            version.id, prepared.java_major, prepared.classpath_entries, prepared.main_class
+            version.dir, prepared.java_major, prepared.classpath_entries, prepared.main_class
         ));
         if prepared.required_major > prepared.java_major {
             self.log(format!(
@@ -1415,11 +1469,6 @@ impl App {
                 prepared.required_major, prepared.java_major
             ));
         }
-        self.last_launch = Some(prepared);
-
-        let Some(prepared) = &self.last_launch else {
-            return;
-        };
         let mut command = std::process::Command::new(&prepared.command.exe);
         command
             .args(&prepared.command.args)
@@ -1428,12 +1477,45 @@ impl App {
             .stderr(std::process::Stdio::null());
         match command.spawn() {
             Ok(child) => {
-                self.status = format!("已启动 {}", version.id);
+                self.status = format!("已启动 {}", version.dir);
                 self.log(format!("游戏进程已启动（pid {}）", child.id()));
+                // The main loop waits on it in a thread: spawning and dropping the
+                // handle would leave a zombie and lose the exit code.
+                self.pending_watches.push((version.dir.clone(), child));
             }
             Err(error) => {
                 self.status = "启动失败".to_string();
                 self.log(format!("无法启动 Java：{error}"));
+            }
+        }
+        self.last_launch = Some(prepared);
+    }
+
+    /// Report how a game session ended.
+    ///
+    /// Sent by the watcher thread the main loop starts for every spawned child,
+    /// so a crash 2 seconds in is visible here instead of looking like a launch
+    /// that worked.
+    pub fn handle_game_exit(&mut self, dir: &str, status: std::process::ExitStatus) {
+        // The session wrote its own logs, options and saves; the size shown in the
+        // details pane is no longer the one that was cached.
+        self.size_cache = None;
+        match status.code() {
+            Some(0) => {
+                self.status = format!("{dir} 已退出");
+                self.log(format!("{dir} 已退出"));
+            }
+            Some(code) => {
+                self.status = format!("{dir} 异常退出（{code}）");
+                self.log(format!(
+                    "{dir} 异常退出（退出码 {code}），崩溃日志在 versions/{dir}/logs/latest.log"
+                ));
+            }
+            None => {
+                self.status = format!("{dir} 被信号终止");
+                self.log(format!(
+                    "{dir} 被信号终止，崩溃日志在 versions/{dir}/logs/latest.log"
+                ));
             }
         }
     }
@@ -1827,12 +1909,18 @@ impl App {
     }
 
     /// Called on every loop iteration: drop the speed reading when updates stop.
-    pub fn tick(&mut self) {
+    ///
+    /// Returns whether anything visible changed, so the main loop can skip a
+    /// redraw for an idle launcher.
+    pub fn tick(&mut self) -> bool {
+        let mut changed = false;
         if let Some((at, _)) = self.download.sample {
-            if at.elapsed().as_secs_f64() > 2.0 {
+            if at.elapsed().as_secs_f64() > 2.0 && self.download.speed > 0.0 {
                 self.download.speed = 0.0;
+                changed = true;
             }
         }
+        changed
     }
 
     // ---- java runtimes ----
@@ -2421,6 +2509,7 @@ mod tests {
 
     fn version(id: &str) -> LocalVersion {
         LocalVersion {
+            dir: id.to_string(),
             id: id.to_string(),
             kind: "release".to_string(),
             java: Some(17),
@@ -2482,6 +2571,46 @@ mod tests {
         std::fs::write(dir.join(format!("{id}.json")), json).unwrap();
     }
 
+    /// A profile that declares one library, with the library already on disk.
+    fn install_with_library(root: &Path, id: &str, relative: &str) {
+        write_version(
+            root,
+            id,
+            &format!(
+                r#"{{"id":"{id}","mainClass":"net.minecraft.client.main.Main","javaVersion":{{"majorVersion":17}},"libraries":[{{"name":"com.example:own:1.0","downloads":{{"artifact":{{"path":"{relative}"}}}}}}]}}"#
+            ),
+        );
+        let file = root.join("libraries").join(relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"jar").unwrap();
+    }
+
+    /// A real [`std::process::ExitStatus`] for the code a shell reports.
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(unix)]
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("exit {code}"))
+            .status();
+        #[cfg(windows)]
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(format!("exit {code}"))
+            .status();
+        status.expect("a shell that exits")
+    }
+
+    /// Run the background cleanup an uninstall scheduled, synchronously.
+    ///
+    /// The app hands the sweep to the main loop; tests are the loop here.
+    fn flush_cleanup(app: &mut App) {
+        let Some(installed) = app.pending_sweep.take() else {
+            return;
+        };
+        let sweep = cleanup::sweep(&app.root, app.cache.as_deref(), &installed);
+        app.handle_sweep(sweep);
+    }
+
     /// Put the selection on `id`, wherever the scan happened to sort it.
     fn select(app: &mut App, id: &str) {
         app.selected = app
@@ -2519,6 +2648,27 @@ mod tests {
             "log must name the deleted directory: {:?}",
             app.log
         );
+    }
+
+    #[test]
+    fn uninstall_targets_the_directory_not_the_profile_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The folder is what exists on disk; the JSON calls itself something else.
+        write_version(root, "my-instance", r#"{"id":"1.20.1"}"#);
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        app.selected = 0;
+        assert_eq!(app.versions[0].id, "1.20.1");
+        assert_eq!(app.versions[0].dir, "my-instance");
+
+        app.request_uninstall();
+        assert_eq!(app.uninstall_confirm(), Some("my-instance"));
+        app.request_uninstall();
+        assert!(
+            !root.join("versions/my-instance").exists(),
+            "the directory that was listed is the one that must go"
+        );
+        assert!(app.versions.is_empty());
     }
 
     #[test]
@@ -2598,9 +2748,12 @@ mod tests {
         write_version(
             root,
             "1.8.9",
-            &body("1.8.9", &format!(
-                r#"{{"name":"com.example:only189:1.0","downloads":{{"artifact":{{"path":"{own}"}}}}}}"#
-            )),
+            &body(
+                "1.8.9",
+                &format!(
+                    r#"{{"name":"com.example:only189:1.0","downloads":{{"artifact":{{"path":"{own}"}}}}}}"#
+                ),
+            ),
         );
         for relative in [shared, own] {
             let file = root.join("libraries").join(relative);
@@ -2612,6 +2765,11 @@ mod tests {
         select(&mut app, "1.8.9");
         app.request_uninstall();
         app.request_uninstall();
+        assert!(
+            app.pending_sweep.is_some(),
+            "the sweep is a request for the main loop, not inline work"
+        );
+        flush_cleanup(&mut app);
 
         assert!(
             root.join("libraries").join(shared).is_file(),
@@ -2626,6 +2784,130 @@ mod tests {
             "the status must report the sweep: {}",
             app.status
         );
+    }
+
+    #[test]
+    fn the_sweep_result_lands_in_the_log_and_the_uninstall_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        install_with_library(root, "1.20.1", "com/example/own/1.0/own-1.0.jar");
+
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        app.selected = 0;
+        app.request_uninstall();
+        app.request_uninstall();
+        assert!(app.pending_sweep.is_some());
+        assert!(
+            !app.status.contains("清理"),
+            "the status is not blocked on the sweep: {}",
+            app.status
+        );
+
+        flush_cleanup(&mut app);
+        assert!(app.status.starts_with("已卸载"), "{}", app.status);
+        assert!(app.status.contains("清理库/资源"), "{}", app.status);
+        assert!(
+            app.log.iter().any(|line| line.contains("清理库/资源")),
+            "{:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn a_sweep_for_something_else_leaves_the_status_alone() {
+        let mut app = app();
+        app.status = "下载：选择版本与 Loader".to_string();
+        app.handle_sweep(cleanup::Sweep {
+            files: 3,
+            bytes: 30,
+            ..cleanup::Sweep::default()
+        });
+        assert_eq!(app.status, "下载：选择版本与 Loader");
+        assert!(
+            app.log.iter().any(|line| line.contains("清理库/资源")),
+            "the log still records it: {:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn the_directory_size_is_measured_once_per_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_version(root, "1.20.1", r#"{"id":"1.20.1"}"#);
+        let extra = root.join("versions/1.20.1/mods/extra.jar");
+        std::fs::create_dir_all(extra.parent().unwrap()).unwrap();
+
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        let before = app.selected_size();
+        // A new file does not change the answer until the cache is dropped: the
+        // renderer must not walk the tree on every frame.
+        std::fs::write(&extra, b"four").unwrap();
+        assert_eq!(app.selected_size(), before, "cached between frames");
+
+        app.reload();
+        assert_eq!(app.selected_size(), before + 4, "a reload measures again");
+    }
+
+    #[test]
+    fn the_exit_code_of_a_game_session_is_reported() {
+        let mut app = app();
+        app.handle_game_exit("1.20.1", exit_status(0));
+        assert_eq!(app.status, "1.20.1 已退出");
+        assert!(app.log.iter().any(|line| line.contains("1.20.1 已退出")));
+
+        app.handle_game_exit("1.20.1", exit_status(3));
+        assert_eq!(app.status, "1.20.1 异常退出（3）");
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("versions/1.20.1/logs/latest.log")),
+            "the crash pointer is in the log: {:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn a_spawned_game_is_watched_with_its_version_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_version(
+            root,
+            "1.20.1",
+            r#"{"id":"1.20.1","mainClass":"net.minecraft.client.main.Main","javaVersion":{"majorVersion":17},"libraries":[]}"#,
+        );
+        std::fs::write(root.join("versions/1.20.1/1.20.1.jar"), b"jar").unwrap();
+
+        // A runtime that exits as soon as it is started, so the test never waits.
+        let runtimes = tmp.path().join("运行时");
+        let bin = crate::java::install_dir(&runtimes, "17.0.1+1").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let java = bin.join("java");
+        std::fs::write(
+            &java,
+            "#!/bin/sh\necho 'openjdk version \"17.0.1\"' >&2\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&java).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&java, perms).unwrap();
+        }
+
+        let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+        app.set_runtimes(runtimes);
+        app.start_game(launch::Credentials::offline("Steve"));
+
+        assert_eq!(app.status, "已启动 1.20.1", "{:?}", app.log);
+        let (dir, mut child) = app
+            .pending_watches
+            .pop()
+            .expect("the child is handed to the main loop for reaping");
+        assert_eq!(dir, "1.20.1");
+        let status = child.wait().expect("the fake runtime exits");
+        assert_eq!(status.code(), Some(0));
     }
 
     #[test]
@@ -2700,8 +2982,8 @@ mod tests {
             app.log(format!("line {i}"));
         }
         assert_eq!(app.log.len(), LOG_CAPACITY);
-        assert_eq!(app.log.last().unwrap(), "line 509");
-        assert_eq!(app.log.first().unwrap(), "line 10");
+        assert_eq!(app.log.back().unwrap(), "line 509");
+        assert_eq!(app.log.front().unwrap(), "line 10");
     }
 
     #[test]

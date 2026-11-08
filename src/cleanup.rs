@@ -29,6 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 
 use crate::discover::human_size;
 use crate::launch;
@@ -107,6 +108,9 @@ impl Sweep {
 
 /// Collect, then delete, everything the `installed` versions cannot need.
 ///
+/// `installed` holds the directory names under `versions/` (not the `id` inside
+/// each profile's JSON): that is what [`crate::launch::references`] reads.
+///
 /// `cache` is MDT's `MDT_HOME` when it lives inside this installation's data
 /// directory; `None` leaves the download registry alone.
 pub fn sweep(root: &Path, cache: Option<&Path>, installed: &[String]) -> Sweep {
@@ -146,12 +150,29 @@ pub fn sweep(root: &Path, cache: Option<&Path>, installed: &[String]) -> Sweep {
     sweep
 }
 
+/// Run [`sweep`] on its own thread and report the result once.
+///
+/// A sweep walks `libraries/`, `assets/`, `resources/` and the download registry
+/// and stats every candidate, so doing it on the UI thread would freeze the
+/// alternate screen for as long as the delete takes. Uninstalling a version is
+/// already async in every other respect (rescan, status), so the reclaim goes
+/// the same way.
+pub fn spawn(root: PathBuf, cache: Option<PathBuf>, installed: Vec<String>) -> Receiver<Sweep> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(sweep(&root, cache.as_deref(), &installed));
+    });
+    receiver
+}
+
 /// MDT's registry root, given the `MDT_HOME` it was pointed at.
 pub fn registry_dir(cache: &Path) -> PathBuf {
     cache.join(".mdt").join("registry")
 }
 
 /// Everything a sweep would remove, or the reason it cannot run.
+///
+/// `installed` is a list of `versions/` directory names.
 pub fn plan(root: &Path, cache: Option<&Path>, installed: &[String]) -> Plan {
     let libraries_dir = root.join("libraries");
     let assets_dir = root.join("assets");
@@ -387,9 +408,11 @@ fn weigh(candidates: Vec<PathBuf>) -> (Vec<Candidate>, u64) {
             match path.metadata() {
                 Ok(metadata) => {
                     sizes.push(Some(metadata.len()));
-                    let set = sets
-                        .entry((metadata.dev(), metadata.ino()))
-                        .or_insert((metadata.nlink(), metadata.len(), Vec::new()));
+                    let set = sets.entry((metadata.dev(), metadata.ino())).or_insert((
+                        metadata.nlink(),
+                        metadata.len(),
+                        Vec::new(),
+                    ));
                     set.2.push(index);
                 }
                 Err(_) => sizes.push(None),
@@ -601,6 +624,23 @@ mod tests {
     }
 
     #[test]
+    fn the_background_sweep_reports_the_work_it_did() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        install(root, "1.20.1", &profile("", None));
+        let stale = root.join("libraries/com/example/own/1.0/own-1.0.jar");
+        touch(&stale, 11);
+
+        let receiver = spawn(root.to_path_buf(), None, vec!["1.20.1".to_string()]);
+        let sweep = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the worker reports instead of hanging");
+        assert!(!stale.exists(), "the worker deleted the stale jar");
+        assert_eq!(sweep.files, 1);
+        assert_eq!(sweep.bytes, 11);
+    }
+
+    #[test]
     fn keeps_what_a_remaining_version_references() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -723,7 +763,11 @@ mod tests {
             root,
             "1.20.1",
             &profile(
-                &library("com.example:x:1.0", Some("com/example/x/1.0/x-1.0.jar"), &[]),
+                &library(
+                    "com.example:x:1.0",
+                    Some("com/example/x/1.0/x-1.0.jar"),
+                    &[],
+                ),
                 None,
             ),
         );
@@ -752,7 +796,11 @@ mod tests {
             root,
             "1.20.1",
             &profile(
-                &library("com.example:x:1.0", Some("com/example/x/1.0/x-1.0.jar"), &[]),
+                &library(
+                    "com.example:x:1.0",
+                    Some("com/example/x/1.0/x-1.0.jar"),
+                    &[],
+                ),
                 None,
             ),
         );
@@ -987,7 +1035,10 @@ mod tests {
 
         let sweep = sweep(root, None, &["1.20.1".to_string()]);
 
-        assert!(!mirror.exists(), "a modern-only install has no resources mirror");
+        assert!(
+            !mirror.exists(),
+            "a modern-only install has no resources mirror"
+        );
         assert!(object(root, HASH).is_file(), "the object itself stays");
         assert!(sweep.bytes > 0, "{sweep:?}");
     }
@@ -1048,4 +1099,3 @@ mod tests {
         assert!(registry.is_file(), "no cache means no registry pruning");
     }
 }
-

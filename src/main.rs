@@ -166,6 +166,11 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
     let mut install_rx: Option<Receiver<InstallEvent>> = None;
     let mut session_rx: Option<Receiver<SessionEvent>> = None;
     let mut java_rx: Option<Receiver<java::Event>> = None;
+    let mut sweep_rx: Option<Receiver<cleanup::Sweep>> = None;
+    let mut game_rx: Option<Receiver<(String, io::Result<std::process::ExitStatus>)>> = None;
+    // The launcher is idle most of the time; redraw only when something changed.
+    let mut dirty = true;
+
     let result = loop {
         // A login thread is requested by the state machine and spawned here, so
         // `app` never needs to know about threads or runtimes.
@@ -175,14 +180,17 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 identity,
                 app.accounts_dir.clone(),
             ));
+            dirty = true;
         }
 
         // Java work, same shape: the state machine asks, the loop spawns.
         if std::mem::take(&mut app.pending_java_list) {
             java_rx = Some(java::spawn_list());
+            dirty = true;
         }
         if let Some((runtime, urls)) = app.pending_java.take() {
             java_rx = Some(java::spawn_install(app.runtimes.clone(), runtime, urls));
+            dirty = true;
         }
 
         // Clipboard and browser are the loop's job too: the state machine only
@@ -205,12 +213,14 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                     app.status = "复制失败".to_string();
                 }
             }
+            dirty = true;
         }
         if let Some(url) = app.pending_browser.take() {
             if let Err(error) = open_in_browser(&url) {
                 app.log(format!("打开浏览器失败：{error}（可按 y 复制链接）"));
                 app.status = "打开浏览器失败".to_string();
             }
+            dirty = true;
         }
 
         // Download work, same shape: the state machine asks, the loop spawns.
@@ -222,15 +232,41 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 app.source,
                 settings.asset_concurrency,
             ));
+            dirty = true;
         }
         if let Some((version, loader)) = app.pending_install.take() {
             install_rx = Some(install::spawn_install(
                 app.root.clone(),
+                app.runtimes.clone(),
                 app.source,
                 settings.asset_concurrency,
                 version,
                 loader,
             ));
+            dirty = true;
+        }
+
+        // Reclaiming shared libraries after an uninstall walks and stats
+        // thousands of files, so it never runs on this thread.
+        if let Some(installed) = app.pending_sweep.take() {
+            sweep_rx = Some(cleanup::spawn(
+                app.root.clone(),
+                app.cache.clone(),
+                installed,
+            ));
+            dirty = true;
+        }
+
+        // A launched game is reaped on a worker thread: waiting here would
+        // freeze the UI for the whole session, dropping the handle would leave a
+        // zombie and lose the exit code.
+        if let Some((dir, mut child)) = app.pending_watches.pop() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send((dir, child.wait()));
+            });
+            game_rx = Some(receiver);
+            dirty = true;
         }
 
         if let Some((_, file)) = app.pending_refresh.clone() {
@@ -238,80 +274,32 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
             if session_rx.is_none() {
                 app.pending_refresh = None;
                 session_rx = Some(session::spawn_refresh(file));
+                dirty = true;
             }
-        }
-        let mut java_done = false;
-        if let Some(receiver) = &java_rx {
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => app.handle_java_event(event),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        java_done = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if java_done {
-            java_rx = None;
         }
 
-        let mut session_done = false;
-        if let Some(receiver) = &session_rx {
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => app.handle_session_event(event),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        session_done = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if session_done {
-            session_rx = None;
-        }
+        dirty |= drain(&mut java_rx, |event| app.handle_java_event(event));
 
-        let mut install_done = false;
-        if let Some(receiver) = &install_rx {
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => app.handle_install_event(event),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        install_done = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if install_done {
-            install_rx = None;
-        }
-        app.tick();
+        dirty |= drain(&mut session_rx, |event| app.handle_session_event(event));
 
-        // Drain whatever the login thread has reported since the last frame.
-        let mut disconnected = false;
-        if let Some(receiver) = &login_rx {
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => app.handle_login_event(event),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if disconnected {
-            login_rx = None;
-        }
+        dirty |= drain(&mut install_rx, |event| app.handle_install_event(event));
 
-        if let Err(error) = terminal.draw(|frame| ui::draw(frame, app)) {
-            break Err(error);
+        dirty |= drain(&mut sweep_rx, |sweep| app.handle_sweep(sweep));
+
+        dirty |= drain(&mut game_rx, |(dir, outcome)| match outcome {
+            Ok(status) => app.handle_game_exit(&dir, status),
+            Err(error) => app.log(format!("无法等待游戏进程：{error}")),
+        });
+
+        dirty |= drain(&mut login_rx, |event| app.handle_login_event(event));
+
+        dirty |= app.tick();
+
+        if dirty {
+            if let Err(error) = terminal.draw(|frame| ui::draw(frame, app)) {
+                break Err(error);
+            }
+            dirty = false;
         }
         if app.should_quit {
             break Ok(());
@@ -326,20 +314,51 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
                 Duration::from_millis(250)
             };
         match event::poll(tick) {
-            Ok(true) => match event::read() {
-                Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                    app.handle_key(key.code, key.modifiers)
+            Ok(true) => {
+                dirty = true;
+                match event::read() {
+                    Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
+                        app.handle_key(key.code, key.modifiers)
+                    }
+                    Ok(Event::Mouse(mouse)) => app.handle_mouse(mouse),
+                    Ok(_) => {}
+                    Err(error) => break Err(error),
                 }
-                Ok(Event::Mouse(mouse)) => app.handle_mouse(mouse),
-                Ok(_) => {}
-                Err(error) => break Err(error),
-            },
+            }
             Ok(false) => {}
             Err(error) => break Err(error),
         }
     };
     leave()?;
     result
+}
+
+/// Drain every event a worker has queued, and say whether any arrived.
+///
+/// A disconnected channel means the worker finished without ever sending its
+/// terminal event; clearing the slot lets the loop stop polling it.
+fn drain<T>(receiver: &mut Option<Receiver<T>>, mut apply: impl FnMut(T)) -> bool {
+    let mut changed = false;
+    let mut finished = false;
+    if let Some(receiver) = receiver {
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    apply(event);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    finished = true;
+                    break;
+                }
+            }
+        }
+    }
+    if finished {
+        *receiver = None;
+    }
+    changed
 }
 
 fn enter() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
