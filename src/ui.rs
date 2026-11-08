@@ -64,6 +64,22 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     // The account line doubles as a button. It is rendered as its own widget in a
     // measured rect instead of as a block title: a title lives on the border row,
     // which is where a click on it has to be hit-tested.
+    let account_line = match &app.account {
+        crate::app::Account::SignedOut => {
+            Line::from(Span::styled(" 未登录 · 点此登录", Style::new().fg(ACCENT)))
+        }
+        crate::app::Account::SignedIn {
+            name,
+            copy,
+            application,
+            ..
+        } => Line::from(vec![
+            Span::styled(format!(" {name}"), Style::new().fg(ACCENT)),
+            // The `(1)` of a repeated session, dimmed: it is not part of the name.
+            Span::styled(crate::accounts::suffix(*copy), Style::new().fg(DIM)),
+            Span::styled(format!(" · {application}"), Style::new().fg(ACCENT)),
+        ]),
+    };
     let account_text = match &app.account {
         crate::app::Account::SignedOut => "未登录 · 点此登录".to_string(),
         signed_in => signed_in.label(),
@@ -102,13 +118,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         width: account_width,
         height: 1,
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {account_text}"),
-            Style::new().fg(ACCENT),
-        ))),
-        account_area,
-    );
+    frame.render_widget(Paragraph::new(account_line), account_area);
     app.layout.account = Area::new(
         account_area.x,
         account_area.y,
@@ -891,10 +901,8 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
         .accounts_ui
         .selected
         .saturating_sub(visible.saturating_sub(1));
-    let active = match &app.account {
-        crate::app::Account::SignedIn { name, .. } => Some(name.clone()),
-        crate::app::Account::SignedOut => None,
-    };
+    // Two sessions of one player differ only by file, so that is the comparison.
+    let active = app.account.file().map(std::path::Path::to_path_buf);
 
     let rows: Vec<Row> = app
         .accounts
@@ -904,7 +912,7 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
         .take(visible)
         .map(|(index, account)| {
             let is_selected = index == app.accounts_ui.selected;
-            let is_active = active.as_deref() == Some(account.player_name.as_str());
+            let is_active = active.as_deref() == Some(account.file.as_path());
             app.layout.account_rows.push(Area::new(
                 inner.x,
                 inner.y + (index - offset) as u16,
@@ -925,6 +933,8 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
                             Style::new().fg(Color::White)
                         },
                     ),
+                    // The number of a repeated session, always dimmed.
+                    Span::styled(crate::accounts::suffix(account.copy), Style::new().fg(DIM)),
                 ])),
                 Cell::from(Line::from(Span::styled(
                     account.application.clone(),
@@ -1391,7 +1401,11 @@ mod tests {
         assert!(screen.contains("现有凭据"), "{screen}");
         // Where the list comes from is part of the choice, not a surprise later.
         assert!(screen.contains("azure_app_ids.toml"), "{screen}");
-        assert_eq!(app.layout.overlay_options.len(), 3, "every row is clickable");
+        assert_eq!(
+            app.layout.overlay_options.len(),
+            3,
+            "every row is clickable"
+        );
     }
 
     fn saved(name: &str, key: &str) -> crate::app_ids::AppId {
@@ -1418,7 +1432,10 @@ mod tests {
         assert!(screen.contains("6a3728d6"), "{screen}");
         assert!(screen.contains("Prism"), "{screen}");
         assert!(screen.contains("c36a9fb6"), "{screen}");
-        assert!(screen.contains("▶ Prism"), "selection marker missing:\n{screen}");
+        assert!(
+            screen.contains("▶ Prism"),
+            "selection marker missing:\n{screen}"
+        );
         assert!(screen.contains("Enter 登录"), "{screen}");
         assert_eq!(app.layout.overlay_options.len(), 2);
     }
@@ -1449,8 +1466,9 @@ mod tests {
         app.open_login();
         app.login.step = crate::app::LoginStep::ChooseAppIds;
         app.login.app_ids_path = "/data/凭据/启动器/azure_app_ids.toml".into();
-        app.login.app_ids_error =
-            Some("未找到 /data/凭据/启动器/azure_app_ids.toml：按 README 里的格式写入 app id".into());
+        app.login.app_ids_error = Some(
+            "未找到 /data/凭据/启动器/azure_app_ids.toml：按 README 里的格式写入 app id".into(),
+        );
         let screen = render(&mut app, 100, 40).join("\n");
 
         assert!(screen.contains("没有可用的 app id"), "{screen}");
@@ -1530,6 +1548,89 @@ mod tests {
         assert!(screen.contains("Enter 切换"), "{screen}");
         // Rows are recorded for hit testing.
         assert_eq!(app.layout.account_rows.len(), 2, "{screen}");
+    }
+
+    /// The cells of one row as `(symbol, foreground)` pairs, in draw order.
+    ///
+    /// The text rows from [`buffer_lines`] collapse the placeholder cells of
+    /// wide glyphs, so a colour has to be looked up on the buffer itself.
+    fn row_cells(app: &mut App, width: u16, y: u16) -> Vec<(String, ratatui::style::Color)> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..width)
+            .map(|x| {
+                let cell = buffer.cell((x, y)).expect("cell inside the buffer");
+                (cell.symbol().to_string(), cell.fg)
+            })
+            .collect()
+    }
+
+    /// Where `text` starts in a row of cells, ignoring which glyph is wide.
+    fn find_cells(row: &[(String, ratatui::style::Color)], text: &[&str]) -> Option<usize> {
+        row.windows(text.len()).position(|window| {
+            window
+                .iter()
+                .zip(text)
+                .all(|((symbol, _), want)| symbol == want)
+        })
+    }
+
+    #[test]
+    fn a_repeated_session_is_numbered_and_the_number_is_dimmed() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (app_id, application) in [("app-official", "Minecraft Launcher"), ("app-hmcl", "HMCL")]
+        {
+            crate::accounts::save(
+                tmp.path(),
+                application,
+                app_id,
+                "Steve",
+                "uuid",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        }
+        let saved = crate::accounts::list(tmp.path());
+        let mut app = App::new("/mc", tmp.path(), vec![], saved);
+        app.accounts_ui.selected = 1;
+        app.activate_selected_account();
+
+        // The header names the session, and only the `(1)` is grey.
+        let screen = render(&mut app, 100, 32);
+        let header = &screen[app.layout.account.y as usize];
+        assert!(header.contains("Steve (1) · HMCL"), "{header}");
+        let header_y = app.layout.account.y;
+        let row = row_cells(&mut app, 100, header_y);
+        let paren = find_cells(&row, &["(", "1", ")"]).expect("the number is drawn");
+        for (symbol, fg) in &row[paren..paren + 3] {
+            assert_eq!(*fg, DIM, "the number {symbol} must be dimmed");
+        }
+        // The name itself keeps the accent colour, i.e. is not part of the grey.
+        let steve = find_cells(&row, &["S", "t", "e", "v", "e"]).expect("the name is drawn");
+        assert_eq!(row[steve].1, ACCENT, "the name keeps its colour");
+        // The grey span is exactly the number: the separator after it is accent again.
+        assert_eq!(row[paren + 3].1, ACCENT, "the dim span ends at the number");
+
+        // The manager lists both sessions as separate rows, one of them active.
+        app.open_accounts();
+        let screen = render(&mut app, 100, 32).join("\n");
+        assert!(screen.contains("账户 (2)"), "{screen}");
+        assert!(screen.contains("Steve (1)"), "{screen}");
+        assert_eq!(app.layout.account_rows.len(), 2);
+        assert_eq!(
+            screen.matches("当前").count(),
+            1,
+            "exactly one session is active:\n{screen}"
+        );
+
+        // And in the row list the number is dimmed there too.
+        let area = app.layout.account_rows[1];
+        let row = row_cells(&mut app, 100, area.y);
+        let paren = find_cells(&row, &["(", "1", ")"]).expect("the row shows the number");
+        for (symbol, fg) in &row[paren..paren + 3] {
+            assert_eq!(*fg, DIM, "row number {symbol} must be dimmed");
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //!   "format": 1,
 //!   "application": "Minecraft Launcher",
 //!   "app_id": "00000000402b5328",
+//!   "copy": 0,
 //!   "player": { "name": "Steve", "uuid": "…" },
 //!   "saved_at": 1762450000,
 //!   "session": { … }
@@ -28,6 +29,11 @@ pub const FORMAT: u32 = 1;
 pub struct Account {
     pub file: PathBuf,
     pub player_name: String,
+    /// Which numbered session of that player this is: `0` for the first one,
+    /// `1` for the second, and so on. The same player may be signed in any
+    /// number of times, through any identity, and each session keeps its own
+    /// tokens — so the number is the only thing telling them apart.
+    pub copy: u32,
     pub player_uuid: String,
     /// Which launcher identity issued the session (`Minecraft Launcher`, …).
     pub application: String,
@@ -35,14 +41,36 @@ pub struct Account {
     pub app_id: String,
 }
 
-impl Account {
-    /// Header label: `Steve · 官方启动器`.
-    pub fn label(&self) -> String {
-        format!("{} · {}", self.player_name, self.application)
+/// The `(1)`-style suffix a repeated session carries, empty for the first one.
+///
+/// Kept separate from the name so the UI can draw it dimmed: it is an
+/// implementation detail of "you signed in twice", not part of the player name.
+pub fn suffix(copy: u32) -> String {
+    if copy == 0 {
+        String::new()
+    } else {
+        format!(" ({copy})")
     }
 }
 
-/// Write one account file, replacing any earlier file for the same player name.
+impl Account {
+    /// The player name with its number, i.e. what the user calls this session.
+    pub fn name(&self) -> String {
+        format!("{}{}", self.player_name, suffix(self.copy))
+    }
+
+    /// Header label: `Steve (1) · 官方启动器`.
+    pub fn label(&self) -> String {
+        format!("{} · {}", self.name(), self.application)
+    }
+}
+
+/// Write one account file, numbered if that player already has one.
+///
+/// Signing in the same player again is never a replacement: the second session
+/// gets `Steve (1).json`, the third `Steve (2).json`, and so on, so two identities
+/// (or two accounts that happen to share a name) keep their own refresh tokens.
+/// Existing files are never touched.
 ///
 /// Written to a temporary file in the same directory and renamed, so a crash
 /// mid-write cannot leave a truncated credential file behind.
@@ -55,12 +83,13 @@ pub fn save(
     session: &serde_json::Value,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("{}.json", safe_file_stem(player_name)));
+    let (path, copy) = free_slot(dir, &safe_file_stem(player_name));
 
     let document = serde_json::json!({
         "format": FORMAT,
         "application": application,
         "app_id": app_id,
+        "copy": copy,
         "player": { "name": player_name, "uuid": player_uuid },
         "saved_at": unix_now(),
         "session": session,
@@ -93,6 +122,12 @@ pub fn list(dir: &Path) -> Vec<Account> {
             Some(Account {
                 file: path,
                 player_name: player.get("name")?.as_str()?.to_string(),
+                copy: doc
+                    .get("copy")
+                    .and_then(|copy| copy.as_u64())
+                    .unwrap_or(0)
+                    .try_into()
+                    .unwrap_or(u32::MAX),
                 player_uuid: player
                     .get("uuid")
                     .and_then(|v| v.as_str())
@@ -111,8 +146,30 @@ pub fn list(dir: &Path) -> Vec<Account> {
             })
         })
         .collect();
-    found.sort_by(|a, b| a.player_name.cmp(&b.player_name));
+    // Sessions of the same player stay together, in their numbered order.
+    found.sort_by(|a, b| {
+        a.player_name
+            .cmp(&b.player_name)
+            .then_with(|| a.copy.cmp(&b.copy))
+    });
     found
+}
+
+/// The first free `stem.json` / `stem (N).json` in `dir`, with its number.
+fn free_slot(dir: &Path, stem: &str) -> (PathBuf, u32) {
+    for copy in 0..=u32::MAX {
+        let name = if copy == 0 {
+            format!("{stem}.json")
+        } else {
+            format!("{stem} ({copy}).json")
+        };
+        let path = dir.join(name);
+        if !path.exists() {
+            return (path, copy);
+        }
+    }
+    // Unreachable in practice: 4 billion sessions of one player.
+    (dir.join(format!("{stem}.json")), u32::MAX)
 }
 
 /// Keep letters, digits, `-` and `_`; replace everything else so a player name
@@ -173,10 +230,12 @@ mod tests {
     }
 
     #[test]
-    fn saving_the_same_player_twice_replaces_the_file() {
+    fn signing_in_again_numbers_the_session_instead_of_replacing_it() {
         let tmp = tempfile::tempdir().unwrap();
-        save_steve(tmp.path());
-        save(
+        let first = save_steve(tmp.path());
+        let first_body = std::fs::read_to_string(&first).unwrap();
+
+        let second = save(
             tmp.path(),
             "自定义启动器",
             "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb",
@@ -185,10 +244,80 @@ mod tests {
             &serde_json::json!({ "_save_version": 1 }),
         )
         .unwrap();
+        assert_eq!(first.file_name().unwrap(), "Steve.json");
+        assert_eq!(second.file_name().unwrap(), "Steve (1).json");
+        // The first session's tokens are untouched: they are still usable.
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), first_body);
 
         let accounts = list(tmp.path());
-        assert_eq!(accounts.len(), 1, "one file per player");
-        assert_eq!(accounts[0].application, "自定义启动器", "latest wins");
+        assert_eq!(accounts.len(), 2, "both sessions survive");
+        assert_eq!(accounts[0].copy, 0);
+        assert_eq!(accounts[0].application, "Minecraft Launcher");
+        assert_eq!(accounts[1].copy, 1);
+        assert_eq!(accounts[1].application, "自定义启动器");
+        assert_eq!(accounts[1].label(), "Steve (1) · 自定义启动器");
+    }
+
+    #[test]
+    fn every_further_session_gets_the_next_number() {
+        let tmp = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..4)
+            .map(|n| {
+                save(
+                    tmp.path(),
+                    "启动器",
+                    "app",
+                    "Steve",
+                    "uuid",
+                    &serde_json::json!({ "n": n }),
+                )
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Steve.json",
+                "Steve (1).json",
+                "Steve (2).json",
+                "Steve (3).json"
+            ]
+        );
+        let accounts = list(tmp.path());
+        assert_eq!(accounts.len(), 4);
+        assert_eq!(
+            accounts.iter().map(|a| a.copy).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn list_keeps_a_players_sessions_together_and_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, n) in [("Steve", 0), ("Alex", 0), ("Steve", 1), ("Alex", 1)] {
+            save(
+                tmp.path(),
+                "启动器",
+                "app",
+                name,
+                "uuid",
+                &serde_json::json!({ "n": n }),
+            )
+            .unwrap();
+        }
+        let labels: Vec<String> = list(tmp.path()).iter().map(|a| a.name()).collect();
+        assert_eq!(labels, ["Alex", "Alex (1)", "Steve", "Steve (1)"]);
+    }
+
+    #[test]
+    fn the_first_session_has_no_number() {
+        assert_eq!(suffix(0), "");
+        assert_eq!(suffix(1), " (1)");
+        assert_eq!(suffix(12), " (12)");
     }
 
     #[test]

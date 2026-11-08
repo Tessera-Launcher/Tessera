@@ -46,18 +46,38 @@ pub enum Screen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Account {
     SignedOut,
-    /// A saved account: player name plus the identity that issued the session.
+    /// A saved account: player name, which numbered session of that player it is,
+    /// the identity that issued it, and the file holding it.
+    ///
+    /// The file is the identity: two sessions of the same player are told apart
+    /// by nothing else, so no lookup may be done by name alone.
     SignedIn {
         name: String,
+        copy: u32,
         application: String,
+        file: PathBuf,
     },
 }
 
 impl Account {
+    /// `Steve (1) · 官方启动器` — the number is [`crate::accounts::suffix`].
     pub fn label(&self) -> String {
         match self {
             Account::SignedOut => "未登录".to_string(),
-            Account::SignedIn { name, application } => format!("{name} · {application}"),
+            Account::SignedIn {
+                name,
+                copy,
+                application,
+                ..
+            } => format!("{name}{} · {application}", accounts::suffix(*copy)),
+        }
+    }
+
+    /// The credential file behind this session, if any.
+    pub fn file(&self) -> Option<&Path> {
+        match self {
+            Account::SignedOut => None,
+            Account::SignedIn { file, .. } => Some(file),
         }
     }
 }
@@ -527,7 +547,9 @@ impl App {
         if let Some(newest) = app.accounts.last() {
             app.account = Account::SignedIn {
                 name: newest.player_name.clone(),
+                copy: newest.copy,
                 application: newest.application.clone(),
+                file: newest.file.clone(),
             };
             app.log(format!("使用已保存账户 {}", newest.label()));
         }
@@ -1093,14 +1115,9 @@ impl App {
             return;
         };
 
-        let account_file = match &self.account {
-            Account::SignedIn { name, .. } => self
-                .accounts
-                .iter()
-                .find(|account| &account.player_name == name)
-                .map(|account| account.file.clone()),
-            Account::SignedOut => None,
-        };
+        // By file, never by name: the same player may be signed in several times
+        // and only the file says which session's tokens get refreshed.
+        let account_file = self.account.file().map(Path::to_path_buf);
 
         match account_file {
             Some(file) => {
@@ -1530,8 +1547,8 @@ impl App {
     pub fn open_accounts(&mut self) {
         self.accounts = accounts::list(&self.accounts_dir);
         self.accounts_ui = AccountsUi::default();
-        if let Account::SignedIn { name, .. } = &self.account {
-            if let Some(index) = self.accounts.iter().position(|a| &a.player_name == name) {
+        if let Some(file) = self.account.file() {
+            if let Some(index) = self.accounts.iter().position(|a| a.file == file) {
                 self.accounts_ui.selected = index;
             }
         }
@@ -1581,7 +1598,9 @@ impl App {
         };
         self.account = Account::SignedIn {
             name: account.player_name.clone(),
+            copy: account.copy,
             application: account.application.clone(),
+            file: account.file.clone(),
         };
         let label = self.account.label();
         self.status = format!("当前账户 {label}");
@@ -1596,7 +1615,7 @@ impl App {
         };
         if !self.accounts_ui.confirm_delete {
             self.accounts_ui.confirm_delete = true;
-            self.status = format!("再按一次 d 移除 {}（会删除凭据文件）", account.player_name);
+            self.status = format!("再按一次 d 移除 {}（会删除凭据文件）", account.name());
             return;
         }
 
@@ -1604,9 +1623,10 @@ impl App {
             Ok(()) => {
                 self.log(format!(
                     "已移除账户 {}（{}）",
-                    account.player_name, account.application
+                    account.name(),
+                    account.application
                 ));
-                self.status = format!("已移除 {}", account.player_name);
+                self.status = format!("已移除 {}", account.name());
             }
             Err(error) => {
                 self.log(format!("移除失败：{error}"));
@@ -1616,10 +1636,7 @@ impl App {
             }
         }
 
-        let was_active = matches!(
-            &self.account,
-            Account::SignedIn { name, .. } if name == &account.player_name
-        );
+        let was_active = self.account.file() == Some(account.file.as_path());
         self.accounts = accounts::list(&self.accounts_dir);
         if was_active {
             self.account = Account::SignedOut;
@@ -1791,24 +1808,32 @@ impl App {
                 application,
                 file,
             } => {
-                self.account = Account::SignedIn {
-                    name: player_name.clone(),
-                    application: application.clone(),
-                };
-                self.login.step = LoginStep::Done {
-                    player: player_name.clone(),
-                    application: application.clone(),
-                };
-                self.status = format!("登录成功：{player_name}");
-                self.log(format!("登录成功：{player_name} · {application}"));
-                self.log(format!("凭据已保存到 {}", file.display()));
-                // Re-read the directory instead of appending, so the list matches disk.
+                // Re-read the directory instead of appending, so the list matches
+                // disk: it is what tells us which numbered copy this session got.
                 self.accounts = accounts::list(&self.accounts_dir);
-                if let Some(index) = self
+                let saved = self
                     .accounts
                     .iter()
-                    .position(|account| account.player_name == player_name)
-                {
+                    .position(|account| account.file == file)
+                    .map(|index| (index, self.accounts[index].clone()));
+                let shown = match &saved {
+                    Some((_, saved)) => saved.name(),
+                    None => player_name.clone(),
+                };
+                self.account = Account::SignedIn {
+                    name: player_name.clone(),
+                    copy: saved.as_ref().map_or(0, |(_, saved)| saved.copy),
+                    application: application.clone(),
+                    file: file.clone(),
+                };
+                self.login.step = LoginStep::Done {
+                    player: shown.clone(),
+                    application: application.clone(),
+                };
+                self.status = format!("登录成功：{shown}");
+                self.log(format!("登录成功：{shown} · {application}"));
+                self.log(format!("凭据已保存到 {}", file.display()));
+                if let Some((index, _)) = saved {
                     self.accounts_ui.selected = index;
                 }
             }
@@ -2340,6 +2365,121 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert!(matches!(app.login.step, LoginStep::Done { .. }));
     }
 
+    /// The same player signed in twice, through two different identities.
+    fn with_two_steves() -> (tempfile::TempDir, App) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        accounts::save(
+            &dir,
+            "Minecraft Launcher",
+            "app-official",
+            "Steve",
+            "uuid",
+            &serde_json::json!({ "n": 0 }),
+        )
+        .unwrap();
+        accounts::save(
+            &dir,
+            "HMCL",
+            "app-hmcl",
+            "Steve",
+            "uuid",
+            &serde_json::json!({ "n": 1 }),
+        )
+        .unwrap();
+        let mut app = App::new("/mc", &dir, vec![version("1.20.1")], accounts::list(&dir));
+        app.accounts_ui.selected = 1;
+        app.activate_selected_account();
+        (tmp, app)
+    }
+
+    #[test]
+    fn signing_in_twice_keeps_both_sessions_and_the_new_one_wins() {
+        let (tmp, mut app) = with_two_steves();
+        assert_eq!(
+            app.accounts.len(),
+            2,
+            "the second login must not replace the first"
+        );
+        assert_eq!(app.account.label(), "Steve (1) · HMCL");
+        assert!(app.account.file().unwrap().ends_with("Steve (1).json"));
+
+        // Opening the manager highlights the numbered session, not the first
+        // account that happens to share the name.
+        app.open_accounts();
+        assert_eq!(app.accounts_ui.selected, 1);
+        assert_eq!(app.accounts[1].copy, 1);
+
+        // And a fresh sign-in of that same player lands on the next number.
+        let third = accounts::save(
+            tmp.path(),
+            "Prism",
+            "app-prism",
+            "Steve",
+            "uuid",
+            &serde_json::json!({ "n": 2 }),
+        )
+        .unwrap();
+        app.handle_login_event(LoginEvent::Succeeded {
+            player_name: "Steve".to_string(),
+            application: "Prism".to_string(),
+            file: third,
+        });
+        assert_eq!(app.account.label(), "Steve (2) · Prism");
+        assert_eq!(app.accounts.len(), 3);
+        assert_eq!(app.accounts_ui.selected, 2);
+        match &app.login.step {
+            LoginStep::Done { player, .. } => assert_eq!(player, "Steve (2)"),
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launching_refreshes_the_active_session_not_the_first_with_that_name() {
+        let (_tmp, mut app) = with_two_steves();
+        app.request_launch();
+        let (_, file) = app
+            .pending_refresh
+            .clone()
+            .expect("a refresh was requested");
+        assert!(
+            file.ends_with("Steve (1).json"),
+            "wrong session refreshed: {}",
+            file.display()
+        );
+    }
+
+    #[test]
+    fn removing_one_session_leaves_the_other_signed_in() {
+        let (_tmp, mut app) = with_two_steves();
+        app.open_accounts();
+        // Remove the first Steve while the second one is active.
+        app.accounts_ui.selected = 0;
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+
+        assert_eq!(app.accounts.len(), 1);
+        assert_eq!(
+            app.account.label(),
+            "Steve (1) · HMCL",
+            "the session survived"
+        );
+        assert!(app.status.contains("已移除 Steve"), "{}", app.status);
+    }
+
+    #[test]
+    fn removing_the_active_session_signs_out_even_if_a_namesake_remains() {
+        let (_tmp, mut app) = with_two_steves();
+        app.open_accounts();
+        app.handle_accounts_key(KeyCode::End, KeyModifiers::NONE);
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+
+        assert_eq!(app.account, Account::SignedOut);
+        assert_eq!(app.accounts.len(), 1, "the namesake is not touched");
+        assert_eq!(app.accounts[0].label(), "Steve · Minecraft Launcher");
+    }
+
     #[test]
     fn failure_event_shows_the_reason() {
         let mut app = app();
@@ -2606,9 +2746,17 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         }
         let saved = accounts::list(tmp.path());
         let mut app = App::new("/mc", tmp.path(), vec![], saved);
+        let steve = app
+            .accounts
+            .iter()
+            .find(|account| account.player_name == "Steve")
+            .unwrap()
+            .clone();
         app.account = Account::SignedIn {
-            name: "Steve".into(),
-            application: "Minecraft Launcher".into(),
+            name: steve.player_name.clone(),
+            copy: steve.copy,
+            application: steve.application.clone(),
+            file: steve.file.clone(),
         };
         (tmp, app)
     }
@@ -3332,15 +3480,18 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn signed_in_app(account_file: PathBuf) -> App {
         let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
         app.accounts = vec![SavedAccount {
-            file: account_file,
+            file: account_file.clone(),
             player_name: "Steve".into(),
+            copy: 0,
             player_uuid: "uuid".into(),
             application: "Minecraft Launcher".into(),
             app_id: "id".into(),
         }];
         app.account = Account::SignedIn {
             name: "Steve".into(),
+            copy: 0,
             application: "Minecraft Launcher".into(),
+            file: account_file,
         };
         // An unusable Java keeps `start_game` from ever spawning a process.
         app.launch_options.java = Some(PathBuf::from("/nonexistent/java"));
@@ -3524,10 +3675,23 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(
             Account::SignedIn {
                 name: "Steve".into(),
-                application: "官方启动器".into()
+                copy: 0,
+                application: "官方启动器".into(),
+                file: PathBuf::from("/acc/Steve.json"),
             }
             .label(),
             "Steve · 官方启动器"
+        );
+        // A repeated session says which one it is.
+        assert_eq!(
+            Account::SignedIn {
+                name: "Steve".into(),
+                copy: 2,
+                application: "官方启动器".into(),
+                file: PathBuf::from("/acc/Steve (2).json"),
+            }
+            .label(),
+            "Steve (2) · 官方启动器"
         );
     }
 }
