@@ -182,28 +182,47 @@ pub fn candidates(
     urls
 }
 
-/// Where a runtime's `bin/java` lives, given the tree root.
-pub fn install_dir(root: &Path, major: u32) -> PathBuf {
-    root.join("java").join(major.to_string())
+/// Where one runtime lives: `data/运行时/<version>`, e.g. `…/21.0.13+9`.
+///
+/// Named by version rather than by feature version, so an older build of the same
+/// feature is a different directory and can be kept or pruned knowingly.
+pub fn install_dir(runtimes: &Path, version: &str) -> PathBuf {
+    runtimes.join(version)
+}
+
+/// The feature version a runtime directory name belongs to (`21.0.13+9` → 21,
+/// `8u512-b09` → 8).
+pub fn major_of(name: &str) -> Option<u32> {
+    let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 /// Every runtime this launcher installed, as `(feature, bin/java)`.
 ///
-/// Sorted newest first so a newer runtime is offered before an older one.
-pub fn installed(root: &Path) -> Vec<(u32, PathBuf)> {
-    let Ok(entries) = fs::read_dir(root.join("java")) else {
+/// Sorted newest first (by feature version, then by name) so a newer runtime is
+/// offered before an older one.
+pub fn installed(runtimes: &Path) -> Vec<(u32, PathBuf)> {
+    let Ok(entries) = fs::read_dir(runtimes) else {
         return Vec::new();
     };
-    let mut found: Vec<(u32, PathBuf)> = entries
+    let mut found: Vec<(u32, String, PathBuf)> = entries
         .flatten()
         .filter_map(|entry| {
-            let major: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let name = entry.file_name().to_str()?.to_string();
+            // A `.incoming-…` work directory is ours, not a runtime.
+            if name.starts_with('.') {
+                return None;
+            }
+            let major = major_of(&name)?;
             let java = java_binary(&entry.path())?;
-            Some((major, java))
+            Some((major, name, java))
         })
         .collect();
-    found.sort_by_key(|(major, _)| std::cmp::Reverse(*major));
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     found
+        .into_iter()
+        .map(|(major, _, java)| (major, java))
+        .collect()
 }
 
 /// `bin/java` under an unpacked runtime, if there is one.
@@ -229,11 +248,11 @@ pub fn spawn_list() -> Receiver<Event> {
     })
 }
 
-/// Download, verify and unpack `runtime` into [`install_dir`].
-pub fn spawn_install(root: PathBuf, runtime: Runtime, urls: Vec<String>) -> Receiver<Event> {
+/// Download, verify and unpack `runtime` into `runtimes/<version>`.
+pub fn spawn_install(runtimes: PathBuf, runtime: Runtime, urls: Vec<String>) -> Receiver<Event> {
     spawn(move |sender| {
         let client = blocking_client()?;
-        install(&client, &root, &runtime, &urls, &sender)
+        install(&client, &runtimes, &runtime, &urls, &sender)
     })
 }
 
@@ -270,15 +289,13 @@ pub enum Event {
 
 fn install(
     client: &reqwest::blocking::Client,
-    root: &Path,
+    runtimes: &Path,
     runtime: &Runtime,
     urls: &[String],
     sender: &Sender<Event>,
 ) -> Result<(), String> {
-    let dir = install_dir(root, runtime.major);
-    let work = root
-        .join("java")
-        .join(format!(".incoming-{}", runtime.major));
+    let dir = install_dir(runtimes, &runtime.version());
+    let work = runtimes.join(format!(".incoming-{}", runtime.major));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|error| format!("无法创建 {}: {error}", work.display()))?;
 
@@ -332,12 +349,35 @@ fn install(
 
     let java = java_binary(&dir).ok_or_else(|| format!("{} 里没有 bin/java", dir.display()))?;
     mark_executable(&java);
+    // The new build supersedes the older one of the same feature; keeping both
+    // would just grow `运行时/` with every patch release.
+    prune_older(runtimes, runtime.major, &dir, sender);
     let _ = sender.send(Event::Installed {
         major: runtime.major,
         version: runtime.version().to_string(),
         java,
     });
     Ok(())
+}
+
+/// Remove other builds of `major`, keeping `keep`.
+fn prune_older(runtimes: &Path, major: u32, keep: &Path, sender: &Sender<Event>) {
+    let Ok(entries) = fs::read_dir(runtimes) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if major_of(&name) != Some(major) {
+            continue;
+        }
+        if fs::remove_dir_all(&path).is_ok() {
+            let _ = sender.send(Event::Log(format!("移除旧运行时 {name}")));
+        }
+    }
 }
 
 /// Stream `url` into `path`, reporting progress as it goes.
@@ -723,21 +763,35 @@ mod tests {
     }
 
     #[test]
-    fn installed_lists_what_is_on_disk_newest_first() {
+    fn installed_lists_version_named_directories_newest_first() {
         let tmp = tempfile::tempdir().unwrap();
-        for major in [8, 21] {
-            let dir = install_dir(tmp.path(), major);
+        for version in ["8u512-b09", "21.0.13+9", "17.0.21+9"] {
+            let dir = install_dir(tmp.path(), version);
             fs::create_dir_all(dir.join("bin")).unwrap();
             fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
         }
-        fs::create_dir_all(tmp.path().join("java/17")).unwrap();
+        // Neither an empty directory nor a leftover work directory is a runtime.
+        fs::create_dir_all(tmp.path().join("junk")).unwrap();
+        fs::create_dir_all(tmp.path().join(".incoming-21/bin")).unwrap();
+
         let found = installed(tmp.path());
         assert_eq!(
             found.iter().map(|(major, _)| *major).collect::<Vec<_>>(),
-            [21, 8],
-            "a directory without bin/java is not a runtime"
+            [21, 17, 8]
         );
-        assert!(found[0].1.ends_with("java/21/bin/java"));
+        assert!(
+            found[0].1.ends_with("21.0.13+9/bin/java"),
+            "{:?}",
+            found[0].1
+        );
+    }
+
+    #[test]
+    fn a_directory_name_gives_its_feature_version() {
+        assert_eq!(major_of("21.0.13+9"), Some(21));
+        assert_eq!(major_of("8u512-b09"), Some(8));
+        assert_eq!(major_of("17.0.21+9"), Some(17));
+        assert_eq!(major_of("junk"), None);
     }
 
     /// Build a tar.gz shaped like Adoptium's: one top-level directory.
@@ -795,8 +849,46 @@ mod tests {
     }
 
     #[test]
-    fn install_directories_are_numbered_by_feature() {
-        assert_eq!(install_dir(Path::new("/mc"), 17), Path::new("/mc/java/17"));
+    fn installing_a_newer_build_removes_the_older_one_of_that_feature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes = tmp.path();
+        for version in ["17.0.21+9", "21.0.1+1", "21.0.13+9"] {
+            fs::create_dir_all(install_dir(runtimes, version).join("bin")).unwrap();
+        }
+        fs::create_dir_all(runtimes.join(".incoming-21")).unwrap();
+        let (sender, receiver) = mpsc::channel();
+
+        let keep = install_dir(runtimes, "21.0.13+9");
+        prune_older(runtimes, 21, &keep, &sender);
+
+        assert!(keep.is_dir(), "the new build stays");
+        assert!(
+            !install_dir(runtimes, "21.0.1+1").exists(),
+            "the old 21 goes"
+        );
+        assert!(
+            install_dir(runtimes, "17.0.21+9").is_dir(),
+            "17 is untouched"
+        );
+        assert!(
+            runtimes.join(".incoming-21").is_dir(),
+            "work dirs are left alone"
+        );
+        assert!(
+            receiver.try_iter().any(|event| matches!(
+                event,
+                Event::Log(line) if line.contains("21.0.1+1")
+            )),
+            "removal is reported"
+        );
+    }
+
+    #[test]
+    fn install_directories_are_named_by_version() {
+        assert_eq!(
+            install_dir(Path::new("/data/运行时"), "17.0.21+9"),
+            Path::new("/data/运行时/17.0.21+9")
+        );
     }
 
     #[test]

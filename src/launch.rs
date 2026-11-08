@@ -88,6 +88,8 @@ pub struct Options {
     pub height: u32,
     /// Skip Java discovery and use this executable.
     pub java: Option<PathBuf>,
+    /// `data/运行时`: where the launcher's own JREs live, if it has any.
+    pub runtimes: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -97,6 +99,7 @@ impl Default for Options {
             width: 854,
             height: 480,
             java: None,
+            runtimes: None,
         }
     }
 }
@@ -137,7 +140,10 @@ pub fn prepare(
             })?;
             (path.clone(), major)
         }
-        None => find_java_in(root, required)?,
+        None => match &options.runtimes {
+            Some(dir) => find_java_in(dir, required)?,
+            None => find_java_from(java_candidates(), required)?,
+        },
     };
 
     let version_dir = root.join("versions").join(version_id);
@@ -759,12 +765,13 @@ fn find_natives(version_dir: &Path, version_id: &str, parents: &[String]) -> Opt
 
 // ===== Java discovery =====
 
-/// Runtimes this launcher downloaded, plus `JAVA_HOME` and `PATH`.
+/// Runtimes this launcher downloaded (from `data/运行时`), plus `JAVA_HOME` and
+/// `PATH`.
 ///
 /// The downloaded ones come first: the user picked one of them on purpose, while
 /// whatever happens to be on `PATH` is an accident of the environment.
-pub fn java_candidates_in(root: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = crate::java::installed(root)
+pub fn java_candidates_in(runtimes: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = crate::java::installed(runtimes)
         .into_iter()
         .map(|(_, java)| java)
         .collect();
@@ -815,12 +822,12 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
     }
 }
 
-/// Find a Java that can run a profile asking for `required`.
+/// Find a Java that can run a profile asking for `required`, preferring the
+/// runtimes this launcher downloaded under `runtimes`.
 ///
-/// An exact version wins; otherwise the smallest acceptable one is used. The
-/// runtimes this launcher downloaded come first, then `JAVA_HOME` and `PATH`.
-pub fn find_java_in(root: &Path, required: u32) -> Result<(PathBuf, u32), String> {
-    find_java_from(java_candidates_in(root), required)
+/// Used by [`prepare`] through [`Options::runtimes`], and by tests.
+pub fn find_java_in(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), String> {
+    find_java_from(java_candidates_in(runtimes), required)
 }
 
 fn find_java_from(candidates: Vec<PathBuf>, required: u32) -> Result<(PathBuf, u32), String> {
@@ -922,11 +929,49 @@ mod tests {
     }
 
     #[test]
+    fn prepare_uses_a_downloaded_runtime_when_it_has_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        fixture(tmp.path());
+        // `data/运行时/8u512-b09/bin/java`, as the Java picker would leave it.
+        let runtimes = tmp.path().join("运行时");
+        let bin = runtimes.join("8u512-b09/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let java = bin.join("java");
+        std::fs::write(
+            &java,
+            "#!/bin/sh\necho 'openjdk version \"1.8.0_512\" 2026-01-01' >&2\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&java).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&java, perms).unwrap();
+        }
+
+        let options = Options {
+            runtimes: Some(runtimes),
+            ..Options::default()
+        };
+        let launch = prepare(
+            tmp.path(),
+            "1.8.9",
+            &Credentials::offline("Steve"),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(launch.command.exe, java, "the downloaded runtime is used");
+        assert_eq!(launch.java_major, 8);
+    }
+
+    #[test]
     fn a_downloaded_runtime_wins_over_the_ones_on_path() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // `<root>/java/21/bin/java`, the layout the Java picker installs.
-        let bin = root.join("java/21/bin");
+        // `data/运行时/21.0.13+9/bin/java`, the layout the Java picker installs.
+        let runtimes = root.join("运行时");
+        let bin = runtimes.join("21.0.13+9/bin");
         std::fs::create_dir_all(&bin).unwrap();
         let java = bin.join("java");
         std::fs::write(
@@ -942,11 +987,11 @@ mod tests {
             std::fs::set_permissions(&java, perms).unwrap();
         }
 
-        assert_eq!(crate::java::installed(root), vec![(21, java.clone())]);
-        let candidates = java_candidates_in(root);
+        assert_eq!(crate::java::installed(&runtimes), vec![(21, java.clone())]);
+        let candidates = java_candidates_in(&runtimes);
         assert_eq!(candidates.first(), Some(&java), "{candidates:?}");
         // And it is what a 21 profile actually picks.
-        let (found, major) = find_java_in(root, 21).expect("a runtime was found");
+        let (found, major) = find_java_in(&runtimes, 21).expect("a runtime was found");
         assert_eq!(found, java);
         assert_eq!(major, 21);
     }

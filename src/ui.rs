@@ -351,7 +351,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
             ("d 下载".to_string(), KeyCode::Char('d')),
             ("x 卸载".to_string(), KeyCode::Char('x')),
             ("a 账户".to_string(), KeyCode::Char('a')),
-            ("J Java".to_string(), KeyCode::Char('J')),
+            ("v Java".to_string(), KeyCode::Char('v')),
             ("h 基础".to_string(), KeyCode::Char('h')),
             ("r 刷新".to_string(), KeyCode::Char('r')),
             ("q 退出".to_string(), KeyCode::Char('q')),
@@ -942,7 +942,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
     let table_block = Block::bordered()
         .title(Line::from(format!(
             " Java 运行时 · {os}/{arch} → {} ",
-            app.root.join("java").display()
+            app.runtimes.display()
         )))
         .border_style(Style::new().fg(DIM));
     let table_inner = table_block.inner(table_area);
@@ -2635,7 +2635,7 @@ mod tests {
             "清华源",
             "官方源（GitHub）",
             "GitHub Proxy",
-            "/mc/java",
+            "运行时",
         ] {
             assert!(screen.contains(text), "missing {text:?}:\n{screen}");
         }
@@ -2664,11 +2664,12 @@ mod tests {
     fn the_java_picker_shows_progress_and_what_is_already_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let dir = crate::java::install_dir(&root, 17);
+        let dir = crate::java::install_dir(&root.join("运行时"), "17.0.21+9");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
         let mut app = App::new(&root, "/acc", vec![], vec![]);
+        app.set_runtimes(root.join("运行时"));
         app.open_java();
         app.handle_java_event(crate::java::Event::Listed(vec![
             java_runtime(17, "17.0.21+9"),

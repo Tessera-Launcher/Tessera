@@ -78,6 +78,7 @@ fn main() -> std::process::ExitCode {
         accounts,
     );
     app.source = settings.source;
+    app.set_runtimes(data.runtimes());
     if let Some(java) = options.java.clone() {
         app.launch_options.java = Some(java);
     }
@@ -174,7 +175,7 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
             java_rx = Some(java::spawn_list());
         }
         if let Some((runtime, urls)) = app.pending_java.take() {
-            java_rx = Some(java::spawn_install(app.root.clone(), runtime, urls));
+            java_rx = Some(java::spawn_install(app.runtimes.clone(), runtime, urls));
         }
 
         // Clipboard and browser are the loop's job too: the state machine only

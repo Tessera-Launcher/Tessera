@@ -18,6 +18,8 @@ pub const APP_IDS_FILE: &str = "azure_app_ids.toml";
 pub const LOGS: &str = "日志";
 /// The vendored download layer's content-addressed cache (`MDT_HOME`).
 pub const CACHE: &str = "缓存";
+/// Downloaded Java runtimes, one directory per version.
+pub const RUNTIMES: &str = "运行时";
 
 /// Resolved portable data directories.
 #[derive(Debug, Clone)]
@@ -64,6 +66,11 @@ impl Paths {
         self.launchers().join(APP_IDS_FILE)
     }
 
+    /// `data/运行时` — the JREs the launcher downloaded, named by version.
+    pub fn runtimes(&self) -> PathBuf {
+        self.root.join(RUNTIMES)
+    }
+
     /// `data/日志`.
     pub fn logs(&self) -> PathBuf {
         self.root.join(LOGS)
@@ -105,6 +112,7 @@ impl Paths {
         std::fs::create_dir_all(self.game())?;
         std::fs::create_dir_all(self.accounts())?;
         std::fs::create_dir_all(self.launchers())?;
+        std::fs::create_dir_all(self.runtimes())?;
         std::fs::create_dir_all(self.logs())?;
         let app_ids = self.app_ids();
         if !app_ids.exists() {
@@ -112,6 +120,18 @@ impl Paths {
         }
         Ok(())
     }
+}
+
+/// `data/运行时` for an account directory at `<data>/凭据/账户`.
+///
+/// [`App`](crate::app::App) keeps its own copy of the data root but is built from
+/// directory paths, so this single derivation keeps the runtime directory next to
+/// the credentials the app already knows about.
+pub fn runtime_dir_beside(accounts_dir: &Path) -> PathBuf {
+    accounts_dir
+        .parent()
+        .and_then(Path::parent)
+        .map_or_else(|| PathBuf::from(RUNTIMES), |data| data.join(RUNTIMES))
 }
 
 /// The directory the executable sits in (falls back to the working directory).
@@ -137,6 +157,7 @@ mod tests {
             Path::new("/opt/yaml/data/凭据/启动器/azure_app_ids.toml")
         );
         assert_eq!(paths.logs(), Path::new("/opt/yaml/data/日志"));
+        assert_eq!(paths.runtimes(), Path::new("/opt/yaml/data/运行时"));
         assert_eq!(paths.cache(), Path::new("/opt/yaml/data/缓存"));
     }
 
@@ -157,6 +178,7 @@ mod tests {
         assert!(paths.game().is_dir());
         assert!(paths.accounts().is_dir());
         assert!(paths.logs().is_dir());
+        assert!(paths.runtimes().is_dir());
         assert!(paths.launchers().is_dir());
         // Seeded once, and never overwritten afterwards.
         assert_eq!(

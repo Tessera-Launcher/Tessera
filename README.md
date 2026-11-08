@@ -17,7 +17,8 @@
 
 ```
 <exe>/data/
-├── 游戏/          versions / libraries / assets / java（--dir 可覆盖）
+├── 游戏/          versions / libraries / assets（--dir 可覆盖）
+├── 运行时/        下载的 JRE，一个版本一个文件夹（21.0.13+9、8u512-b09）
 ├── 凭据/账户/     一个会话一个 json（玩家名.json / 玩家名 (1).json …）
 ├── 凭据/启动器/   azure_app_ids.toml：可选的启动器 app id 清单
 ├── 缓存/          下载缓存（见下）
@@ -41,16 +42,16 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 ```
 
 按键：`↑/k ↓/j` 选择，`g/G` 首尾，`PgUp/PgDn` 滚动日志，`l` 登录，`d` 下载版本，
-`J` 下载 Java（大写，`j` 已经用来往下选了），`a` 账户，`r` 重新扫描，`x` 卸载，
-`q/Esc` 退出，`Enter` 启动。
+`v` 下载 Java（`j` 已经用来往下选了，`v` 取"虚拟机"），`a` 账户，`r` 重新扫描，
+`x` 卸载，`q/Esc` 退出，`Enter` 启动。
 
 ### Java 运行时
 
-`J` 打开，从 Adoptium 取 **8 / 17 / 21 / 25** 四个大版本最新的 **JRE**：
+`v` 打开（点页脚的 `v Java` 也可以），从 Adoptium 取 **8 / 17 / 21 / 25** 四个大版本最新的 **JRE**：
 
 ```
 ┌ 下载 Java（清华源） ────────────────────────────────────────────────────┐
-│┌ Java 运行时 · linux/x64 → /mc/java ──────────────────────────────────┐│
+│┌ Java 运行时 · linux/x64 → /data/运行时 ──────────────────────────────┐│
 ││  版本        最新 JRE              大小        状态                  ││
 ││▶ Java 8   8u512-b09           39.9 MiB   未安装                     ││
 ││  Java 17  17.0.21+9           44.6 MiB   已安装                     ││
@@ -71,9 +72,12 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
     `https://gh-proxy.com/github.com/<owner>/…`，再试 `https://gh-proxy.com/https://github.com/…`，
     最后才直连
 - **下载完必校验 SHA-256**，不匹配就换下一个候选地址重试，全失败则在那一行显示原因
-- 装到 `<root>/java/<大版本>/`（默认 `data/游戏/java/21/`），解包时去掉压缩包的顶层目录，
-  所以 `bin/java` 就在安装目录下；下载/校验/解包都在后台线程，Esc 可以退出界面继续下
-- 启动时 **先看这些下载好的运行时**，再退到 `JAVA_HOME` / `PATH`；`--java <路径>` 依然能强制指定
+- 装到 **`data/运行时/<版本号>/`**（如 `data/运行时/21.0.13+9/`，Java 8 是 `8u512-b09`），
+  不在游戏目录里；解包时去掉压缩包的顶层目录，所以 `bin/java` 就在那个文件夹下。装新版本时
+  同一大版本的旧文件夹会被删掉（日志里写明），不同的 `8 / 17 / 21 / 25` 各自并存
+- 下载/校验/解包都在后台线程，Esc 可以退出界面继续下
+- 启动时 **先在 `data/运行时/` 里按版本号挑**（够用就行，8 的档位仍然钉死 8），
+  再退到 `JAVA_HOME` / `PATH`；`--java <路径>` 依然能强制指定
 - 这个选择**不持久化**：下次打开回到清华源（和 `--mirror` 决定的是两件不同的事）
 
 ### 启动
@@ -343,7 +347,7 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 | 层 | 来源 | 产出 |
 |---|---|---|
 | 下载 | `vendor/mdt-minecraft` | `versions/<id>/` 全部文件 + 完整 version.json |
-| Java | `api.adoptium.net` + 清华/GitHub | `java/<大版本>/` 一个解包好的 JRE |
+| Java | `api.adoptium.net` + 清华/GitHub | `运行时/<版本号>/` 一个解包好的 JRE |
 | 登录 | `vendor/minecraft-auth` | `player_name/uuid/access_token/xuid` |
 | 启动 | 本仓库（待写） | 读 JSON 链 → 合并 → 拼 argv → `Command` |
 
@@ -355,7 +359,7 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 4. **启动** ✅（版本链合并、classpath、natives、占位符、Java 探测；`--print-launch` 可预览）
 5. **令牌自动刷新** ✅（过期才联网，轮换后的 refresh token 写回凭据）
 6. **Java 运行时** ✅（Adoptium 最新 JRE × 8/17/21/25，清华源/官方源+GitHub Proxy，sha256 校验，
-   装到 `data/游戏/java/<大版本>/`，启动时优先使用）
+   装到 `data/运行时/<版本号>/`，启动时优先使用）
 7. 设置页、日志落盘
 
 ## 许可

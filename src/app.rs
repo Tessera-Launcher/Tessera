@@ -589,6 +589,10 @@ impl Button {
 pub struct App {
     pub root: PathBuf,
     pub accounts_dir: PathBuf,
+    /// `data/运行时`: the Java runtimes this launcher downloaded, one directory
+    /// per version. Set by `main` from [`crate::paths::Paths`]; the default is
+    /// derived from `accounts_dir` so tests and `--dir` runs stay self-contained.
+    pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
     pub all_versions: Vec<LocalVersion>,
     /// What the list shows: `all_versions` without base-only entries unless
@@ -658,10 +662,13 @@ impl App {
     ) -> Self {
         let root = root.into();
         let accounts_dir = accounts_dir.into();
+        // `<data>/凭据/账户` → `<data>/运行时`.
+        let runtimes = crate::paths::runtime_dir_beside(&accounts_dir);
         let mut app = App {
             status: format!("扫描 {}", root.display()),
             root,
             accounts_dir,
+            runtimes,
             all_versions: versions,
             versions: Vec::new(),
             show_base_versions: false,
@@ -698,6 +705,7 @@ impl App {
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
         app.apply_version_filter();
+        app.launch_options.runtimes = Some(app.runtimes.clone());
 
         let status = app.status.clone();
         app.log(status);
@@ -1251,8 +1259,8 @@ impl App {
             KeyCode::Char('l') => self.open_login(),
             KeyCode::Char('a') => self.open_accounts(),
             KeyCode::Char('d') => self.open_download(),
-            // `j` already moves the selection; Java gets the shifted one.
-            KeyCode::Char('J') => self.open_java(),
+            // `j` already moves the selection; the Java screen gets `v` (虚拟机).
+            KeyCode::Char('v') => self.open_java(),
             // Two presses, like removing an account: deleting a whole version
             // directory is not something a single stray key may do.
             KeyCode::Char('x') | KeyCode::Delete => self.request_uninstall(),
@@ -1430,6 +1438,12 @@ impl App {
     /// Label for the active download source.
     pub fn source_label(&self) -> &'static str {
         self.source.label()
+    }
+
+    /// Where the launcher's own Java runtimes live; launching looks there first.
+    pub fn set_runtimes(&mut self, runtimes: PathBuf) {
+        self.runtimes = runtimes.clone();
+        self.launch_options.runtimes = Some(runtimes);
     }
 
     /// Switch where downloads come from. Deliberately not persisted: the next
@@ -1806,7 +1820,7 @@ impl App {
     /// Open the Java picker and ask the loop for Adoptium's list.
     pub fn open_java(&mut self) {
         self.java = JavaUi::default();
-        self.java.installed = crate::java::installed(&self.root);
+        self.java.installed = crate::java::installed(&self.runtimes);
         self.screen = Screen::Java;
         self.pending_java_list = true;
         self.status = "Java：正在查询 Adoptium".to_string();
@@ -1950,7 +1964,7 @@ impl App {
             } => {
                 self.java.stage = JavaStage::Done;
                 self.java.progress = (0, 0, 0.0);
-                self.java.installed = crate::java::installed(&self.root);
+                self.java.installed = crate::java::installed(&self.runtimes);
                 self.java.message = Some(format!("Java {major} {version} 已安装"));
                 self.status = format!("Java {major} 已安装：{}", java.display());
                 self.log(format!("Java {major} {version} → {}", java.display()));
@@ -3604,6 +3618,20 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     }
 
     #[test]
+    fn launching_looks_in_the_runtime_directory_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new(tmp.path(), "/acc", vec![], vec![]);
+        // The default derivation puts it next to the credentials; `main` overrides
+        // it with `data/运行时`, and either way launching has to see it.
+        app.set_runtimes(tmp.path().join("运行时"));
+        assert_eq!(
+            app.launch_options.runtimes.as_deref(),
+            Some(tmp.path().join("运行时").as_path())
+        );
+        assert_eq!(app.runtimes, tmp.path().join("运行时"));
+    }
+
+    #[test]
     fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
         let mut app = app();
         app.open_java();
@@ -3674,11 +3702,12 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_finished_java_download_is_recorded_and_shown() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let dir = crate::java::install_dir(&root, 21);
+        let dir = crate::java::install_dir(&root.join("运行时"), "21.0.1+1");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
         let mut app = App::new(&root, "/acc", vec![], vec![]);
+        app.set_runtimes(root.join("运行时"));
         app.open_java();
         app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
