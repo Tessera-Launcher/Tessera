@@ -65,10 +65,18 @@ public final class Agent {
         for (int tick = 0; tick < 12000; tick++) { // about two minutes
             try {
                 Object gui = guiField.get(minecraft);
-                Method screenMethod = gui.getClass().getMethod("screen");
-                Method overlayMethod = gui.getClass().getMethod("overlay");
-                Object screen = screenMethod.invoke(gui);
-                Object overlay = overlayMethod.invoke(gui);
+                if (gui == null) {
+                    // On some 26.3+ builds getInstance() becomes non-null
+                    // before the final gui field is assigned. Do not treat
+                    // that as "menu settled" and exit the watcher.
+                    sleep(10);
+                    continue;
+                }
+                // 26.2+ keeps screen/overlay in Gui and exposes screen()/overlay().
+                // 26.1 keeps them in Minecraft itself (screen is public, overlay
+                // is private) and Gui has neither method. Read both shapes.
+                Object screen = readScreen(gui, minecraft);
+                Object overlay = readOverlay(gui, minecraft);
                 boolean settled = true;
 
                 if (screen != null) {
@@ -92,7 +100,7 @@ public final class Agent {
                         // stale timestamp and never reached the >=2s removal.
                         long fadeOut = getLong(overlay, "fadeOutStart", -1L);
                         if (fadeOut > 0L && overlay != fadeOutFixed) {
-                            if (removeOverlay(gui, overlay)) {
+                            if (removeOverlay(gui, minecraft, overlay)) {
                                 fadeOutFixed = overlay;
                                 if (Boolean.getBoolean("yaml.fastmenu.debug")) {
                                     System.out.println("[yaml-fastmenu] removed LoadingOverlay");
@@ -127,15 +135,79 @@ public final class Agent {
         }
     }
 
-    private static boolean removeOverlay(Object gui, Object overlay) {
-        try {
-            Class<?> overlayType = overlay.getClass().getSuperclass();
-            Method setter = gui.getClass().getMethod("setOverlay", overlayType);
-            setter.invoke(gui, new Object[] { null });
-            return true;
-        } catch (Throwable ignored) {
-            return false;
+    /// 26.2+ has Gui.setOverlay; 26.1 has Minecraft.setOverlay.
+    private static boolean removeOverlay(Object gui, Object minecraft, Object overlay) {
+        for (Object target : new Object[] { gui, minecraft }) {
+            Method setter = setOverlayMethod(target.getClass(), overlay);
+            if (setter == null) {
+                continue;
+            }
+            try {
+                setter.invoke(target, new Object[] { null });
+                return true;
+            } catch (Throwable ignored) {
+                // Try the other owner.
+            }
         }
+        return false;
+    }
+
+    private static Method setOverlayMethod(Class<?> type, Object overlay) {
+        for (Method method : type.getMethods()) {
+            if (!method.getName().equals("setOverlay")) {
+                continue;
+            }
+            Class<?>[] parameters = method.getParameterTypes();
+            if (parameters.length == 1 && parameters[0].isInstance(overlay)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /// 26.2+ exposes Gui.screen()/overlay(); 26.1 stores both on Minecraft.
+    private static Object readScreen(Object gui, Object minecraft) {
+        return callOrField(gui, minecraft, "screen");
+    }
+
+    private static Object readOverlay(Object gui, Object minecraft) {
+        return callOrField(gui, minecraft, "overlay");
+    }
+
+    private static Object callOrField(Object gui, Object minecraft, String name) {
+        try {
+            Method method = gui.getClass().getMethod(name);
+            return method.invoke(gui);
+        } catch (NoSuchMethodException ignored) {
+            // Older 26.x: the value lives directly on Minecraft.
+        } catch (Throwable ignored) {
+            return null;
+        }
+        return readField(minecraft, name);
+    }
+
+    private static Object readField(Object target, String name) {
+        try {
+            Field field = findField(target.getClass(), name);
+            if (field == null) {
+                return null;
+            }
+            field.setAccessible(true);
+            return field.get(target);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Field findField(Class<?> type, String name) {
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                return current.getDeclaredField(name);
+            } catch (NoSuchFieldException ignored) {
+                // Keep walking up.
+            }
+        }
+        return null;
     }
 
     private static Method utilMillis;
@@ -158,7 +230,10 @@ public final class Agent {
 
     private static boolean setBoolean(Object target, String name, boolean value) {
         try {
-            Field field = target.getClass().getDeclaredField(name);
+            Field field = findField(target.getClass(), name);
+            if (field == null) {
+                return false;
+            }
             field.setAccessible(true);
             if (field.getBoolean(target) == value) {
                 return false;
@@ -172,7 +247,10 @@ public final class Agent {
 
     private static long getLong(Object target, String name, long fallback) {
         try {
-            Field field = target.getClass().getDeclaredField(name);
+            Field field = findField(target.getClass(), name);
+            if (field == null) {
+                return fallback;
+            }
             field.setAccessible(true);
             return field.getLong(target);
         } catch (Throwable ignored) {
@@ -182,7 +260,10 @@ public final class Agent {
 
     private static void setLong(Object target, String name, long value) {
         try {
-            Field field = target.getClass().getDeclaredField(name);
+            Field field = findField(target.getClass(), name);
+            if (field == null) {
+                return;
+            }
             field.setAccessible(true);
             field.setLong(target, value);
         } catch (Throwable ignored) {

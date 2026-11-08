@@ -312,6 +312,8 @@ Mod Loader 安装都不做这一步。
   `fadeInStart` 拨到过去、把 `TitleScreen.fading` 置 false
 - 不写 `fadeOutStart` 是为了兼容 AOT cache：26.2 的缓存训练时带过旧 agent，
   改写时间戳会被缓存代码看成未来时间而永久停在 logo；直接移除 overlay 与缓存无关
+- 26.1 的 `screen`/`overlay` 在 `Minecraft` 上，26.2+ 才移到 `Gui`；agent 两种
+  布局都读取，并分别调用 `Minecraft.setOverlay` 或 `Gui.setOverlay`
 - 只读反射/公开 `setOverlay`，不修改 client jar；字段或方法不存在就静默 no-op
 - 对 26.x 原版、Fabric/Forge/NeoForge 等 profile 都生效（只要 26.x 类名不变）
 - Agent 同时参与 AOT 训练和生产启动，保证 AOT cache 的 JVM 参数一致
