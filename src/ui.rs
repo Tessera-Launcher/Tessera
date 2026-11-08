@@ -861,10 +861,11 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
 /// The account manager, drawn over the main screen.
 /// Draw one hint row whose key words are clickable.
 ///
-/// `segments` are drawn left to right. A segment carrying a key is underlined and
-/// recorded in [`Layout::buttons`], so a click replays that key through the same
-/// path the footer buttons use — the drawn hint and the binding cannot drift.
-/// Segments without a key are plain text in `color`.
+/// `segments` are drawn left to right. A segment carrying a key is the whole
+/// phrase the footer would draw (`Enter 切换`, not just `Enter`): it is underlined
+/// as one unit and recorded in [`Layout::buttons`], so a click anywhere on the
+/// words replays that key through the same path the footer buttons use. Segments
+/// without a key are plain text in `color`.
 fn draw_hint(
     frame: &mut Frame,
     area: Rect,
@@ -1010,10 +1011,9 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
             hint_area,
             &[
                 (" 再按一次 ", None),
-                ("d", Some(KeyCode::Char('d'))),
-                (" 确认移除 · ", None),
-                ("Esc", Some(KeyCode::Esc)),
-                (" 取消", None),
+                ("d 确认移除", Some(KeyCode::Char('d'))),
+                (" · ", None),
+                ("Esc 取消", Some(KeyCode::Esc)),
             ],
             BROKEN,
             app,
@@ -1024,14 +1024,13 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
             hint_area,
             &[
                 (" ", None),
-                ("Enter", Some(KeyCode::Enter)),
-                (" 切换 · ", None),
-                ("d", Some(KeyCode::Char('d'))),
-                (" 移除 · ", None),
-                ("l", Some(KeyCode::Char('l'))),
-                (" 登录新账户 · ", None),
-                ("Esc", Some(KeyCode::Esc)),
-                (" 关闭", None),
+                ("Enter 切换", Some(KeyCode::Enter)),
+                (" · ", None),
+                ("d 移除", Some(KeyCode::Char('d'))),
+                (" · ", None),
+                ("l 登录新账户", Some(KeyCode::Char('l'))),
+                (" · ", None),
+                ("Esc 关闭", Some(KeyCode::Esc)),
             ],
             DIM,
             app,
@@ -1130,11 +1129,11 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 frame,
                 Rect::new(inner.x, hint_row, inner.width, 1),
                 &[
-                    (" ↑↓ 选择 · ", None),
-                    ("Enter", Some(KeyCode::Enter)),
-                    (" 下一步 · ", None),
-                    ("Esc", Some(KeyCode::Esc)),
-                    (" 取消", None),
+                    (" ↑↓ 选择", None),
+                    (" · ", None),
+                    ("Enter 下一步", Some(KeyCode::Enter)),
+                    (" · ", None),
+                    ("Esc 取消", Some(KeyCode::Esc)),
                 ],
                 DIM,
                 app,
@@ -1164,10 +1163,9 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Rect::new(inner.x, hint_row, inner.width, 1),
                     &[
                         (" ", None),
-                        ("Enter", Some(KeyCode::Enter)),
-                        (" 开始登录 · ", None),
-                        ("Esc", Some(KeyCode::Esc)),
-                        (" 返回", None),
+                        ("Enter 开始登录", Some(KeyCode::Enter)),
+                        (" · ", None),
+                        ("Esc 返回", Some(KeyCode::Esc)),
                     ],
                     DIM,
                     app,
@@ -1183,8 +1181,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                             None,
                         ),
                         (" · ", None),
-                        ("Esc", Some(KeyCode::Esc)),
-                        (" 返回", None),
+                        ("Esc 返回", Some(KeyCode::Esc)),
                     ],
                     BROKEN,
                     app,
@@ -1212,10 +1209,9 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     Rect::new(inner.x, hint_row, inner.width, 1),
                     &[
                         (" ", None),
-                        ("Esc", Some(KeyCode::Esc)),
-                        (" 返回 · 编辑上面这个文件后按 ", None),
-                        ("Enter", Some(KeyCode::Enter)),
-                        (" 重试", None),
+                        ("Esc 返回", Some(KeyCode::Esc)),
+                        (" · 编辑上面这个文件后按 ", None),
+                        ("Enter 重试", Some(KeyCode::Enter)),
                     ],
                     DIM,
                     app,
@@ -1279,11 +1275,11 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     frame,
                     Rect::new(inner.x, hint_row, inner.width, 1),
                     &[
-                        (" ↑↓ 选择 · ", None),
-                        ("Enter", Some(KeyCode::Enter)),
-                        (" 登录 · ", None),
-                        ("Esc", Some(KeyCode::Esc)),
-                        (" 返回", None),
+                        (" ↑↓ 选择", None),
+                        (" · ", None),
+                        ("Enter 登录", Some(KeyCode::Enter)),
+                        (" · ", None),
+                        ("Esc 返回", Some(KeyCode::Esc)),
                         (&tail, None),
                     ],
                     DIM,
@@ -1317,8 +1313,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 Rect::new(inner.x, hint_row, inner.width, 1),
                 &[
                     (" 等待浏览器确认… ", None),
-                    ("Esc", Some(KeyCode::Esc)),
-                    (" 取消", None),
+                    ("Esc 取消", Some(KeyCode::Esc)),
                 ],
                 DIM,
                 app,
@@ -1346,11 +1341,11 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 frame,
                 Rect::new(inner.x, hint_row, inner.width, 1),
                 &[
-                    (" 凭据已写入 data/凭据/账户/ · ", None),
-                    ("Enter", Some(KeyCode::Enter)),
-                    (" 返回 · ", None),
-                    ("Esc", Some(KeyCode::Esc)),
-                    (" 关闭", None),
+                    (" 凭据已写入 data/凭据/账户/", None),
+                    (" · ", None),
+                    ("Enter 返回", Some(KeyCode::Enter)),
+                    (" · ", None),
+                    ("Esc 关闭", Some(KeyCode::Esc)),
                 ],
                 DIM,
                 app,
@@ -1374,8 +1369,8 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 Rect::new(inner.x, hint_row, inner.width, 1),
                 &[
                     (" ", None),
-                    ("Esc", Some(KeyCode::Esc)),
-                    (" 返回 · 检查网络/代理后重试", None),
+                    ("Esc 返回", Some(KeyCode::Esc)),
+                    (" · 检查网络/代理后重试", None),
                 ],
                 DIM,
                 app,
@@ -1845,10 +1840,15 @@ mod tests {
         app.open_accounts();
         render(&mut app, 100, 28);
 
-        // `l 登录新账户` in the popup opens the login overlay.
+        // `l 登录新账户` in the popup opens the login overlay. The whole phrase is
+        // the button, so clicking the words — not just the `l` — has to work.
         let area = popup_button(&app, KeyCode::Char('l'), app.layout.accounts_popup);
-        let (x, y) = middle(area);
-        app.handle_mouse(click(x, y));
+        assert_eq!(
+            area.width as usize,
+            cell_width_of("l 登录新账户"),
+            "the whole phrase is clickable"
+        );
+        app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(app.screen, Screen::Login);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Accounts);
@@ -1889,10 +1889,15 @@ mod tests {
         app.open_login();
         render(&mut app, 100, 28);
 
-        // "Enter 下一步" on the official identity starts the flow.
+        // "Enter 下一步" on the official identity starts the flow, and the words
+        // after the key are part of the button.
         let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
-        let (x, y) = middle(area);
-        app.handle_mouse(click(x, y));
+        assert_eq!(
+            area.width as usize,
+            cell_width_of("Enter 下一步"),
+            "the whole phrase is clickable"
+        );
+        app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(app.pending_login, Some(crate::login::Identity::Official));
 
         // "Esc 取消" while waiting cancels it.
@@ -1935,11 +1940,11 @@ mod tests {
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.login.step, crate::app::LoginStep::ChooseAppIds);
 
-        // "Enter 登录" picks the highlighted entry.
+        // "Enter 登录" picks the highlighted entry; the words count too.
         render(&mut app, 100, 28);
         let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
-        let (x, y) = middle(area);
-        app.handle_mouse(click(x, y));
+        assert_eq!(area.width as usize, cell_width_of("Enter 登录"));
+        app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(
             app.pending_login,
             Some(crate::login::Identity::Saved {
@@ -1965,8 +1970,8 @@ mod tests {
         });
         render(&mut app, 100, 28);
         let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
-        let (x, y) = middle(area);
-        app.handle_mouse(click(x, y));
+        assert_eq!(area.width as usize, cell_width_of("Enter 返回"));
+        app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(app.screen, Screen::Main);
     }
 
