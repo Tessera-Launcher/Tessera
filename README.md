@@ -12,18 +12,21 @@
 
 ### 便携布局
 
-二进制所在目录 + `data/` 就是全部，**启动器自己不写用户主目录**：
+二进制所在目录 + `data/` 就是全部，**启动器不写用户主目录**：
 
 ```
 <exe>/data/
 ├── 游戏/          versions / libraries / assets（--dir 可覆盖）
 ├── 凭据/账户/     一个账户一个 json（玩家名.json）
+├── 缓存/          下载缓存（见下）
 └── 日志/
 ```
 
-例外：vendor 里的 MDT 有一个全局内容寻址缓存 `$HOME/.mdt/registry`（可用 `MDT_HOME`
-覆盖）。`assets/objects/` 里的文件是那个缓存的**硬链接**，所以同一份数据在磁盘上只
-占一次空间；这也是卸载后资产清理释放不出空间的原因（见下面的卸载一节）。
+`缓存/` 是 vendor 里的 MDT 的内容寻址注册表：它默认写 `$HOME/.mdt/registry`，
+启动时被 `MDT_HOME` 指到 `data/缓存`，实际路径是 `data/缓存/.mdt/registry`。
+`assets/objects/` 里的文件是那个缓存的**硬链接**，所以同一份数据在磁盘上只占一次
+空间（也是卸载后资产清理释放不出空间的原因，见卸载一节）。环境里已有 `MDT_HOME`
+时不覆盖，方便临时改用别处。
 
 `YAML_DATA` 可覆盖 `data` 根目录（测试和源码运行时用）。
 
@@ -53,11 +56,14 @@ yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
 - **classpath**：按 `rules`（OS / arch / features）过滤，按 `downloads.artifact.path`
   取路径，没有就按 Maven 坐标推导；子 profile 在前（Loader 才能覆盖）
 - 客户端 jar 找 `<id>.jar` → `<父id>.jar` → 目录里任意 jar（Loader 是复制父目录来的）
-- **natives**：找 `<id>-natives` 或 `<父id>-natives`（都是 MDT 安装时解压好的），
-  写进 `-Djava.library.path`；1.19+ 没有 natives 目录也不影响
+- **natives**：找 `<id>-natives` 或 `<父id>-natives`，写进 `-Djava.library.path`；
+  1.19+ 没有 natives 目录也不影响（现代版本的 natives 直接在 classpath 上）
 - **占位符**：`${auth_player_name}` `${auth_uuid}` `${auth_access_token}` `${assets_root}`
   `${assets_index_name}` `${game_directory}` `${user_type}` `${classpath}`
-  `${library_directory}` `${resolution_width}` 等；未识别的占位符原样保留，便于排查
+  `${library_directory}` `${resolution_width}` `${natives_directory}` 等；未识别的
+  占位符原样保留，便于排查。`natives_directory` 一律替换成**绝对路径**——游戏的工作
+  目录是版本目录，相对路径会被解析到错的地方（曾经因此在每个版本目录里生成一个
+  叫 `${natives_directory}` 的目录，25 MB）
 - 老版本用 `minecraftArguments`（按空白切分），新版本用 `arguments.game/jvm` +
   rules 求值；缺 `--width/--height` 时补上
 - 内存 `-Xmx`、`-Dminecraft.launcher.brand/version`，macOS 自动加 `-XstartOnFirstThread`
@@ -148,9 +154,10 @@ yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
 - 引用集是**故意取的超集**（不做 `rules` 过滤），宁可少删不可错删
 - 有任何版本的 JSON 读不出来（比如装了一半）就**整个跳过清理**并在状态栏说明：那种
   情况下它的引用无从得知，不能赌
-- 资产的实际释放很有限：`assets/objects/` 是 `~/.mdt` 全局缓存的硬链接，删掉链接
-  不释放空间（日志里会明确写“N 个文件是全局缓存的硬链接”）。真正的空间在
-  `~/.mdt`，它不属于本启动器，也不按单个安装计数，所以不动
+- 资产的实际释放很有限：`assets/objects/` 是 `data/缓存/.mdt/registry` 的硬链接，
+  删掉链接不释放空间（日志里会明确写“N 个文件是全局缓存的硬链接”）。真正的空间在
+  注册表里，它按 Minecraft 版本分目录、按 Maven 路径分文件，还没做清理（需要同一套
+  引用计数 + 按 inode 归组才能把释放量算对）
 - 移动选择、按任意其他键、`r` 刷新、`h` 切换都会取消待确认——"再按一次"不能跨过
   别的操作生效
 - 失败会说明原因并保留列表行；删到一半失败时，状态栏会写清楚哪些已经删掉了

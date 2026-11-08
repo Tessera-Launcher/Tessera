@@ -166,6 +166,18 @@ pub fn prepare(
     classpath.push(client_jar);
 
     let natives = find_natives(&version_dir, version_id, &merged.parents);
+    // Absolute, because the game runs with the version directory as its cwd: a
+    // relative `java.library.path` would be resolved against that directory and
+    // the natives would land somewhere nobody looks.
+    let natives_string = std::path::absolute(natives.as_deref().unwrap_or(&version_dir.join("natives")))
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| {
+            natives
+                .as_ref()
+                .map_or_else(|| version_dir.join("natives").display().to_string(), |path| {
+                    path.display().to_string()
+                })
+        });
     let separator = if cfg!(windows) { ";" } else { ":" };
     let classpath_string = classpath
         .iter()
@@ -201,6 +213,12 @@ pub fn prepare(
     vars.insert("library_directory", libraries_dir.display().to_string());
     vars.insert("resolution_width", options.width.to_string());
     vars.insert("resolution_height", options.height.to_string());
+    // Modern profiles write `-Djava.library.path=${natives_directory}` and three
+    // more `-D…=${natives_directory}/<sub>` flags (jna, lwjgl, netty). Without
+    // this entry `substitute` leaves them literal, and those libraries then
+    // create a directory *called* `${natives_directory}` relative to the game
+    // directory — 25 MB of duplicated natives per version.
+    vars.insert("natives_directory", natives_string.clone());
 
     let mut features: HashMap<&str, bool> = HashMap::new();
     features.insert("is_demo_user", false);
@@ -218,12 +236,16 @@ pub fn prepare(
     }
 
     // Required no matter what the profile claimed.
-    let natives_string = natives
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| version_dir.join("natives").display().to_string());
     args.push(format!("-Xmx{}M", options.memory_mb));
-    args.push(format!("-Djava.library.path={natives_string}"));
+    // Only if the profile did not ask for a natives directory itself: ours is the
+    // same path, but a duplicate `-D` reads like a conflict when debugging
+    // `--print-launch`.
+    if !args
+        .iter()
+        .any(|arg| arg.starts_with("-Djava.library.path="))
+    {
+        args.push(format!("-Djava.library.path={natives_string}"));
+    }
     args.push("-Dminecraft.launcher.brand=yaml".to_string());
     args.push(format!(
         "-Dminecraft.launcher.version={}",
@@ -1031,6 +1053,63 @@ mod tests {
             std::fs::set_permissions(&path, perms).unwrap();
         }
         path
+    }
+
+    #[test]
+    fn natives_placeholders_are_substituted_with_an_absolute_path() {
+        // Modern profiles pass four `-D…=${natives_directory}` flags. Leaving them
+        // literal makes JNA/LWJGL/Netty create a directory *named*
+        // `${natives_directory}` relative to the game directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_version(
+            root,
+            "26.3",
+            serde_json::json!({
+                "id": "26.3",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "assetIndex": { "id": "34" },
+                "javaVersion": { "majorVersion": 21 },
+                "arguments": {
+                    "jvm": [
+                        "-Djava.library.path=${natives_directory}/java",
+                        "-Djna.tmpdir=${natives_directory}/jna",
+                        "-Dorg.lwjgl.system.SharedLibraryExtractPath=${natives_directory}/lwjgl",
+                        "-Dio.netty.native.workdir=${natives_directory}/netty"
+                    ],
+                    "game": []
+                },
+                "libraries": []
+            }),
+        );
+        std::fs::write(root.join("versions/26.3/26.3.jar"), b"jar").unwrap();
+        std::fs::create_dir_all(root.join("versions/26.3/26.3-natives")).unwrap();
+
+        let options = Options {
+            java: Some(fake_java(&root.join("jdk"), 21)),
+            ..Options::default()
+        };
+        let launch = prepare(root, "26.3", &Credentials::offline("Steve"), &options).unwrap();
+        let args = &launch.command.args;
+        let natives = root.join("versions/26.3/26.3-natives");
+
+        assert!(
+            args.iter().any(|arg| arg
+                == &format!("-Djava.library.path={}/java", natives.display())),
+            "the profile's own flag must point at the real directory: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.contains("${")),
+            "unsubstituted placeholder: {args:?}"
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.starts_with("-Djava.library.path="))
+                .count(),
+            1,
+            "the profile already set it, so the launcher must not add a second: {args:?}"
+        );
     }
 
     #[test]

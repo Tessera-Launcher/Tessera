@@ -12,6 +12,8 @@ pub const GAME: &str = "游戏";
 pub const CREDENTIALS: &str = "凭据";
 pub const ACCOUNTS: &str = "账户";
 pub const LOGS: &str = "日志";
+/// The vendored download layer's content-addressed cache (`MDT_HOME`).
+pub const CACHE: &str = "缓存";
 
 /// Resolved portable data directories.
 #[derive(Debug, Clone)]
@@ -53,6 +55,30 @@ impl Paths {
         self.root.join(LOGS)
     }
 
+    /// `data/缓存` — the vendored download layer's global registry lives here.
+    pub fn cache(&self) -> PathBuf {
+        self.root.join(CACHE)
+    }
+
+    /// Point the vendored downloader's registry at [`Paths::cache`].
+    ///
+    /// MDT keeps a content-addressed cache at `$MDT_HOME/.mdt/registry` and
+    /// hardlinks `assets/objects` from it. Without this it would default to
+    /// `$HOME/.mdt`, i.e. write outside the portable tree and own disk space the
+    /// launcher cannot account for. An `MDT_HOME` already in the environment
+    /// wins, so power users and tests can still redirect it.
+    ///
+    /// Call once, before the first download: MDT reads the variable on every use
+    /// but the registry location is baked into paths built earlier than that.
+    pub fn adopt_vendor_cache(&self) -> std::io::Result<PathBuf> {
+        let cache = self.cache();
+        std::fs::create_dir_all(&cache)?;
+        if std::env::var_os("MDT_HOME").is_none() {
+            std::env::set_var("MDT_HOME", &cache);
+        }
+        Ok(cache)
+    }
+
     /// Create the whole tree; safe to call every start.
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.game())?;
@@ -79,6 +105,16 @@ mod tests {
         assert_eq!(paths.game(), Path::new("/opt/yaml/data/游戏"));
         assert_eq!(paths.accounts(), Path::new("/opt/yaml/data/凭据/账户"));
         assert_eq!(paths.logs(), Path::new("/opt/yaml/data/日志"));
+        assert_eq!(paths.cache(), Path::new("/opt/yaml/data/缓存"));
+    }
+
+    #[test]
+    fn adopting_the_vendor_cache_creates_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::at(tmp.path());
+        let cache = paths.adopt_vendor_cache().unwrap();
+        assert_eq!(cache, tmp.path().join("缓存"));
+        assert!(cache.is_dir());
     }
 
     #[test]

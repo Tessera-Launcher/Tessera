@@ -49,8 +49,22 @@ fn main() -> std::process::ExitCode {
         eprintln!("无法创建 {}: {error}", data.root().display());
         return std::process::ExitCode::FAILURE;
     }
+    // Keep the vendor cache inside the portable tree: it holds every asset byte
+    // (`assets/objects` is hardlinked from it), so leaving it in `$HOME` would
+    // both break the "one folder" promise and hide ~600 MB the launcher cannot
+    // account for.
+    let cache = match data.adopt_vendor_cache() {
+        Ok(cache) => cache,
+        Err(error) => {
+            eprintln!("无法创建 {}: {error}", data.cache().display());
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
+    // `--dir` may be relative, and the game runs with the version directory as
+    // its cwd, so every path baked into the launch command has to be absolute.
     let root = options.root.clone().unwrap_or_else(|| data.game());
+    let root = std::path::absolute(&root).unwrap_or(root);
     let accounts = accounts::list(&data.accounts());
     let settings = Settings::default().with_source(options.source);
     let mut app = App::new(
@@ -66,6 +80,7 @@ fn main() -> std::process::ExitCode {
     app.launch_options.memory_mb = options.memory;
     app.log(format!("数据目录 {}", data.root().display()));
     app.log(format!("凭据目录 {}", data.accounts().display()));
+    app.log(format!("下载缓存 {}", cache.display()));
 
     if options.login {
         app.open_login();
