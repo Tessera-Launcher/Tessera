@@ -646,6 +646,9 @@ pub struct App {
     pub log_scroll: usize,
     /// When and where the last left click landed in the version list.
     last_click: Option<(Instant, usize)>,
+    /// The same for the download picker's version rows, and the Java rows.
+    download_click: Option<(Instant, usize)>,
+    java_click: Option<(Instant, usize)>,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
     /// MDT's `MDT_HOME` when it lives inside this installation's data directory,
@@ -699,6 +702,8 @@ impl App {
             list_offset: 0,
             log_scroll: 0,
             last_click: None,
+            download_click: None,
+            java_click: None,
             uninstall_confirm: None,
             cache: None,
         };
@@ -1665,7 +1670,22 @@ impl App {
                     self.download.focus = PickerFocus::Versions;
                     let drawn = self.layout.download_offset
                         + (row - self.layout.download_versions.y) as usize;
-                    self.pick_version_row(drawn);
+                    // A folded group unfolds on the first click either way; a
+                    // second click on the same row starts the install.
+                    let now = Instant::now();
+                    let double = matches!(
+                        self.download_click,
+                        Some((at, previous))
+                            if previous == drawn && now.duration_since(at) <= DOUBLE_CLICK
+                    );
+                    if double {
+                        self.download_click = None;
+                        self.pick_version_row(drawn);
+                        self.start_install();
+                    } else {
+                        self.download_click = Some((now, drawn));
+                        self.pick_version_row(drawn);
+                    }
                 } else if over_loaders_rows {
                     self.download.focus = PickerFocus::Loaders;
                     let index = (row - self.layout.download_loaders.y) as usize;
@@ -1994,9 +2014,21 @@ impl App {
                     .position(|area| area.contains(column, row))
                 {
                     self.java.selected = index;
-                    // A click downloads, like Enter, unless it is already running.
-                    if self.java.stage != JavaStage::Downloading {
-                        self.start_java_download();
+                    // Selecting is one click; downloading a 50 MiB runtime takes a
+                    // second one, the way the version list launches.
+                    let now = Instant::now();
+                    let double = matches!(
+                        self.java_click,
+                        Some((at, previous))
+                            if previous == index && now.duration_since(at) <= DOUBLE_CLICK
+                    );
+                    if double {
+                        self.java_click = None;
+                        if self.java.stage != JavaStage::Downloading {
+                            self.start_java_download();
+                        }
+                    } else {
+                        self.java_click = Some((now, index));
                     }
                 } else if let Some(index) = self
                     .layout
@@ -3069,6 +3101,14 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
+    /// A click whose predecessors are ancient, so it can never pair up into a
+    /// double click (which would start a download the test did not ask for).
+    fn click_later(app: &mut App, column: u16, row: u16) {
+        app.download_click = Some((Instant::now() - DOUBLE_CLICK * 2, usize::MAX));
+        app.java_click = Some((Instant::now() - DOUBLE_CLICK * 2, usize::MAX));
+        app.handle_mouse(click(column, row));
+    }
+
     fn click(column: u16, row: u16) -> MouseEvent {
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -3798,7 +3838,12 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         app.handle_mouse(click(10, 7));
         assert_eq!(app.java.selected, 2);
-        assert!(app.pending_java.is_some(), "a click starts the download");
+        assert!(
+            app.pending_java.is_none(),
+            "one click only selects — a runtime is 50 MiB"
+        );
+        app.handle_mouse(click(10, 7));
+        assert!(app.pending_java.is_some(), "the second click downloads");
 
         app.pending_java = None;
         app.handle_mouse(click(60, 12));
@@ -3893,7 +3938,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = tree_picker();
 
         // Row 1 is the folded cycle.
-        app.handle_mouse(click(10, 6));
+        click_later(&mut app, 10, 6);
         assert_eq!(app.download.expanded, ["1.21.9-pre".to_string()]);
         assert_eq!(app.download.rows.len(), 6, "header plus three members");
         assert_eq!(
@@ -3903,14 +3948,14 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         );
 
         // The opened header is still row 1, now a toggle that folds it back.
-        app.handle_mouse(click(10, 6));
+        click_later(&mut app, 10, 6);
         assert!(app.download.expanded.is_empty());
         assert_eq!(app.download.rows.len(), 3);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
 
         // And a member row selects that member.
-        app.handle_mouse(click(10, 6));
-        app.handle_mouse(click(10, 8)); // second member: pre2
+        click_later(&mut app, 10, 6);
+        click_later(&mut app, 10, 8); // second member: pre2
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
     }
 
@@ -4084,6 +4129,44 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.download.focus, PickerFocus::Versions);
         // 1.12.2 rules out Fabric and Quilt, so the loader list is rebuilt.
         assert!(!app.download.loaders.contains(&Loader::Fabric));
+    }
+
+    #[test]
+    fn double_clicking_a_picker_version_starts_the_install() {
+        let mut app = laid_out_picker();
+        // One click only selects.
+        app.handle_mouse(click(10, 6));
+        assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
+        assert!(app.pending_install.is_none(), "one click must not install");
+
+        // The second click on the same row starts it.
+        app.handle_mouse(click(10, 6));
+        let (version, _) = app.pending_install.clone().expect("an install started");
+        assert_eq!(version, "1.19.2");
+        assert_eq!(app.download.stage, DownloadStage::Installing);
+        assert_eq!(app.screen, Screen::Installing);
+    }
+
+    #[test]
+    fn a_double_click_that_is_too_slow_only_selects() {
+        let mut app = laid_out_picker();
+        app.handle_mouse(click(10, 6));
+        // Pretend the first click was two seconds ago.
+        app.download_click = Some((Instant::now() - std::time::Duration::from_secs(2), 1));
+        app.handle_mouse(click(10, 6));
+        assert!(
+            app.pending_install.is_none(),
+            "clicks that far apart are separate"
+        );
+    }
+
+    #[test]
+    fn double_clicking_a_different_row_does_not_install() {
+        let mut app = laid_out_picker();
+        app.handle_mouse(click(10, 5));
+        app.handle_mouse(click(10, 6));
+        assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
+        assert!(app.pending_install.is_none());
     }
 
     #[test]

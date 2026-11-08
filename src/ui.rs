@@ -1096,6 +1096,66 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// The running install: log in the middle, progress pinned at the bottom.
+/// Draw a gauge's label so it stays readable over both halves of the bar.
+///
+/// Inside the filled part the text is dark on the bar's colour; outside it is
+/// light on the trough. Each run of characters gets its own span, so the switch
+/// happens exactly where the bar ends.
+fn draw_gauge_label(
+    frame: &mut Frame,
+    area: Rect,
+    text: &str,
+    fraction: f64,
+    bar: Color,
+    trough: Color,
+) {
+    if area.is_empty() {
+        return;
+    }
+    let width = cell_width_of(text) as u16;
+    let start = area.x + area.width.saturating_sub(width) / 2;
+    let filled_end = area.x + (f64::from(area.width) * fraction.clamp(0.0, 1.0)).round() as u16;
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_dark = start < filled_end;
+    let mut column = start;
+    for ch in text.chars() {
+        let dark = column < filled_end;
+        if dark != run_dark && !run.is_empty() {
+            spans.push(progress_label_span(
+                std::mem::take(&mut run),
+                run_dark,
+                bar,
+                trough,
+            ));
+            run_dark = dark;
+        }
+        run.push(ch);
+        column += ch.to_string().cell_width();
+    }
+    if !run.is_empty() {
+        spans.push(progress_label_span(run, run_dark, bar, trough));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(start, area.y, width.min(area.width), 1),
+    );
+}
+
+fn progress_label_span(text: String, dark: bool, bar: Color, trough: Color) -> Span<'static> {
+    Span::styled(
+        text,
+        if dark {
+            // On the bar: dark text, the bar's own colour behind it.
+            Style::new().fg(Color::Black).bg(bar)
+        } else {
+            // In the trough: light text.
+            Style::new().fg(Color::White).bg(trough)
+        },
+    )
+}
+
 fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Clear, area);
     let [log_area, progress_area] =
@@ -1153,23 +1213,30 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let percent = download.percent();
+    let trough = Color::Rgb(0x26, 0x28, 0x2e);
+    let label = format!(
+        "{percent}%  {}/s",
+        discover::human_size(download.speed as u64)
+    );
+    // The label is drawn twice on purpose: `Gauge` reserves and recolours the
+    // cells under it, then `draw_gauge_label` writes the same text again with the
+    // colour each side of the fill needs. Asking `Gauge` for a white label would
+    // leave white text on the green bar, which is unreadable.
     let gauge = ratatui::widgets::Gauge::default()
-        .gauge_style(
-            Style::new()
-                .fg(gauge_color)
-                .bg(Color::Rgb(0x26, 0x28, 0x2e)),
-        )
+        .gauge_style(Style::new().fg(gauge_color).bg(trough))
         .ratio(download.fraction())
-        .label(Span::styled(
-            format!(
-                "{percent}%  {}/s",
-                discover::human_size(download.speed as u64)
-            ),
-            Style::new().fg(Color::White),
-        ));
+        .label(Span::raw(label.clone()));
     let [gauge_area, stats_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     frame.render_widget(gauge, gauge_area);
+    draw_gauge_label(
+        frame,
+        gauge_area,
+        &label,
+        download.fraction(),
+        gauge_color,
+        trough,
+    );
 
     let stats = Line::from(vec![
         Span::styled(
@@ -3106,6 +3173,88 @@ mod tests {
         assert!(screen.contains("剩余"), "{screen}");
         // The bar itself: the gauge fills half the row.
         assert!(screen.contains("█"), "no gauge bar:\n{screen}");
+    }
+
+    #[test]
+    fn the_progress_label_turns_dark_where_the_bar_covers_it() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(vec![
+            crate::install::RemoteVersion {
+                id: "1.20.1".into(),
+                kind: "release".into(),
+                released: "2023-06-12T00:00:00+00:00".into(),
+            },
+        ]));
+        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_install_event(InstallEvent::Progress {
+            done: 50,
+            total: 100,
+            remaining_bytes: 512 * 1024,
+            total_bytes: 1024 * 1024,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows = buffer_lines(&buffer);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("%  ") && line.contains("/s"))
+            .expect("the gauge label is drawn");
+        let line = &rows[row];
+        // `find` is a byte offset and the bar glyphs are three bytes each.
+        let percent_at = line
+            .find('%')
+            .map(|at| line[..at].chars().count() as u16)
+            .expect("a percentage");
+
+        // The label is centred, so with half the bar filled its first characters
+        // sit on the bar and its last ones on the trough.
+        let start = line
+            .find("50%")
+            .map(|at| line[..at].chars().count() as u16)
+            .expect("the label starts with the percentage");
+        assert!(
+            percent_at < buffer.area.width / 2,
+            "half full means the bar reaches past the percentage: {line:?}"
+        );
+
+        let on_bar = buffer.cell((start, row as u16)).expect("cell");
+        assert_eq!(on_bar.fg, Color::Black, "inside the bar the text is dark");
+        assert_eq!(on_bar.bg, ACCENT, "and sits on the bar's colour");
+
+        // "50%  0 B/s" is ten cells wide; its tail is past the bar.
+        let on_trough = buffer.cell((start + 9, row as u16)).expect("cell");
+        assert_eq!(on_trough.fg, Color::White, "past the bar the text is light");
+        assert_eq!(on_trough.bg, Color::Rgb(0x26, 0x28, 0x2e), "on the trough");
+
+        // At the extremes the whole label is on one side or the other.
+        for (fraction, expected) in [(0.0, Color::White), (1.0, Color::Black)] {
+            app.handle_install_event(InstallEvent::Progress {
+                done: (100.0 * fraction) as usize,
+                total: 100,
+                remaining_bytes: if fraction > 0.5 { 0 } else { 1024 },
+                total_bytes: 1024,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let rows = buffer_lines(&buffer);
+            let row = rows
+                .iter()
+                .position(|line| line.contains("%  ") && line.contains("/s"))
+                .expect("the gauge label is drawn");
+            let start = rows[row]
+                .find('%')
+                .map(|at| rows[row][..at].chars().count() as u16 - 2)
+                .expect("a percentage");
+            let cell = buffer.cell((start + 8, row as u16)).expect("cell");
+            assert_eq!(
+                cell.fg, expected,
+                "at {fraction} the label is drawn in {expected:?}"
+            );
+        }
     }
 
     #[test]

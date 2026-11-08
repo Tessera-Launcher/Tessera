@@ -889,15 +889,32 @@ fn release_number(version_id: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
+/// `ETXTBSY`: the binary is still open for writing somewhere.
+///
+/// Only reachable in a race — a just-written file, or a test that writes a fake
+/// `java` while another thread forks (a forked child inherits the write handle,
+/// and `exec` then refuses the file for a few milliseconds).
+#[cfg(unix)]
+const TEXT_FILE_BUSY: i32 = 26;
+#[cfg(not(unix))]
+const TEXT_FILE_BUSY: i32 = -1;
+
 /// Ask a Java for its version without starting a game.
 pub fn probe_java(path: &Path) -> Option<u32> {
-    let output = std::process::Command::new(path)
-        .arg("-version")
-        .output()
-        .ok()?;
-    // `java -version` writes to stderr.
-    let text = String::from_utf8_lossy(&output.stderr);
-    parse_java_major(&text)
+    for attempt in 0..4 {
+        match std::process::Command::new(path).arg("-version").output() {
+            Ok(output) => {
+                // `java -version` writes to stderr.
+                let text = String::from_utf8_lossy(&output.stderr);
+                return parse_java_major(&text);
+            }
+            Err(error) if error.raw_os_error() == Some(TEXT_FILE_BUSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(5 * (attempt + 1)));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// Pull the major version out of `java -version` output.
