@@ -437,6 +437,9 @@ pub struct App {
     last_click: Option<(Instant, usize)>,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
+    /// MDT's `MDT_HOME` when it lives inside this installation's data directory,
+    /// i.e. the download cache a sweep may prune. `None` leaves it alone.
+    pub cache: Option<PathBuf>,
 }
 
 impl App {
@@ -478,6 +481,7 @@ impl App {
             log_scroll: 0,
             last_click: None,
             uninstall_confirm: None,
+            cache: None,
         };
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
@@ -766,7 +770,7 @@ impl App {
             .iter()
             .map(|version| version.id.clone())
             .collect();
-        let sweep = cleanup::sweep(&self.root, &installed);
+        let sweep = cleanup::sweep(&self.root, self.cache.as_deref(), &installed);
         let note = sweep.note();
         if !note.is_empty() {
             self.log(format!("清理库/资源{s}", s = note.trim_start_matches('；')));

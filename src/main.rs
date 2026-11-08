@@ -81,6 +81,13 @@ fn main() -> std::process::ExitCode {
     app.log(format!("数据目录 {}", data.root().display()));
     app.log(format!("凭据目录 {}", data.accounts().display()));
     app.log(format!("下载缓存 {}", cache.display()));
+    // Only a cache inside our own tree is ours to prune: an `MDT_HOME` the user
+    // pointed elsewhere may be shared with another launcher.
+    if cache.starts_with(data.root()) {
+        app.cache = Some(cache.clone());
+    } else {
+        app.log("缓存不在数据目录内，卸载时不清理它");
+    }
 
     if options.login {
         app.open_login();

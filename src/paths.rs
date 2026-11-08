@@ -73,10 +73,14 @@ impl Paths {
     pub fn adopt_vendor_cache(&self) -> std::io::Result<PathBuf> {
         let cache = self.cache();
         std::fs::create_dir_all(&cache)?;
-        if std::env::var_os("MDT_HOME").is_none() {
-            std::env::set_var("MDT_HOME", &cache);
+        match std::env::var_os("MDT_HOME") {
+            // Respect an override; the caller decides whether it is ours to clean.
+            Some(existing) => Ok(PathBuf::from(existing)),
+            None => {
+                std::env::set_var("MDT_HOME", &cache);
+                Ok(cache)
+            }
         }
-        Ok(cache)
     }
 
     /// Create the whole tree; safe to call every start.

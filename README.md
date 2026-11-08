@@ -142,7 +142,7 @@ yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
 ### 卸载
 
 主界面 `x`（或 `Delete`）卸载选中版本，**先问一次**，再按一次才真正删除。删完
-自动清理 `libraries/` 和 `assets/` 里再没有版本引用的文件。
+自动清理 `libraries/`、`assets/`、`resources/` 和下载缓存里再没有版本引用的文件。
 
 - 先删 `versions/<id>`，有 Loader 依赖它时（`inheritsFrom` 指向它，或目录名是
   `<mc>+<Loader>`）会点名并**一并删除**：基础版本没了，它们反正起不来
@@ -154,10 +154,13 @@ yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
 - 引用集是**故意取的超集**（不做 `rules` 过滤），宁可少删不可错删
 - 有任何版本的 JSON 读不出来（比如装了一半）就**整个跳过清理**并在状态栏说明：那种
   情况下它的引用无从得知，不能赌
-- 资产的实际释放很有限：`assets/objects/` 是 `data/缓存/.mdt/registry` 的硬链接，
-  删掉链接不释放空间（日志里会明确写“N 个文件是全局缓存的硬链接”）。真正的空间在
-  注册表里，它按 Minecraft 版本分目录、按 Maven 路径分文件，还没做清理（需要同一套
-  引用计数 + 按 inode 归组才能把释放量算对）
+- 清的四个地方：`libraries/`、`assets/{objects,indexes,virtual}`、`resources/`（legacy
+  `map_to_resources` 镜像，只在没有任何已装版本需要它时才整个删除）、以及下载缓存
+  `data/缓存/.mdt/registry`（资产对象按哈希、加载器库按 Maven 路径映射、索引缓存按
+  索引 JSON 的 sha1）
+- 同一份数据常有四个名字（registry / `assets/objects` / `assets/virtual` /
+  `resources`），所以释放量按 **(dev, inode) 归组**统计：只有一组链接全被删掉才算
+  释放，否则如实报“N 个文件是硬链接，数据还有别的名字”，不虚报
 - 移动选择、按任意其他键、`r` 刷新、`h` 切换都会取消待确认——"再按一次"不能跨过
   别的操作生效
 - 失败会说明原因并保留列表行；删到一半失败时，状态栏会写清楚哪些已经删掉了
