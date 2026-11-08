@@ -792,9 +792,10 @@ fn draw_version_rows(
                         if *expanded { "▾ " } else { "▸ " },
                         Style::new().fg(ACCENT),
                     ));
+                    let kind = version(*first).kind.as_str();
                     (
                         crate::version_tree::title(&download.versions, *first, *last),
-                        Span::styled("快照", dim),
+                        Span::styled(group_kind_label(kind), Style::new().fg(kind_color(kind))),
                         format!("{} 个", last - first + 1),
                     )
                 }
@@ -1490,6 +1491,19 @@ fn kind_label(version: &LocalVersion) -> String {
     match version.loader_label() {
         Some(loader) => loader.to_string(),
         None => "未完成".to_string(),
+    }
+}
+
+/// A folded group names its kind the way a single row would.
+///
+/// The group is one line for many versions, so the raw `old_alpha` is spelled out
+/// rather than left as `snapshot`, which would be wrong for the pre-beta eras.
+fn group_kind_label(kind: &str) -> &str {
+    match kind {
+        "snapshot" => "快照",
+        "old_alpha" => "旧版 Alpha",
+        "old_beta" => "旧版 Beta",
+        other => other,
     }
 }
 
@@ -2327,6 +2341,40 @@ mod tests {
         assert!(opened.contains("  1.21.8"), "{opened}");
         assert!(opened.contains("  1.21.7"), "{opened}");
         assert!(before.contains("▶ 1.21.8"), "{before}");
+    }
+
+    #[test]
+    fn a_folded_old_version_run_is_drawn_with_its_era() {
+        let versions = [
+            ("b1.7.3", "old_beta"),
+            ("b1.7.2", "old_beta"),
+            ("a1.2.6", "old_alpha"),
+            ("a1.0.16", "old_alpha"),
+        ];
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_download();
+        app.handle_install_event(InstallEvent::Versions(
+            versions
+                .iter()
+                .map(|(id, kind)| crate::install::RemoteVersion {
+                    id: id.to_string(),
+                    kind: kind.to_string(),
+                    released: "2011-01-01T00:00:00+00:00".to_string(),
+                })
+                .collect(),
+        ));
+        let screen = render(&mut app, 110, 28).join("\n");
+
+        assert!(screen.contains("▸ b1.7.3 ~ b1.7.2"), "{screen}");
+        assert!(
+            screen.contains("旧版 Beta"),
+            "beta run keeps its era:\n{screen}"
+        );
+        assert!(screen.contains("▸ a1.2.6 ~ a1.0.16"), "{screen}");
+        assert!(
+            screen.contains("旧版 Alpha"),
+            "alpha run keeps its era:\n{screen}"
+        );
     }
 
     #[test]

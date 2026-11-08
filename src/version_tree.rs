@@ -75,10 +75,13 @@ impl Row {
 /// Only the shapes Mojang actually ships are folded; anything unrecognised keeps
 /// its own row, which is the safe direction to be wrong in.
 pub fn family(version: &RemoteVersion) -> Option<String> {
+    let id = version.id.as_str();
+    if version.kind.starts_with("old_") {
+        return old_family(&version.kind, id);
+    }
     if version.kind != "snapshot" {
         return None;
     }
-    let id = version.id.as_str();
 
     // A base plus a trailing counter: `1.21.9-pre9`, `1.21.9-rc1`,
     // `26.4-snapshot-7`, and the dashed spelling mirrors hand out
@@ -108,6 +111,24 @@ pub fn family(version: &RemoteVersion) -> Option<String> {
     }
 
     None
+}
+
+/// The family of a pre-release version, or `None`.
+///
+/// `old_alpha` covers everything before beta (`a1.2.6`, `b1.7.3`, `inf-`,
+/// `c0.30_01c`, `rd-132211`), so the leading letters are what separates the eras:
+/// folding only by kind would put a classic build and an alpha in one row.
+fn old_family(kind: &str, id: &str) -> Option<String> {
+    let prefix: String = id
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if prefix.is_empty() {
+        // Nothing to group by: leave a lone oddity on its own row.
+        return None;
+    }
+    Some(format!("{kind}-{prefix}"))
 }
 
 /// The label of a folded row: `newest ~ oldest`.
@@ -291,6 +312,67 @@ mod tests {
             rows[2].anchor(),
             2,
             "the header stands for its newest member"
+        );
+    }
+
+    #[test]
+    fn old_versions_fold_by_era_not_by_kind() {
+        // `old_alpha` covers alphas, classics and pre-classics alike.
+        assert_eq!(
+            family(&version("b1.7.3", "old_beta")).as_deref(),
+            Some("old_beta-b")
+        );
+        assert_eq!(
+            family(&version("a1.2.6", "old_alpha")).as_deref(),
+            Some("old_alpha-a")
+        );
+        assert_eq!(
+            family(&version("inf-20100618", "old_alpha")).as_deref(),
+            Some("old_alpha-inf")
+        );
+        assert_eq!(
+            family(&version("c0.30_01c", "old_alpha")).as_deref(),
+            Some("old_alpha-c")
+        );
+        assert_eq!(
+            family(&version("rd-132211", "old_alpha")).as_deref(),
+            Some("old_alpha-rd")
+        );
+        // An id with no leading letters has nothing to group by.
+        assert_eq!(family(&version("0.0.0", "old_alpha")), None);
+    }
+
+    #[test]
+    fn a_run_of_old_versions_folds_into_one_row_per_era() {
+        let versions: Vec<RemoteVersion> = [
+            ("b1.7.3", "old_beta"),
+            ("b1.7.2", "old_beta"),
+            ("b1.0", "old_beta"),
+            ("a1.2.6", "old_alpha"),
+            ("a1.0.16", "old_alpha"),
+            ("c0.30_01c", "old_alpha"),
+            ("c0.0.11a", "old_alpha"),
+            ("rd-132211", "old_alpha"),
+        ]
+        .into_iter()
+        .map(|(id, kind)| version(id, kind))
+        .collect();
+        let rows = build(&versions, &[], true);
+        let labels: Vec<String> = rows
+            .iter()
+            .map(|row| match &row.kind {
+                RowKind::Version(index) => versions[*index].id.clone(),
+                RowKind::Group { first, last, .. } => title(&versions, *first, *last),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "b1.7.3 ~ b1.0",
+                "a1.2.6 ~ a1.0.16",
+                "c0.30_01c ~ c0.0.11a",
+                "rd-132211",
+            ]
         );
     }
 
