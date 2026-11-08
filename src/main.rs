@@ -6,6 +6,7 @@
 
 mod accounts;
 mod app;
+mod app_ids;
 mod cleanup;
 mod discover;
 mod install;

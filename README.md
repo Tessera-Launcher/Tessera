@@ -6,8 +6,9 @@
 ## 当前状态
 
 主界面 + 登录。主界面扫描 `<root>/versions`、列出本地已装版本、显示启动层将来需要的
-信息（基础版本 / Java / 主类 / 目录 / 大小）。登录走微软 device code，支持两种身份：
-官方启动器（title client id）和自定义 Azure 应用 id（**必须填 id 才能开始**）。
+信息（基础版本 / Java / 主类 / 目录 / 大小）。登录走微软 device code，支持三种身份：
+官方启动器（title client id）、自定义 Azure 应用 id（**必须填 id 才能开始**）、
+以及 `凭据/启动器/azure_app_ids.toml` 里列出的现成 app id。
 下载与启动还没接，界面会明说"尚未实现"而不是假装成功。
 
 ### 便携布局
@@ -18,6 +19,7 @@
 <exe>/data/
 ├── 游戏/          versions / libraries / assets（--dir 可覆盖）
 ├── 凭据/账户/     一个账户一个 json（玩家名.json）
+├── 凭据/启动器/   azure_app_ids.toml：可选的启动器 app id 清单
 ├── 缓存/          下载缓存（见下）
 └── 日志/
 ```
@@ -197,8 +199,8 @@ yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
 | 下载页 类型标签 点击 | 直接切到该类型 |
 | 下载页 版本列表 滚轮 / 点击 | 移动或选中版本（选中后加载器列表按该版本重建） |
 | 下载页 加载器列表 滚轮 / 点击 | 移动或选中加载器 |
-| 登录面板 点击选项 | 选中并确认（官方直接开始；自定义进入 app id 输入） |
-| 登录面板 滚轮 | 上下切换身份 |
+| 登录面板 点击选项 | 选中并确认（官方直接开始；自定义进入 app id 输入；现有凭据进入清单） |
+| 登录面板 滚轮 | 上下切换身份 / 清单条目 |
 | 登录面板外 点击 | 取消 |
 
 页脚布局：状态文字（绿色）固定靠左，按键标注固定靠右——状态长度变化不会推动按钮，
@@ -216,8 +218,23 @@ yaml --dir /path/to/游戏 --java /path/to/java8/bin/java --memory 4096
 1. **官方启动器** — 直接用 `00000000402b5328`（title id + `MBI_SSL` + SISU 签名链）
 2. **自定义 app id** — 输入某个启动器的 Azure client id（如 Prism 的
    `c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb`），走 `user/authenticate` + `xsts`
+3. **现有凭据……** — 读 `data/凭据/启动器/azure_app_ids.toml`，把里面的 app id 列出来，
+   选中哪个就用哪个登录；账户列表里显示的是文件里写的 `name`
 
 选自定义时输入框为空就按 Enter 不会启动流程（不会偷偷回退到任何内置 id）。
+第三种身份每次打开都会重新读文件（改完不用重启），文件缺失或写错就在面板里直接
+显示原因，不会拿一个来路不明的 id 去登录。
+
+```toml
+# data/凭据/启动器/azure_app_ids.toml
+[[api_keys]]
+name = "HMCL"
+key = "6a3728d6-27a3-4180-99bb-479895b8f88e"
+```
+
+首次启动会写入一份**全部注释掉**的模板，只教格式，不会替任何人登录。
+这里的 `key` 是 Azure 的公开客户端 id（public client），不是密钥：它只能发起
+device code 流程，仍然需要账户本人在浏览器里确认。
 面板显示 `user_code` 与链接，浏览器确认后凭据写入 `data/凭据/账户/<玩家名>.json`。
 token 只存在于登录线程和那个文件里，**UI 永远拿不到 token**。
 
@@ -243,7 +260,7 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 ## 路线
 
 1. **主界面** ✅
-2. **登录** ✅（官方 / 自定义 app id，一账户一 json；恢复会话待接）
+2. **登录** ✅（官方 / 自定义 app id / `azure_app_ids.toml` 清单，一账户一 json；恢复会话待接）
 3. **下载** ✅（版本 + Loader 选择，进度条/速度/文件日志；镜像与并发可调）
 4. **启动** ✅（版本链合并、classpath、natives、占位符、Java 探测；`--print-launch` 可预览）
 5. **令牌自动刷新** ✅（过期才联网，轮换后的 refresh token 写回凭据）

@@ -18,6 +18,9 @@ const LEGACY: Color = Color::Rgb(0xc4, 0x8a, 0xd8);
 const BROKEN: Color = Color::Rgb(0xe0, 0x6c, 0x6c);
 const DIM: Color = Color::Rgb(0x8a, 0x8a, 0x92);
 
+/// Most `azure_app_ids.toml` entries drawn at once; the rest scroll.
+const SAVED_ROWS: usize = 6;
+
 /// Render one frame.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [header, body, footer] = Layout::vertical([
@@ -977,8 +980,15 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
 fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
     let width = area.width.saturating_sub(4).clamp(36, 68);
     let height = match &app.login.step {
-        LoginStep::Choose => 9,
+        LoginStep::Choose => 10,
         LoginStep::EnterAppId => 11,
+        LoginStep::ChooseAppIds => {
+            if app.login.app_ids.is_empty() {
+                10
+            } else {
+                (app.login.app_ids.len().min(SAVED_ROWS) * 2 + 4) as u16
+            }
+        }
         LoginStep::Waiting { .. } => 10,
         LoginStep::Done { .. } | LoginStep::Failed(_) => 8,
     }
@@ -997,6 +1007,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
     let title = match &app.login.step {
         LoginStep::Choose => " 登录 · 选择身份 ",
         LoginStep::EnterAppId => " 登录 · 自定义 app id ",
+        LoginStep::ChooseAppIds => " 登录 · 现有凭据 ",
         LoginStep::Waiting { .. } => " 登录 · 等待授权 ",
         LoginStep::Done { .. } => " 登录 · 成功 ",
         LoginStep::Failed(_) => " 登录 · 失败 ",
@@ -1017,6 +1028,10 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 (
                     "自定义 app id",
                     "其他启动器的 Azure 应用 client id，走 user + XSTS",
+                ),
+                (
+                    "现有凭据……",
+                    "从 凭据/启动器/azure_app_ids.toml 读取的 app id 清单",
                 ),
             ];
             let mut lines = Vec::new();
@@ -1077,6 +1092,88 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                 )),
             ];
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        }
+        LoginStep::ChooseAppIds => {
+            let mut lines = Vec::new();
+            if let Some(error) = &app.login.app_ids_error {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    " 没有可用的 app id",
+                    Style::new().fg(BROKEN).bold(),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!(" {error}"),
+                    Style::new().fg(Color::White),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    " Esc 返回 · 编辑上面这个文件后按 Enter 重试",
+                    Style::new().fg(DIM),
+                )));
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            } else {
+                // One row of height is enough per entry (name + id on one line),
+                // but two keeps a long id readable when the popup is narrow.
+                let visible = ((inner.height.saturating_sub(2) / 2).max(1)) as usize;
+                let last = app.login.app_ids.len().saturating_sub(1);
+                let selected = app.login.app_id_choice.min(last);
+                // Scroll so the selection stays on screen, then clamp the window
+                // so the list never starts past its own end.
+                let mut offset = app.login.app_id_offset.min(selected);
+                if selected >= offset + visible {
+                    offset = selected + 1 - visible;
+                }
+                offset = offset.min(last.saturating_sub(visible.saturating_sub(1)));
+                app.login.app_id_offset = offset;
+                app.login.app_id_choice = selected;
+
+                for (row, entry) in app
+                    .login
+                    .app_ids
+                    .iter()
+                    .enumerate()
+                    .skip(offset)
+                    .take(visible)
+                {
+                    app.layout.overlay_options.push(Area::new(
+                        inner.x,
+                        inner.y.saturating_add(((row - offset) * 2) as u16),
+                        inner.width,
+                        2,
+                    ));
+                    let chosen = row == selected;
+                    lines.push(Line::from(vec![
+                        Span::styled(if chosen { " ▶ " } else { "   " }, Style::new().fg(ACCENT)),
+                        Span::styled(
+                            entry.label().to_string(),
+                            if chosen {
+                                Style::new().fg(ACCENT).bold()
+                            } else {
+                                Style::new().fg(Color::White)
+                            },
+                        ),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        format!("     {}", entry.client_id()),
+                        Style::new().fg(DIM),
+                    )));
+                }
+                let more = app.login.app_ids.len().saturating_sub(offset + visible);
+                lines.push(Line::from(Span::styled(
+                    if app.login.app_ids.len() > visible {
+                        format!(
+                            " ↑↓ 选择 · Enter 登录 · Esc 返回 · 共 {} 项，下面还有 {} 项",
+                            app.login.app_ids.len(),
+                            more
+                        )
+                    } else {
+                        " ↑↓ 选择 · Enter 登录 · Esc 返回".to_string()
+                    },
+                    Style::new().fg(DIM),
+                )));
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            }
         }
         LoginStep::Waiting { user_code, url } => {
             let lines = vec![
@@ -1282,6 +1379,84 @@ mod tests {
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("c36a9fb6"), "{screen}");
         assert!(screen.contains("Enter 开始登录"), "{screen}");
+    }
+
+    #[test]
+    fn the_identity_screen_offers_the_saved_list_as_a_third_choice() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_login();
+        let screen = render(&mut app, 100, 28).join("\n");
+        assert!(screen.contains("官方启动器"), "{screen}");
+        assert!(screen.contains("自定义 app id"), "{screen}");
+        assert!(screen.contains("现有凭据"), "{screen}");
+        // Where the list comes from is part of the choice, not a surprise later.
+        assert!(screen.contains("azure_app_ids.toml"), "{screen}");
+        assert_eq!(app.layout.overlay_options.len(), 3, "every row is clickable");
+    }
+
+    fn saved(name: &str, key: &str) -> crate::app_ids::AppId {
+        crate::app_ids::AppId {
+            name: name.to_string(),
+            key: key.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_saved_list_shows_names_with_their_ids_and_marks_the_selection() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_login();
+        app.login.step = crate::app::LoginStep::ChooseAppIds;
+        app.login.app_ids = vec![
+            saved("HMCL", "6a3728d6-27a3-4180-99bb-479895b8f88e"),
+            saved("Prism", "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"),
+        ];
+        app.login.app_id_choice = 1;
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        assert!(screen.contains("现有凭据"), "{screen}");
+        assert!(screen.contains("HMCL"), "{screen}");
+        assert!(screen.contains("6a3728d6"), "{screen}");
+        assert!(screen.contains("Prism"), "{screen}");
+        assert!(screen.contains("c36a9fb6"), "{screen}");
+        assert!(screen.contains("▶ Prism"), "selection marker missing:\n{screen}");
+        assert!(screen.contains("Enter 登录"), "{screen}");
+        assert_eq!(app.layout.overlay_options.len(), 2);
+    }
+
+    #[test]
+    fn a_long_saved_list_scrolls_to_keep_the_selection_visible() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_login();
+        app.login.step = crate::app::LoginStep::ChooseAppIds;
+        app.login.app_ids = (0..8)
+            .map(|n| saved(&format!("launcher-{n}"), &format!("{n}0000000-0000")))
+            .collect();
+        app.login.app_id_choice = 7;
+        let screen = render(&mut app, 100, 28).join("\n");
+
+        assert!(screen.contains("launcher-7"), "{screen}");
+        assert!(
+            !screen.contains("launcher-0"),
+            "the window should have scrolled past the first row:\n{screen}"
+        );
+        assert!(screen.contains("共 8 项"), "{screen}");
+        assert_eq!(app.layout.overlay_options.len(), 6, "six rows fit");
+    }
+
+    #[test]
+    fn an_unreadable_saved_list_says_why_instead_of_showing_rows() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.open_login();
+        app.login.step = crate::app::LoginStep::ChooseAppIds;
+        app.login.app_ids_path = "/data/凭据/启动器/azure_app_ids.toml".into();
+        app.login.app_ids_error =
+            Some("未找到 /data/凭据/启动器/azure_app_ids.toml：按 README 里的格式写入 app id".into());
+        let screen = render(&mut app, 100, 40).join("\n");
+
+        assert!(screen.contains("没有可用的 app id"), "{screen}");
+        assert!(screen.contains("azure_app_ids.toml"), "{screen}");
+        assert!(screen.contains("Esc 返回"), "{screen}");
+        assert!(app.layout.overlay_options.is_empty(), "nothing to click");
     }
 
     #[test]

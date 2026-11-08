@@ -21,6 +21,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 sha1 = "0.11"
 hex = "0.4"
 minecraft-auth = { path = "vendor/minecraft-auth" }

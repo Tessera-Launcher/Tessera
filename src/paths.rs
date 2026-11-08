@@ -11,6 +11,10 @@ pub const DATA: &str = "data";
 pub const GAME: &str = "游戏";
 pub const CREDENTIALS: &str = "凭据";
 pub const ACCOUNTS: &str = "账户";
+/// `data/凭据/启动器` — launcher identities that can be signed in with.
+pub const LAUNCHERS: &str = "启动器";
+/// The app-id list inside [`LAUNCHERS`].
+pub const APP_IDS_FILE: &str = "azure_app_ids.toml";
 pub const LOGS: &str = "日志";
 /// The vendored download layer's content-addressed cache (`MDT_HOME`).
 pub const CACHE: &str = "缓存";
@@ -50,6 +54,16 @@ impl Paths {
         self.root.join(CREDENTIALS).join(ACCOUNTS)
     }
 
+    /// `data/凭据/启动器` — app ids another launcher makes available.
+    pub fn launchers(&self) -> PathBuf {
+        self.root.join(CREDENTIALS).join(LAUNCHERS)
+    }
+
+    /// `data/凭据/启动器/azure_app_ids.toml`.
+    pub fn app_ids(&self) -> PathBuf {
+        self.launchers().join(APP_IDS_FILE)
+    }
+
     /// `data/日志`.
     pub fn logs(&self) -> PathBuf {
         self.root.join(LOGS)
@@ -84,10 +98,19 @@ impl Paths {
     }
 
     /// Create the whole tree; safe to call every start.
+    ///
+    /// The app-id list is seeded with the commented-out template so the format is
+    /// discoverable, but an existing file is never touched — it is the user's.
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.game())?;
         std::fs::create_dir_all(self.accounts())?;
-        std::fs::create_dir_all(self.logs())
+        std::fs::create_dir_all(self.launchers())?;
+        std::fs::create_dir_all(self.logs())?;
+        let app_ids = self.app_ids();
+        if !app_ids.exists() {
+            std::fs::write(&app_ids, crate::app_ids::TEMPLATE)?;
+        }
+        Ok(())
     }
 }
 
@@ -108,6 +131,11 @@ mod tests {
         let paths = Paths::at("/opt/yaml/data");
         assert_eq!(paths.game(), Path::new("/opt/yaml/data/游戏"));
         assert_eq!(paths.accounts(), Path::new("/opt/yaml/data/凭据/账户"));
+        assert_eq!(paths.launchers(), Path::new("/opt/yaml/data/凭据/启动器"));
+        assert_eq!(
+            paths.app_ids(),
+            Path::new("/opt/yaml/data/凭据/启动器/azure_app_ids.toml")
+        );
         assert_eq!(paths.logs(), Path::new("/opt/yaml/data/日志"));
         assert_eq!(paths.cache(), Path::new("/opt/yaml/data/缓存"));
     }
@@ -129,6 +157,21 @@ mod tests {
         assert!(paths.game().is_dir());
         assert!(paths.accounts().is_dir());
         assert!(paths.logs().is_dir());
+        assert!(paths.launchers().is_dir());
+        // Seeded once, and never overwritten afterwards.
+        assert_eq!(
+            std::fs::read_to_string(paths.app_ids()).unwrap(),
+            crate::app_ids::TEMPLATE
+        );
+        std::fs::write(
+            paths.app_ids(),
+            "[[api_keys]]\nname = \"mine\"\nkey = \"k\"\n",
+        )
+        .unwrap();
+        paths.ensure().unwrap();
+        assert!(std::fs::read_to_string(paths.app_ids())
+            .unwrap()
+            .contains("mine"));
     }
 
     #[test]

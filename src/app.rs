@@ -69,6 +69,8 @@ pub enum LoginStep {
     Choose,
     /// Type the custom application's client id.
     EnterAppId,
+    /// Pick one of the ids listed in `azure_app_ids.toml`.
+    ChooseAppIds,
     /// Waiting for the browser: show the code.
     Waiting { user_code: String, url: String },
     /// Finished, with the account that was written.
@@ -287,10 +289,20 @@ pub struct AccountsUi {
 #[derive(Debug, Clone)]
 pub struct LoginUi {
     pub step: LoginStep,
-    /// 0 = official launcher, 1 = custom app id.
+    /// 0 = official launcher, 1 = custom app id, 2 = the saved list.
     pub choice: usize,
     /// Typed client id, only used by the custom identity.
     pub app_id: String,
+    /// The list read from `azure_app_ids.toml`, in file order.
+    pub app_ids: Vec<crate::app_ids::AppId>,
+    /// Why the list could not be read, if it could not. Shown instead of rows.
+    pub app_ids_error: Option<String>,
+    /// Where the list was read from; shown in the popup either way.
+    pub app_ids_path: PathBuf,
+    /// Selected row in [`LoginUi::app_ids`].
+    pub app_id_choice: usize,
+    /// First drawn row, so a long list can scroll under the selection.
+    pub app_id_offset: usize,
 }
 
 impl Default for LoginUi {
@@ -299,20 +311,38 @@ impl Default for LoginUi {
             step: LoginStep::Choose,
             choice: 0,
             app_id: String::new(),
+            app_ids: Vec::new(),
+            app_ids_error: None,
+            app_ids_path: PathBuf::new(),
+            app_id_choice: 0,
+            app_id_offset: 0,
         }
     }
 }
 
 impl LoginUi {
+    /// Rows on the identity screen: official, custom, saved list.
+    pub const CHOICES: usize = 3;
+
     pub fn identity(&self) -> Option<Identity> {
-        match self.choice {
-            0 => Some(Identity::Official),
-            _ => {
-                let app_id = self.app_id.trim();
-                (!app_id.is_empty()).then(|| Identity::Custom {
-                    app_id: app_id.to_string(),
+        match self.step {
+            LoginStep::ChooseAppIds => {
+                let entry = self.app_ids.get(self.app_id_choice)?;
+                Some(Identity::Saved {
+                    name: entry.label().to_string(),
+                    app_id: entry.client_id().to_string(),
                 })
             }
+            _ => match self.choice {
+                0 => Some(Identity::Official),
+                1 => {
+                    let app_id = self.app_id.trim();
+                    (!app_id.is_empty()).then(|| Identity::Custom {
+                        app_id: app_id.to_string(),
+                    })
+                }
+                _ => None,
+            },
         }
     }
 }
@@ -905,7 +935,14 @@ impl App {
                     .iter()
                     .position(|area| area.contains(column, row))
                 {
-                    self.login.choice = index;
+                    match self.login.step {
+                        // The saved list is windowed, so a row index is only an
+                        // index once the scroll offset is added back.
+                        LoginStep::ChooseAppIds => {
+                            self.login.app_id_choice = self.login.app_id_offset + index;
+                        }
+                        _ => self.login.choice = index.min(LoginUi::CHOICES - 1),
+                    }
                     self.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
                     return;
                 }
@@ -914,10 +951,19 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp if self.layout.overlay.contains(column, row) => {
-                self.login.choice = self.login.choice.saturating_sub(1);
+                if self.login.step == LoginStep::ChooseAppIds {
+                    self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
+                } else {
+                    self.login.choice = self.login.choice.saturating_sub(1);
+                }
             }
             MouseEventKind::ScrollDown if self.layout.overlay.contains(column, row) => {
-                self.login.choice = (self.login.choice + 1).min(1);
+                if self.login.step == LoginStep::ChooseAppIds {
+                    let last = self.login.app_ids.len().saturating_sub(1);
+                    self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
+                } else {
+                    self.login.choice = (self.login.choice + 1).min(LoginUi::CHOICES - 1);
+                }
             }
             _ => {}
         }
@@ -934,6 +980,46 @@ impl App {
         self.login = LoginUi::default();
         self.screen = Screen::Login;
         self.status = "登录：选择身份".to_string();
+    }
+
+    /// `data/凭据/启动器/azure_app_ids.toml`, derived from the account directory
+    /// so tests and `--dir` runs keep everything inside the same tree.
+    pub fn app_ids_path(&self) -> PathBuf {
+        match self.accounts_dir.parent() {
+            Some(credentials) => crate::app_ids::path_under(credentials),
+            None => PathBuf::new(),
+        }
+    }
+
+    /// Read the app-id list, then show it. The file is re-read every time so an
+    /// edit in another window is picked up without restarting the launcher.
+    fn open_app_ids(&mut self) {
+        let path = self.app_ids_path();
+        self.login.app_ids_path = path.clone();
+        self.login.app_id_choice = 0;
+        self.login.app_id_offset = 0;
+        match crate::app_ids::load(&path) {
+            Ok(ids) if !ids.is_empty() => {
+                self.login.app_ids = ids;
+                self.login.app_ids_error = None;
+                self.login.step = LoginStep::ChooseAppIds;
+                self.status = "登录：选择现有凭据".to_string();
+            }
+            Ok(_) => {
+                self.login.app_ids.clear();
+                self.login.app_ids_error =
+                    Some(format!("{} 里还没有可用的 [[api_keys]]", path.display()));
+                self.login.step = LoginStep::ChooseAppIds;
+                self.status = "登录：app id 清单为空".to_string();
+            }
+            Err(message) => {
+                self.login.app_ids.clear();
+                self.login.app_ids_error = Some(message.clone());
+                self.login.step = LoginStep::ChooseAppIds;
+                self.status = "登录：无法读取 app id 清单".to_string();
+                self.log(message);
+            }
+        }
     }
 
     pub fn close_login(&mut self) {
@@ -1587,15 +1673,55 @@ impl App {
         match &self.login.step {
             LoginStep::Choose => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
-                KeyCode::Up | KeyCode::Char('k') => self.login.choice = 0,
-                KeyCode::Down | KeyCode::Char('j') => self.login.choice = 1,
-                KeyCode::Tab => self.login.choice = 1 - self.login.choice,
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    if self.login.choice == 1 {
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                    self.login.choice = self.login.choice.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    self.login.choice = (self.login.choice + 1).min(LoginUi::CHOICES - 1);
+                }
+                KeyCode::Char('g') | KeyCode::Home => self.login.choice = 0,
+                KeyCode::Char('G') | KeyCode::End => self.login.choice = LoginUi::CHOICES - 1,
+                KeyCode::Enter | KeyCode::Char(' ') => match self.login.choice {
+                    1 => {
                         self.login.step = LoginStep::EnterAppId;
                         self.status = "登录：输入 app id".to_string();
-                    } else if let Some(identity) = self.login.identity() {
+                    }
+                    2 => self.open_app_ids(),
+                    _ => {
+                        if let Some(identity) = self.login.identity() {
+                            self.start_login(identity);
+                        }
+                    }
+                },
+                _ => {}
+            },
+            LoginStep::ChooseAppIds => match code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.login.step = LoginStep::Choose;
+                    self.status = "登录：选择身份".to_string();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let last = self.login.app_ids.len().saturating_sub(1);
+                    self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
+                }
+                KeyCode::Home | KeyCode::Char('g') => self.login.app_id_choice = 0,
+                KeyCode::End | KeyCode::Char('G') => {
+                    self.login.app_id_choice = self.login.app_ids.len().saturating_sub(1);
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    if let Some(identity) = self.login.identity() {
                         self.start_login(identity);
+                    } else {
+                        // An unreadable or empty file must say so, not start a
+                        // login with an id that came from nowhere.
+                        self.status = self
+                            .login
+                            .app_ids_error
+                            .clone()
+                            .unwrap_or_else(|| "没有可用的 app id".to_string());
                     }
                 }
                 _ => {}
@@ -1643,7 +1769,7 @@ impl App {
 
     /// Freeze the overlay and ask the main loop for a login thread.
     fn start_login(&mut self, identity: Identity) {
-        let label = identity.label().to_string();
+        let label = identity.label();
         self.login.step = LoginStep::Waiting {
             user_code: "……".to_string(),
             url: "正在向 Microsoft 申请设备代码".to_string(),
@@ -2048,6 +2174,130 @@ mod tests {
                 app_id: "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string()
             })
         );
+    }
+
+    /// Builds the app-id file where `App::app_ids_path` looks for it.
+    fn write_app_ids(accounts_dir: &std::path::Path, body: &str) {
+        let path = crate::app_ids::path_under(accounts_dir.parent().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn saved_app(body: &'static str) -> (tempfile::TempDir, App) {
+        let tmp = tempfile::tempdir().unwrap();
+        let accounts = tmp.path().join("凭据").join("账户");
+        std::fs::create_dir_all(&accounts).unwrap();
+        write_app_ids(&accounts, body);
+        let app = App::new("/mc", accounts, vec![version("a")], Vec::new());
+        (tmp, app)
+    }
+
+    #[test]
+    fn the_third_choice_lists_the_file_and_signs_in_as_its_name() {
+        let (_tmp, mut app) = saved_app(
+            r#"
+[[api_keys]]
+name = "HMCL"
+key = "6a3728d6-27a3-4180-99bb-479895b8f88e"
+
+[[api_keys]]
+name = "Prism"
+key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
+"#,
+        );
+        app.open_login();
+        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.login.choice, 2);
+        // Nothing is read until the entry is opened.
+        assert!(app.login.app_ids.is_empty());
+
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.login.step, LoginStep::ChooseAppIds);
+        assert!(
+            app.login.app_ids_error.is_none(),
+            "{:?}",
+            app.login.app_ids_error
+        );
+        assert_eq!(app.login.app_ids.len(), 2);
+        assert!(
+            app.pending_login.is_none(),
+            "listing must not start a login"
+        );
+
+        // The first row is preselected; Down moves to the second.
+        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            app.pending_login,
+            Some(Identity::Saved {
+                name: "Prism".to_string(),
+                app_id: "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string(),
+            })
+        );
+        assert!(matches!(app.login.step, LoginStep::Waiting { .. }));
+        assert!(app.status.contains("Prism"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_saved_list_clamps_and_escapes_back_to_the_identity_screen() {
+        let (_tmp, mut app) = saved_app(
+            r#"
+[[api_keys]]
+name = "only"
+key = "aaaaaaaa-0000-0000-0000-000000000000"
+"#,
+        );
+        app.open_login();
+        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        // One entry: Down and End cannot walk past it, Up cannot go negative.
+        for code in [KeyCode::Down, KeyCode::End, KeyCode::Up, KeyCode::Home] {
+            app.handle_login_key(code, KeyModifiers::NONE);
+            assert!(app.login.app_id_choice < app.login.app_ids.len());
+        }
+
+        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.login.step, LoginStep::Choose);
+        assert_eq!(app.screen, Screen::Login);
+        assert!(app.pending_login.is_none());
+    }
+
+    #[test]
+    fn a_missing_app_id_file_is_reported_and_never_signs_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let accounts = tmp.path().join("凭据").join("账户");
+        std::fs::create_dir_all(&accounts).unwrap();
+        let mut app = App::new("/mc", accounts, vec![version("a")], Vec::new());
+
+        app.open_login();
+        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.login.step, LoginStep::ChooseAppIds);
+        let error = app.login.app_ids_error.clone().expect("an error is shown");
+        assert!(error.contains("azure_app_ids.toml"), "{error}");
+
+        // Enter on an empty list says why instead of starting a login.
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.pending_login.is_none());
+        assert!(
+            app.status.contains("未找到") || app.status.contains("没有可用"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_malformed_app_id_file_is_reported() {
+        let (_tmp, mut app) = saved_app("api_keys = 1\n");
+        app.open_login();
+        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        let error = app.login.app_ids_error.clone().expect("an error is shown");
+        assert!(error.contains("解析失败"), "{error}");
+        assert!(app.login.app_ids.is_empty());
     }
 
     #[test]
@@ -2542,6 +2792,39 @@ mod tests {
 
         // And it must not start a login by itself while the id is empty.
         assert!(app.pending_login.is_none());
+    }
+
+    #[test]
+    fn clicking_a_saved_row_adds_the_scroll_offset_back() {
+        let (_tmp, mut app) = saved_app(
+            r#"
+[[api_keys]]
+name = "first"
+key = "aaaaaaaa-0000-0000-0000-000000000000"
+
+[[api_keys]]
+name = "second"
+key = "bbbbbbbb-0000-0000-0000-000000000000"
+"#,
+        );
+        app.open_login();
+        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
+        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.login.app_ids.len(), 2);
+
+        // The renderer scrolled the list; row 0 on screen is entry 1 on disk.
+        app.login.app_id_offset = 1;
+        app.layout.overlay = Area::new(20, 8, 60, 10);
+        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2)];
+        app.handle_mouse(click(30, 9));
+
+        assert_eq!(
+            app.pending_login,
+            Some(Identity::Saved {
+                name: "second".to_string(),
+                app_id: "bbbbbbbb-0000-0000-0000-000000000000".to_string(),
+            })
+        );
     }
 
     #[test]

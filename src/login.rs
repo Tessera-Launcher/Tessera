@@ -21,13 +21,25 @@ pub enum Identity {
     Official,
     /// Another launcher's Azure application client id (user + XSTS).
     Custom { app_id: String },
+    /// One of the ids listed in `data/凭据/启动器/azure_app_ids.toml`, signed in
+    /// under the name that file gives it.
+    Saved { name: String, app_id: String },
 }
 
 impl Identity {
-    pub fn label(&self) -> &'static str {
+    /// The label written into the account file, i.e. what the header shows.
+    pub fn label(&self) -> String {
         match self {
-            Identity::Official => "官方启动器",
-            Identity::Custom { .. } => "自定义启动器",
+            Identity::Official => "官方启动器".to_string(),
+            Identity::Custom { .. } => "自定义启动器".to_string(),
+            Identity::Saved { name, app_id } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    app_id.trim().to_string()
+                } else {
+                    name.to_string()
+                }
+            }
         }
     }
 }
@@ -81,6 +93,11 @@ async fn run(
         Identity::Official => AuthApplication::official_launcher(),
         Identity::Custom { app_id } => {
             AuthApplication::azure_application("自定义启动器", app_id.trim())
+        }
+        Identity::Saved { name, app_id } => {
+            // `azure_application` rejects a blank or malformed id before any
+            // request is made, so a bad file entry fails without a device code.
+            AuthApplication::azure_application(name.trim(), app_id.trim())
         }
     };
     let application_label = application.label.clone();
@@ -139,6 +156,16 @@ mod tests {
             }
             .label(),
             "自定义启动器"
+        );
+        // A saved entry is labelled by the name in the file, so the account list
+        // says `HMCL` rather than the generic `自定义启动器`.
+        assert_eq!(
+            Identity::Saved {
+                name: " HMCL ".into(),
+                app_id: "6a3728d6-27a3-4180-99bb-479895b8f88e".into()
+            }
+            .label(),
+            "HMCL"
         );
     }
 
