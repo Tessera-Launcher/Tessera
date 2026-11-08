@@ -31,6 +31,14 @@ tokio = { version = "1", features = ["rt", "time", "sync"] }
 [dev-dependencies]
 tempfile = "3"
 
+[profile.dev]
+# 默认 debug = 2 会内嵌完整 DWARF 调试信息，单个二进制就 130MB+。
+# 开发时只需要可读的 panic 回溯，所以整体关闭（依赖也一并关掉）。
+debug = false
+
 [profile.release]
-lto = "thin"
+lto = "fat"
 strip = true
+panic = "abort"
+codegen-units = 1
+opt-level = "z"
