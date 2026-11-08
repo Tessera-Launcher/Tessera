@@ -113,6 +113,14 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
         .unwrap_or_default()
         .to_string();
 
+    // A credential file without a uuid is still usable: the same name always
+    // maps to the same offline uuid, which is what `Credentials::from_account_file`
+    // does on the fallback path too.
+    let uuid = if uuid.is_empty() {
+        crate::launch::offline_uuid(&username)
+    } else {
+        uuid
+    };
     let _ = sender.send(SessionEvent::Ready {
         username,
         uuid,

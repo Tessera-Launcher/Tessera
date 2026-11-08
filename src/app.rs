@@ -1,4 +1,9 @@
-//! Screen state. No I/O and no terminal, so every transition is testable headless.
+//! Screen state and event handling.
+//!
+//! The terminal is never touched here: rendering takes `&mut App` but the layout
+//! comes back as a value, and everything that needs a thread, a process, the
+//! network or a long disk walk is queued as an [`Effect`] for the main loop. That
+//! is what keeps every screen transition testable without a TTY.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -43,6 +48,39 @@ pub enum Screen {
     Installing,
     /// The Java runtime picker.
     Java,
+}
+
+/// A side effect the state machine wants performed.
+///
+/// Everything that needs a thread, a process, the network, or a long disk walk is
+/// expressed as an [`Effect`] instead of a loose `pending_*` field: the state
+/// machine records the intent, and the main loop is the only place that knows
+/// how to execute it.
+#[derive(Debug)]
+pub enum Effect {
+    /// Start the device-code login for this identity.
+    Login(Identity),
+    /// Fetch the mirror's version list for the download picker.
+    FetchVersions,
+    /// Install one version, optionally with a loader.
+    Install { version: String, loader: Loader },
+    /// Refresh the saved session in this credential file before launching.
+    RefreshSession(PathBuf),
+    /// Ask Adoptium for the latest JRE of every offered feature.
+    FetchJavaList,
+    /// Download one Java runtime from the first URL that works.
+    InstallJava {
+        runtime: crate::java::Runtime,
+        urls: Vec<String>,
+    },
+    /// Put `text` on the clipboard (tool first, then OSC 52).
+    Copy(String),
+    /// Hand `url` to the desktop's browser.
+    OpenBrowser(String),
+    /// Reclaim shared libraries/assets no remaining version references.
+    Sweep(Vec<String>),
+    /// Reap a spawned game and report its exit status.
+    Watch(String, std::process::Child),
 }
 
 /// Who is signed in, for the header.
@@ -454,8 +492,6 @@ pub struct LoginUi {
     pub app_ids: Vec<crate::app_ids::AppId>,
     /// Why the list could not be read, if it could not. Shown instead of rows.
     pub app_ids_error: Option<String>,
-    /// Where the list was read from; shown in the popup either way.
-    pub app_ids_path: PathBuf,
     /// Selected row in [`LoginUi::app_ids`].
     pub app_id_choice: usize,
     /// First drawn row, so a long list can scroll under the selection.
@@ -470,7 +506,6 @@ impl Default for LoginUi {
             app_id: String::new(),
             app_ids: Vec::new(),
             app_ids_error: None,
-            app_ids_path: PathBuf::new(),
             app_id_choice: 0,
             app_id_offset: 0,
         }
@@ -606,6 +641,10 @@ pub struct App {
     pub status: String,
     /// Rolling log pane contents, oldest first.
     pub log: VecDeque<String>,
+    /// Lines the pane has seen but the log file has not yet. The main loop drains
+    /// it into `data/日志/yaml.log`; the state machine never touches the disk for
+    /// its own log.
+    pub pending_log: Vec<String>,
     pub should_quit: bool,
     pub account: Account,
     pub screen: Screen,
@@ -614,41 +653,24 @@ pub struct App {
     pub login: LoginUi,
     pub accounts_ui: AccountsUi,
     pub download: DownloadUi,
-    /// Set when the UI wants the version list fetched.
-    pub pending_versions: bool,
-    /// Set when the UI wants an install started.
-    pub pending_install: Option<(String, Loader)>,
+    /// Work the state machine wants the main loop to do. Drained with
+    /// [`App::take_effects`]; empty between iterations.
+    effects: Vec<Effect>,
+    /// The credential file whose refresh is in flight, kept so a failed refresh
+    /// can fall back to the token already on disk.
+    refreshing: Option<PathBuf>,
     /// Where files come from; shown in the picker title.
     pub source: crate::install::Source,
     /// Launch tuning, applied to the next launch.
     pub launch_options: launch::Options,
-    /// Account file whose session should be refreshed before launching.
-    pub pending_refresh: Option<(String, PathBuf)>,
-    /// Version directories whose shared libraries/assets may now be unpacked.
-    /// The main loop takes it and runs the sweep on a worker thread.
-    pub pending_sweep: Option<Vec<String>>,
-    /// Children this app spawned (the game) with the version directory they run,
-    /// still to be reaped. The main loop takes them and waits on a worker thread,
-    /// so the launcher never leaves zombies behind and can report how a session
-    /// ended.
-    pub pending_watches: Vec<(String, std::process::Child)>,
-    /// Credentials used by the most recent launch attempt (for tests/diagnostics).
-    pub last_credentials: Option<launch::Credentials>,
-    /// The command built by the most recent launch attempt.
-    pub last_launch: Option<launch::Launch>,
-    /// Set when the UI wants a login thread; the main loop takes it and spawns one.
-    pub pending_login: Option<Identity>,
-    /// Set when the Java picker wants Adoptium's list.
-    pub pending_java_list: bool,
-    /// Set when a Java runtime should be downloaded; the loop spawns the worker.
-    pub pending_java: Option<(crate::java::Runtime, Vec<String>)>,
+    /// The persisted defaults (`data/配置.toml`): heap, window size, proxy. The
+    /// main loop writes this back when it changed.
+    pub settings: crate::settings::Settings,
     /// The Java picker's state.
     pub java: JavaUi,
-    /// Text the user asked to copy; the main loop hands it to the terminal.
-    pub pending_clipboard: Option<String>,
-    /// URL the user asked to open in a browser; the main loop spawns the opener.
-    pub pending_browser: Option<String>,
-    /// Filled by the renderer every frame; read by the mouse handler.
+    /// Where the last frame put things. The renderer returns this instead of
+    /// writing into the app, and the main loop stores it here so mouse hits can be
+    /// resolved against what is actually on screen.
     pub layout: Layout,
     /// First visible row of the version list.
     list_offset: usize,
@@ -690,6 +712,7 @@ impl App {
             accounts,
             selected: 0,
             log: VecDeque::new(),
+            pending_log: Vec::new(),
             should_quit: false,
             account: Account::SignedOut,
             screen: Screen::Main,
@@ -697,21 +720,12 @@ impl App {
             login: LoginUi::default(),
             accounts_ui: AccountsUi::default(),
             download: DownloadUi::default(),
-            pending_versions: false,
-            pending_install: None,
+            effects: Vec::new(),
+            refreshing: None,
             source: crate::install::Source::default(),
             launch_options: launch::Options::default(),
-            pending_refresh: None,
-            pending_sweep: None,
-            pending_watches: Vec::new(),
-            last_credentials: None,
-            last_launch: None,
-            pending_login: None,
-            pending_java_list: false,
-            pending_java: None,
+            settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
-            pending_clipboard: None,
-            pending_browser: None,
             layout: Layout::default(),
             list_offset: 0,
             log_scroll: 0,
@@ -887,24 +901,39 @@ impl App {
         self.log_scroll = self.log_scroll.saturating_sub(lines);
     }
 
+    /// Ask the main loop for a side effect.
+    ///
+    /// Used by the state machine itself and, for the one request that has to wait
+    /// for a busy worker, by the loop to put it back.
+    pub fn request(&mut self, effect: Effect) {
+        self.effects.push(effect);
+    }
+
+    /// Take everything the main loop has to do before the next frame.
+    pub fn take_effects(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.effects)
+    }
+
+    /// Read-only view, for tests.
+    #[cfg(test)]
+    pub fn effects(&self) -> &[Effect] {
+        &self.effects
+    }
+
     pub fn log(&mut self, line: impl Into<String>) {
+        let line = line.into();
         if self.log.len() == LOG_CAPACITY {
             self.log.pop_front();
         }
-        self.log.push_back(line.into());
+        self.pending_log.push(line.clone());
+        self.log.push_back(line);
     }
 
-    pub fn selected_paths(&self) -> Option<SelectedPaths> {
+    pub fn selected_dir(&self) -> Option<PathBuf> {
         let version = self.selected_version()?;
-        // Everything is named after the directory, not the JSON id: a profile
-        // whose own id disagrees with its folder still lives in the folder.
-        let dir = self.root.join("versions").join(&version.dir);
-        Some(SelectedPaths {
-            json: dir.join(format!("{}.json", version.dir)),
-            jar: dir.join(format!("{}.jar", version.dir)),
-            natives: dir.join(format!("{}-natives", version.dir)),
-            dir,
-        })
+        // The directory name is the identity, not the JSON id: a profile whose
+        // own id disagrees with its folder still lives in the folder.
+        Some(self.root.join("versions").join(&version.dir))
     }
 
     /// Size of the selected version directory, measured at most once per
@@ -915,16 +944,16 @@ impl App {
     /// answer is cached by directory. Any change to what is on disk goes through
     /// [`App::reload`] or [`App::uninstall`], which drop the cache.
     pub fn selected_size(&mut self) -> u64 {
-        let Some(paths) = self.selected_paths() else {
+        let Some(dir) = self.selected_dir() else {
             return 0;
         };
-        if let Some((dir, size)) = &self.size_cache {
-            if *dir == paths.dir {
+        if let Some((cached, size)) = &self.size_cache {
+            if *cached == dir {
                 return *size;
             }
         }
-        let size = discover::dir_size(&paths.dir);
-        self.size_cache = Some((paths.dir, size));
+        let size = discover::dir_size(&dir);
+        self.size_cache = Some((dir, size));
         size
     }
 
@@ -1036,12 +1065,12 @@ impl App {
         // sweep stats and deletes thousands of files, so the main loop runs it on
         // a worker thread and reports back through [`App::handle_sweep`].
         self.size_cache = None;
-        self.pending_sweep = Some(
+        self.request(Effect::Sweep(
             self.all_versions
                 .iter()
                 .map(|version| version.dir.clone())
                 .collect(),
-        );
+        ));
         self.selected = self.selected.min(self.versions.len().saturating_sub(1));
 
         // `removed` starts with the selected version, so index 0 is the one the
@@ -1066,7 +1095,7 @@ impl App {
     pub fn handle_sweep(&mut self, sweep: cleanup::Sweep) {
         let note = sweep.note();
         if !note.is_empty() {
-            self.log(format!("清理库/资源{s}", s = note.trim_start_matches('；')));
+            self.log(note.trim_start_matches('；').to_string());
         }
         if let Some(detail) = sweep.detail() {
             self.log(detail);
@@ -1085,6 +1114,14 @@ impl App {
     /// Hit testing lives here rather than in the renderer so that every click
     /// path is testable without a terminal: tests set [`Layout`] directly.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        // The layout is a cache of the last frame; take it out so the handler can
+        // mutate the app while reading it, then put it back unchanged.
+        let layout = std::mem::take(&mut self.layout);
+        self.handle_mouse_in(&layout, event);
+        self.layout = layout;
+    }
+
+    fn handle_mouse_in(&mut self, layout: &Layout, event: MouseEvent) {
         // Right click is "back", the way Android's back gesture works. On the main
         // screen there is nothing to go back to and Esc would quit, so a stray
         // right click must not close the launcher.
@@ -1098,8 +1135,7 @@ impl App {
         // A footer hint is a button: replay its key instead of duplicating the
         // action, so the two can never drift apart.
         if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if let Some(button) = self
-                .layout
+            if let Some(button) = layout
                 .buttons
                 .iter()
                 .find(|button| button.area.contains(event.column, event.row))
@@ -1115,44 +1151,44 @@ impl App {
             }
         }
         match self.screen {
-            Screen::Main => self.handle_main_mouse(event),
-            Screen::Login => self.handle_login_mouse(event),
-            Screen::Accounts => self.handle_accounts_mouse(event),
-            Screen::Download => self.handle_download_mouse(event),
-            Screen::Java => self.handle_java_mouse(event),
+            Screen::Main => self.handle_main_mouse(layout, event),
+            Screen::Login => self.handle_login_mouse(layout, event),
+            Screen::Accounts => self.handle_accounts_mouse(layout, event),
+            Screen::Download => self.handle_download_mouse(layout, event),
+            Screen::Java => self.handle_java_mouse(layout, event),
             // Downloads run in the background; the progress screen has no targets.
             Screen::Installing => {}
         }
     }
 
-    fn handle_main_mouse(&mut self, event: MouseEvent) {
+    fn handle_main_mouse(&mut self, layout: &Layout, event: MouseEvent) {
         let (column, row) = (event.column, event.row);
         match event.kind {
             MouseEventKind::ScrollUp => {
-                if self.layout.log.contains(column, row) {
+                if layout.log.contains(column, row) {
                     self.scroll_log(3);
-                } else if self.layout.list.contains(column, row) {
+                } else if layout.list.contains(column, row) {
                     self.select_by(-WHEEL_STEP);
                 } else {
                     self.scroll_log(3);
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.layout.log.contains(column, row) {
+                if layout.log.contains(column, row) {
                     self.scroll_log_back(3);
-                } else if self.layout.list.contains(column, row) {
+                } else if layout.list.contains(column, row) {
                     self.select_by(WHEEL_STEP);
                 } else {
                     self.scroll_log_back(3);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.layout.account.contains(column, row) {
+                if layout.account.contains(column, row) {
                     self.open_accounts();
                     return;
                 }
-                if self.layout.list.contains(column, row) {
-                    let index = self.list_offset + (row - self.layout.list.y) as usize;
+                if layout.list.contains(column, row) {
+                    let index = self.list_offset + (row - layout.list.y) as usize;
                     if index >= self.versions.len() {
                         return;
                     }
@@ -1175,14 +1211,13 @@ impl App {
         }
     }
 
-    fn handle_login_mouse(&mut self, event: MouseEvent) {
+    fn handle_login_mouse(&mut self, layout: &Layout, event: MouseEvent) {
         let (column, row) = (event.column, event.row);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // A click on an identity row both selects and confirms it, the way a
                 // menu behaves; a click outside the popup cancels.
-                if let Some(index) = self
-                    .layout
+                if let Some(index) = layout
                     .overlay_options
                     .iter()
                     .position(|area| area.contains(column, row))
@@ -1198,18 +1233,18 @@ impl App {
                     self.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
                     return;
                 }
-                if !self.layout.overlay.contains(column, row) {
+                if !layout.overlay.contains(column, row) {
                     self.close_login();
                 }
             }
-            MouseEventKind::ScrollUp if self.layout.overlay.contains(column, row) => {
+            MouseEventKind::ScrollUp if layout.overlay.contains(column, row) => {
                 if self.login.step == LoginStep::ChooseAppIds {
                     self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
                 } else {
                     self.login.choice = self.login.choice.saturating_sub(1);
                 }
             }
-            MouseEventKind::ScrollDown if self.layout.overlay.contains(column, row) => {
+            MouseEventKind::ScrollDown if layout.overlay.contains(column, row) => {
                 if self.login.step == LoginStep::ChooseAppIds {
                     let last = self.login.app_ids.len().saturating_sub(1);
                     self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
@@ -1247,7 +1282,6 @@ impl App {
     /// edit in another window is picked up without restarting the launcher.
     fn open_app_ids(&mut self) {
         let path = self.app_ids_path();
-        self.login.app_ids_path = path.clone();
         self.login.app_id_choice = 0;
         self.login.app_id_offset = 0;
         match crate::app_ids::load(&path) {
@@ -1359,7 +1393,8 @@ impl App {
             Some(file) => {
                 self.status = "刷新登录令牌…".to_string();
                 self.log(format!("启动前刷新 {} 的令牌", version.dir));
-                self.pending_refresh = Some((version.dir, file));
+                self.refreshing = Some(file.clone());
+                self.request(Effect::RefreshSession(file));
             }
             None => {
                 let name = match &self.account {
@@ -1374,7 +1409,7 @@ impl App {
 
     /// Apply the result of the refresh worker.
     pub fn handle_session_event(&mut self, event: SessionEvent) {
-        let pending = self.pending_refresh.take();
+        let pending = self.refreshing.take();
         match event {
             SessionEvent::Ready {
                 username,
@@ -1409,7 +1444,7 @@ impl App {
                 // token is already on disk.
                 self.log(format!("刷新失败（{reason}），使用已保存的令牌"));
                 let fallback = match &pending {
-                    Some((_, file)) => launch::Credentials::from_account_file(file),
+                    Some(file) => launch::Credentials::from_account_file(file),
                     None => Err("没有账户文件".to_string()),
                 };
                 match fallback {
@@ -1440,9 +1475,14 @@ impl App {
             return;
         };
 
-        // Record what we tried before anything can fail, so a failed build still
-        // tells the caller (and the tests) which credentials were used.
-        self.last_credentials = Some(credentials.clone());
+        // Say what is about to happen before anything can fail: a launch that
+        // dies in `prepare` should still show which session it tried.
+        let session = if credentials.user_type == "msa" {
+            format!("正版会话（{}）", credentials.username)
+        } else {
+            format!("离线（{}）", credentials.username)
+        };
+        self.log(format!("准备启动 {} · {session}", version.dir));
 
         let prepared =
             match launch::prepare(&self.root, &version.dir, &credentials, &self.launch_options) {
@@ -1454,14 +1494,9 @@ impl App {
                 }
             };
 
-        let session = if credentials.user_type == "msa" {
-            format!("正版会话（{}）", credentials.username)
-        } else {
-            format!("离线（{}）", credentials.username)
-        };
         self.log(format!(
-            "启动 {} · {session} · Java {} · {} 个 classpath 条目 · 主类 {}",
-            version.dir, prepared.java_major, prepared.classpath_entries, prepared.main_class
+            "Java {} · {} 个 classpath 条目 · 主类 {}",
+            prepared.java_major, prepared.classpath_entries, prepared.main_class
         ));
         if prepared.required_major > prepared.java_major {
             self.log(format!(
@@ -1481,14 +1516,13 @@ impl App {
                 self.log(format!("游戏进程已启动（pid {}）", child.id()));
                 // The main loop waits on it in a thread: spawning and dropping the
                 // handle would leave a zombie and lose the exit code.
-                self.pending_watches.push((version.dir.clone(), child));
+                self.request(Effect::Watch(version.dir.clone(), child));
             }
             Err(error) => {
                 self.status = "启动失败".to_string();
                 self.log(format!("无法启动 Java：{error}"));
             }
         }
-        self.last_launch = Some(prepared);
     }
 
     /// Report how a game session ended.
@@ -1554,7 +1588,7 @@ impl App {
     pub fn open_download(&mut self) {
         self.download = DownloadUi::default();
         self.screen = Screen::Download;
-        self.pending_versions = true;
+        self.request(Effect::FetchVersions);
         self.status = "下载：正在获取版本列表".to_string();
         self.log("打开下载界面");
     }
@@ -1591,8 +1625,8 @@ impl App {
                         }
                         KeyCode::Tab => self.download.focus = self.download.focus.next(),
                         // Arrows still walk the list while the caret is in the box.
-                        KeyCode::Up => self.picker_move(-1),
-                        KeyCode::Down => self.picker_move(1),
+                        KeyCode::Up => self.picker_step(-1, true),
+                        KeyCode::Down => self.picker_step(1, true),
                         KeyCode::Enter => self.start_install(),
                         KeyCode::Char(c) if !c.is_control() => {
                             self.download.query.push(c);
@@ -1612,8 +1646,8 @@ impl App {
                         self.download.apply_filter();
                         self.status = format!("下载：{} 版本", self.download.filter.label());
                     }
-                    KeyCode::Up | KeyCode::Char('k') => self.picker_move(-1),
-                    KeyCode::Down | KeyCode::Char('j') => self.picker_move(1),
+                    KeyCode::Up | KeyCode::Char('k') => self.picker_step(-1, true),
+                    KeyCode::Down | KeyCode::Char('j') => self.picker_step(1, true),
                     // Tree controls: `←` closes, `→` opens, `Space` flips whichever
                     // group the cursor is in (its header, or one of its members).
                     KeyCode::Left => self.toggle_group_at_cursor(Some(false)),
@@ -1639,18 +1673,32 @@ impl App {
         true
     }
 
-    fn picker_move(&mut self, delta: i32) {
+    /// Move the picker selection by `delta` steps.
+    ///
+    /// The keyboard wraps (`↓` on the last row starts over) and the wheel stops at
+    /// both ends; that is the only difference, so both share this walk.
+    fn picker_step(&mut self, delta: i32, wrap: bool) {
+        let step = |position: i32, count: usize| -> usize {
+            let last = count as i32 - 1;
+            let target = position + delta;
+            (if wrap {
+                target.rem_euclid(count as i32)
+            } else {
+                target.clamp(0, last)
+            }) as usize
+        };
         match self.download.focus {
+            // Walk the drawn rows, not the filtered list: a folded group is one
+            // stop, however many snapshots it hides, and its members are not
+            // steps either the keyboard or the wheel may land on.
             PickerFocus::Versions | PickerFocus::Search => {
-                // Walk the drawn rows, not the filtered list: a folded group is one
-                // stop, however many snapshots it hides.
                 let stops = self.download.stops();
                 if stops.is_empty() {
                     return;
                 }
                 let cursor = self.download.cursor();
                 let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
-                let next = (position as i32 + delta).rem_euclid(stops.len() as i32) as usize;
+                let next = step(position as i32, stops.len());
                 self.download.picked = self.download.rows[stops[next]].anchor();
                 self.download.refresh_loaders();
             }
@@ -1659,63 +1707,30 @@ impl App {
                 if count == 0 {
                     return;
                 }
-                let index = (self.download.loader_pick as i32 + delta).rem_euclid(count as i32);
-                self.download.loader_pick = index as usize;
+                self.download.loader_pick = step(self.download.loader_pick as i32, count);
             }
         }
     }
 
-    /// Scroll the picker without wrapping, the way the wheel should behave.
-    fn picker_scroll(&mut self, delta: i32) {
-        match self.download.focus {
-            // The wheel over the filter bar is not a thing; treat it as versions.
-            PickerFocus::Versions | PickerFocus::Search => {
-                // Scroll by drawn row, not by version: a folded cycle is one row
-                // and its hidden members are not steps the wheel may land on.
-                // Unlike `↑↓`, the wheel stops at both ends instead of wrapping.
-                let stops = self.download.stops();
-                if stops.is_empty() {
-                    return;
-                }
-                let cursor = self.download.cursor();
-                let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
-                let next = (position as i32 + delta).clamp(0, stops.len() as i32 - 1) as usize;
-                self.download.picked = self.download.rows[stops[next]].anchor();
-                self.download.refresh_loaders();
-            }
-            PickerFocus::Loaders => {
-                let count = self.download.loaders.len();
-                if count == 0 {
-                    return;
-                }
-                let last = count - 1;
-                self.download.loader_pick =
-                    (self.download.loader_pick as i32 + delta).clamp(0, last as i32) as usize;
-            }
-        }
-    }
-
-    fn handle_download_mouse(&mut self, event: MouseEvent) {
+    fn handle_download_mouse(&mut self, layout: &Layout, event: MouseEvent) {
         if self.download.stage != DownloadStage::Picking {
             return;
         }
         let (column, row) = (event.column, event.row);
         // Clicks land on rows; the wheel works anywhere in the pane, so pointing
         // at the header or the empty space below the last row still scrolls.
-        let over_versions_rows = self.layout.download_versions.contains(column, row);
-        let over_loaders_rows = self.layout.download_loaders.contains(column, row);
-        let over_versions = self.layout.download_versions_pane.contains(column, row);
-        let over_loaders = self.layout.download_loaders_pane.contains(column, row);
-        let over_search = self.layout.download_search.contains(column, row);
-        let chip = self
-            .layout
+        let over_versions_rows = layout.download_versions.contains(column, row);
+        let over_loaders_rows = layout.download_loaders.contains(column, row);
+        let over_versions = layout.download_versions_pane.contains(column, row);
+        let over_loaders = layout.download_loaders_pane.contains(column, row);
+        let over_search = layout.download_search.contains(column, row);
+        let chip = layout
             .download_filters
             .iter()
             .position(|area| area.contains(column, row));
         // The source switch sits inside the loader pane, so it has to be tested
         // before the pane's rows are.
-        let source_chip = self
-            .layout
+        let source_chip = layout
             .download_sources
             .iter()
             .position(|area| area.contains(column, row));
@@ -1731,10 +1746,10 @@ impl App {
                 // border always says which list the wheel is about to move.
                 if over_versions {
                     self.download.focus = PickerFocus::Versions;
-                    self.picker_scroll(delta);
+                    self.picker_step(delta, false);
                 } else if over_loaders {
                     self.download.focus = PickerFocus::Loaders;
-                    self.picker_scroll(delta);
+                    self.picker_step(delta, false);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1750,8 +1765,8 @@ impl App {
                     self.set_source(crate::install::Source::ALL[index]);
                 } else if over_versions_rows {
                     self.download.focus = PickerFocus::Versions;
-                    let drawn = self.layout.download_offset
-                        + (row - self.layout.download_versions.y) as usize;
+                    let drawn =
+                        layout.download_offset + (row - layout.download_versions.y) as usize;
                     // A folded group unfolds on the first click either way; a
                     // second click on the same row starts the install.
                     let now = Instant::now();
@@ -1770,7 +1785,7 @@ impl App {
                     }
                 } else if over_loaders_rows {
                     self.download.focus = PickerFocus::Loaders;
-                    let index = (row - self.layout.download_loaders.y) as usize;
+                    let index = (row - layout.download_loaders.y) as usize;
                     if index < self.download.loaders.len() {
                         self.download.loader_pick = index;
                     }
@@ -1842,7 +1857,7 @@ impl App {
         self.screen = Screen::Installing;
         self.status = format!("安装 {version} · {}", loader.label());
         self.log(format!("开始安装 {version}（{}）", loader.label()));
-        self.pending_install = Some((version, loader));
+        self.request(Effect::Install { version, loader });
     }
 
     /// Apply an event from the download worker.
@@ -1928,9 +1943,11 @@ impl App {
     /// Open the Java picker and ask the loop for Adoptium's list.
     pub fn open_java(&mut self) {
         self.java = JavaUi::default();
+        // The proxy is the one field of this screen that outlives it.
+        self.java.proxy = self.settings.github_proxy.clone();
         self.java.installed = crate::java::installed(&self.runtimes);
         self.screen = Screen::Java;
-        self.pending_java_list = true;
+        self.request(Effect::FetchJavaList);
         self.status = "Java：正在查询 Adoptium".to_string();
         self.log("打开 Java 下载界面");
     }
@@ -1951,6 +1968,11 @@ impl App {
         self.status = format!("Java 下载源：{}", source.label());
     }
 
+    /// Say why the proxy field is inert: it only applies to the GitHub source.
+    fn explain_proxy_needs_github(&mut self) {
+        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
+    }
+
     /// Keys while the Java picker is open.
     pub fn handle_java_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         let _ = modifiers;
@@ -1959,6 +1981,7 @@ impl App {
             match code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => {
                     self.java.editing_proxy = false;
+                    self.settings.github_proxy = self.java.proxy.trim().to_string();
                     self.status = if self.java.proxy.trim().is_empty() {
                         "GitHub Proxy：未设置".to_string()
                     } else {
@@ -1997,7 +2020,7 @@ impl App {
                         self.java.editing_proxy = true;
                         self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
                     } else {
-                        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
+                        self.explain_proxy_needs_github();
                     }
                 }
                 KeyCode::Enter => self.start_java_download(),
@@ -2022,6 +2045,7 @@ impl App {
         if self.java.stage == JavaStage::Downloading {
             return;
         }
+        self.settings.github_proxy = self.java.proxy.trim().to_string();
         let urls = crate::java::candidates(
             &runtime,
             self.java.source,
@@ -2039,7 +2063,7 @@ impl App {
             runtime.version(),
             self.java.source.label()
         ));
-        self.pending_java = Some((runtime, urls));
+        self.request(Effect::InstallJava { runtime, urls });
     }
 
     /// Apply an event from the Java worker.
@@ -2088,15 +2112,14 @@ impl App {
     }
 
     /// Mouse handling for the Java picker: rows, source chips, the proxy field.
-    fn handle_java_mouse(&mut self, event: MouseEvent) {
+    fn handle_java_mouse(&mut self, layout: &Layout, event: MouseEvent) {
         let (column, row) = (event.column, event.row);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.java.editing_proxy {
                     self.java.editing_proxy = false;
                 }
-                if let Some(index) = self
-                    .layout
+                if let Some(index) = layout
                     .java_rows
                     .iter()
                     .position(|area| area.contains(column, row))
@@ -2118,28 +2141,23 @@ impl App {
                     } else {
                         self.java_click = Some((now, index));
                     }
-                } else if let Some(index) = self
-                    .layout
+                } else if let Some(index) = layout
                     .java_sources
                     .iter()
                     .position(|area| area.contains(column, row))
                 {
                     let source = crate::java::Source::ALL[index];
                     self.set_java_source(source);
-                } else if self.layout.java_proxy.contains(column, row) {
+                } else if layout.java_proxy.contains(column, row) {
                     if self.java.source == crate::java::Source::Github {
                         self.java.editing_proxy = true;
                     } else {
-                        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
+                        self.explain_proxy_needs_github();
                     }
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if self
-                    .layout
-                    .java_rows
-                    .iter()
-                    .any(|a| a.contains(column, row)) =>
+                if layout.java_rows.iter().any(|a| a.contains(column, row)) =>
             {
                 let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
                     -1
@@ -2260,12 +2278,11 @@ impl App {
     }
 
     /// Mouse handling for the account manager.
-    fn handle_accounts_mouse(&mut self, event: MouseEvent) {
+    fn handle_accounts_mouse(&mut self, layout: &Layout, event: MouseEvent) {
         let (column, row) = (event.column, event.row);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(index) = self
-                    .layout
+                if let Some(index) = layout
                     .account_rows
                     .iter()
                     .position(|area| area.contains(column, row))
@@ -2275,18 +2292,18 @@ impl App {
                     self.activate_selected_account();
                     return;
                 }
-                if !self.layout.accounts_popup.contains(column, row) {
+                if !layout.accounts_popup.contains(column, row) {
                     self.close_accounts();
                 }
             }
-            MouseEventKind::ScrollUp if self.layout.accounts_popup.contains(column, row) => {
+            MouseEventKind::ScrollUp if layout.accounts_popup.contains(column, row) => {
                 let count = self.accounts.len();
                 if count > 0 {
                     self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
                     self.accounts_ui.confirm_delete = false;
                 }
             }
-            MouseEventKind::ScrollDown if self.layout.accounts_popup.contains(column, row) => {
+            MouseEventKind::ScrollDown if layout.accounts_popup.contains(column, row) => {
                 let count = self.accounts.len();
                 if count > 0 {
                     self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
@@ -2388,17 +2405,17 @@ impl App {
                 match code {
                     KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
                     KeyCode::Char('c') if !user_code.is_empty() => {
-                        self.pending_clipboard = Some(user_code.clone());
+                        self.request(Effect::Copy(user_code.clone()));
                         self.log(format!("复制设备码：{user_code}"));
                         self.status = "已复制设备码".to_string();
                     }
                     KeyCode::Char('y') if !url.is_empty() => {
-                        self.pending_clipboard = Some(url.clone());
+                        self.request(Effect::Copy(url.clone()));
                         self.log(format!("复制链接：{url}"));
                         self.status = "已复制链接".to_string();
                     }
                     KeyCode::Char('o') if !url.is_empty() => {
-                        self.pending_browser = Some(url.clone());
+                        self.request(Effect::OpenBrowser(url.clone()));
                         self.log(format!("在浏览器打开：{url}"));
                         self.status = "正在打开浏览器…".to_string();
                     }
@@ -2426,7 +2443,7 @@ impl App {
         };
         self.status = format!("登录：{label}");
         self.log(format!("开始登录：{label}"));
-        self.pending_login = Some(identity);
+        self.request(Effect::Login(identity));
     }
 
     /// Apply an event from the login thread.
@@ -2479,15 +2496,6 @@ impl App {
     }
 }
 
-/// Paths belonging to the selected version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelectedPaths {
-    pub dir: PathBuf,
-    pub json: PathBuf,
-    pub jar: PathBuf,
-    pub natives: PathBuf,
-}
-
 /// Whether `id` is one ordinary path component.
 ///
 /// Version ids are directory names read off disk, but [`LocalVersion`] is a
@@ -2506,6 +2514,71 @@ fn is_plain_component(id: &str) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// The one login request the app queued, if any.
+    fn login_effect(app: &App) -> Option<Identity> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::Login(identity) => Some(identity.clone()),
+            _ => None,
+        })
+    }
+
+    /// The one session refresh the app queued, if any.
+    fn refresh_effect(app: &App) -> Option<PathBuf> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::RefreshSession(file) => Some(file.clone()),
+            _ => None,
+        })
+    }
+
+    /// The one install the app queued, if any.
+    fn install_effect(app: &App) -> Option<(String, Loader)> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::Install { version, loader } => Some((version.clone(), *loader)),
+            _ => None,
+        })
+    }
+
+    /// The one Java download the app queued, if any.
+    fn java_effect(app: &App) -> Option<(crate::java::Runtime, Vec<String>)> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::InstallJava { runtime, urls } => Some((runtime.clone(), urls.clone())),
+            _ => None,
+        })
+    }
+
+    fn copy_effect(app: &App) -> Option<String> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::Copy(text) => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    fn browser_effect(app: &App) -> Option<String> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::OpenBrowser(url) => Some(url.clone()),
+            _ => None,
+        })
+    }
+
+    fn has_fetch_versions(app: &App) -> bool {
+        app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::FetchVersions))
+    }
+
+    fn has_fetch_java_list(app: &App) -> bool {
+        app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::FetchJavaList))
+    }
+
+    fn sweep_effect(app: &App) -> Option<Vec<String>> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            Effect::Sweep(installed) => Some(installed.clone()),
+            _ => None,
+        })
+    }
 
     fn version(id: &str) -> LocalVersion {
         LocalVersion {
@@ -2551,16 +2624,12 @@ mod tests {
         app.select_last();
         assert_eq!(app.selected, 0);
         assert!(app.selected_version().is_none());
-        assert!(app.selected_paths().is_none());
+        assert!(app.selected_dir().is_none());
     }
 
     #[test]
-    fn selected_paths_follow_the_minecraft_layout() {
-        let paths = app().selected_paths().unwrap();
-        assert_eq!(paths.dir, Path::new("/mc/versions/a"));
-        assert_eq!(paths.json, Path::new("/mc/versions/a/a.json"));
-        assert_eq!(paths.jar, Path::new("/mc/versions/a/a.jar"));
-        assert_eq!(paths.natives, Path::new("/mc/versions/a/a-natives"));
+    fn the_selected_directory_follows_the_versions_folder() {
+        assert_eq!(app().selected_dir(), Some(PathBuf::from("/mc/versions/a")));
     }
 
     // ---- uninstalling ----
@@ -2604,9 +2673,10 @@ mod tests {
     ///
     /// The app hands the sweep to the main loop; tests are the loop here.
     fn flush_cleanup(app: &mut App) {
-        let Some(installed) = app.pending_sweep.take() else {
+        let Some(installed) = sweep_effect(app) else {
             return;
         };
+        app.take_effects();
         let sweep = cleanup::sweep(&app.root, app.cache.as_deref(), &installed);
         app.handle_sweep(sweep);
     }
@@ -2766,7 +2836,7 @@ mod tests {
         app.request_uninstall();
         app.request_uninstall();
         assert!(
-            app.pending_sweep.is_some(),
+            sweep_effect(&app).is_some(),
             "the sweep is a request for the main loop, not inline work"
         );
         flush_cleanup(&mut app);
@@ -2796,7 +2866,7 @@ mod tests {
         app.selected = 0;
         app.request_uninstall();
         app.request_uninstall();
-        assert!(app.pending_sweep.is_some());
+        assert!(sweep_effect(&app).is_some());
         assert!(
             !app.status.contains("清理"),
             "the status is not blocked on the sweep: {}",
@@ -2902,8 +2972,12 @@ mod tests {
 
         assert_eq!(app.status, "已启动 1.20.1", "{:?}", app.log);
         let (dir, mut child) = app
-            .pending_watches
-            .pop()
+            .take_effects()
+            .into_iter()
+            .find_map(|effect| match effect {
+                Effect::Watch(dir, child) => Some((dir, child)),
+                _ => None,
+            })
             .expect("the child is handed to the main loop for reaping");
         assert_eq!(dir, "1.20.1");
         let status = child.wait().expect("the fake runtime exits");
@@ -2976,6 +3050,14 @@ mod tests {
     }
 
     #[test]
+    fn every_log_line_is_queued_for_the_log_file() {
+        let mut app = App::new("/mc", "/acc", vec![], vec![]);
+        app.pending_log.clear();
+        app.log("写入文件的那一行");
+        assert_eq!(app.pending_log, vec!["写入文件的那一行".to_string()]);
+    }
+
+    #[test]
     fn log_is_capped() {
         let mut app = app();
         for i in 0..(LOG_CAPACITY + 10) {
@@ -2994,7 +3076,7 @@ mod tests {
         assert!(app.login.identity().is_some(), "official needs no input");
 
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.pending_login, Some(Identity::Official));
+        assert_eq!(login_effect(&app), Some(Identity::Official));
         assert!(matches!(app.login.step, LoginStep::Waiting { .. }));
     }
 
@@ -3005,12 +3087,12 @@ mod tests {
         app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.login.step, LoginStep::EnterAppId);
-        assert!(app.pending_login.is_none());
+        assert!(login_effect(&app).is_none());
 
         // Enter on an empty field must not start a login (and must not fall back
         // to any built-in id).
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.pending_login.is_none(), "empty app id must not start");
+        assert!(login_effect(&app).is_none(), "empty app id must not start");
         assert!(app.status.contains("不能为空"));
 
         for c in "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".chars() {
@@ -3021,7 +3103,7 @@ mod tests {
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
 
         assert_eq!(
-            app.pending_login,
+            login_effect(&app),
             Some(Identity::Custom {
                 app_id: "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string()
             })
@@ -3073,7 +3155,7 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
         );
         assert_eq!(app.login.app_ids.len(), 2);
         assert!(
-            app.pending_login.is_none(),
+            login_effect(&app).is_none(),
             "listing must not start a login"
         );
 
@@ -3081,7 +3163,7 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
         app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(
-            app.pending_login,
+            login_effect(&app),
             Some(Identity::Saved {
                 name: "Prism".to_string(),
                 app_id: "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string(),
@@ -3114,7 +3196,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.login.step, LoginStep::Choose);
         assert_eq!(app.screen, Screen::Login);
-        assert!(app.pending_login.is_none());
+        assert!(login_effect(&app).is_none());
     }
 
     #[test]
@@ -3133,7 +3215,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 
         // Enter on an empty list says why instead of starting a login.
         app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.pending_login.is_none());
+        assert!(login_effect(&app).is_none());
         assert!(
             app.status.contains("未找到") || app.status.contains("没有可用"),
             "{}",
@@ -3158,7 +3240,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.open_login();
         app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
-        assert!(app.pending_login.is_none());
+        assert!(login_effect(&app).is_none());
     }
 
     #[test]
@@ -3265,10 +3347,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn launching_refreshes_the_active_session_not_the_first_with_that_name() {
         let (_tmp, mut app) = with_two_steves();
         app.request_launch();
-        let (_, file) = app
-            .pending_refresh
-            .clone()
-            .expect("a refresh was requested");
+        let file = refresh_effect(&app).expect("a refresh was requested");
         assert!(
             file.ends_with("Steve (1).json"),
             "wrong session refreshed: {}",
@@ -3324,29 +3403,29 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 
         app.handle_login_key(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(
-            app.pending_clipboard.as_deref(),
+            copy_effect(&app).as_deref(),
             Some("ABCD-1234"),
             "the code, not the link"
         );
         assert!(app.status.contains("设备码"), "{}", app.status);
 
-        app.pending_clipboard = None;
+        app.take_effects();
         app.handle_login_key(KeyCode::Char('y'), KeyModifiers::NONE);
         assert_eq!(
-            app.pending_clipboard.as_deref(),
+            copy_effect(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCD1234")
         );
 
-        app.pending_browser = None;
+        app.take_effects();
         app.handle_login_key(KeyCode::Char('o'), KeyModifiers::NONE);
         assert_eq!(
-            app.pending_browser.as_deref(),
+            browser_effect(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCD1234")
         );
         assert!(app.log.iter().any(|line| line.contains("在浏览器打开")));
 
         // Everything else still cancels, and nothing was started by copying.
-        assert!(app.pending_login.is_none());
+        assert!(login_effect(&app).is_none());
         app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
     }
@@ -3363,8 +3442,8 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.handle_login_key(KeyCode::Char('c'), KeyModifiers::NONE);
         app.handle_login_key(KeyCode::Char('y'), KeyModifiers::NONE);
         app.handle_login_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        assert!(app.pending_clipboard.is_none());
-        assert!(app.pending_browser.is_none());
+        assert!(copy_effect(&app).is_none());
+        assert!(browser_effect(&app).is_none());
     }
 
     #[test]
@@ -3516,12 +3595,21 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         // First click only selects.
         app.handle_mouse(click(10, 6));
         assert_eq!(app.selected, 1);
-        assert!(app.last_credentials.is_none(), "one click must not launch");
+        assert!(
+            !app.log.iter().any(|line| line.contains("准备启动")),
+            "one click must not launch: {:?}",
+            app.log
+        );
 
         // Second click on the same row within the window launches.
         app.handle_mouse(click(10, 6));
-        let credentials = app.last_credentials.expect("double click launches");
-        assert_eq!(credentials.user_type, "legacy");
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("准备启动 b · 离线（Player）")),
+            "double click launches offline: {:?}",
+            app.log
+        );
     }
 
     #[test]
@@ -3532,8 +3620,9 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.last_click = Some((Instant::now() - std::time::Duration::from_secs(1), 1));
         app.handle_mouse(click(10, 6));
         assert!(
-            app.last_credentials.is_none(),
-            "clicks outside the window are separate"
+            !app.log.iter().any(|line| line.contains("准备启动")),
+            "clicks outside the window are separate: {:?}",
+            app.log
         );
     }
 
@@ -3543,7 +3632,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.handle_mouse(click(10, 5));
         app.handle_mouse(click(10, 6));
         assert_eq!(app.selected, 1);
-        assert!(app.last_credentials.is_none());
+        assert!(!app.log.iter().any(|line| line.contains("准备启动")));
     }
 
     #[test]
@@ -3569,7 +3658,12 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             "the log points at the Java screen: {:?}",
             app.log
         );
-        assert!(app.last_launch.is_none(), "nothing was started");
+        assert!(
+            !app.effects()
+                .iter()
+                .any(|effect| matches!(effect, Effect::Watch(..))),
+            "nothing was spawned without a runtime"
+        );
     }
 
     #[test]
@@ -3579,8 +3673,8 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.handle_mouse(click(10, 5));
         app.handle_mouse(click(10, 5));
         assert_eq!(
-            app.pending_refresh,
-            Some(("1.20.1".to_string(), PathBuf::from("/acc/Steve.json"))),
+            refresh_effect(&app),
+            Some(PathBuf::from("/acc/Steve.json")),
             "the launch path, refresh included, is what a double click runs"
         );
     }
@@ -3857,7 +3951,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert_eq!(app.login.step, LoginStep::EnterAppId);
 
         // And it must not start a login by itself while the id is empty.
-        assert!(app.pending_login.is_none());
+        assert!(login_effect(&app).is_none());
     }
 
     #[test]
@@ -3885,7 +3979,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_mouse(click(30, 9));
 
         assert_eq!(
-            app.pending_login,
+            login_effect(&app),
             Some(Identity::Saved {
                 name: "second".to_string(),
                 app_id: "bbbbbbbb-0000-0000-0000-000000000000".to_string(),
@@ -3901,7 +3995,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.layout.overlay_options = vec![Area::new(21, 9, 58, 2), Area::new(21, 11, 58, 2)];
 
         app.handle_mouse(click(30, 9));
-        assert_eq!(app.pending_login, Some(Identity::Official));
+        assert_eq!(login_effect(&app), Some(Identity::Official));
     }
 
     #[test]
@@ -3956,7 +4050,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.open_java();
         assert_eq!(app.screen, Screen::Java);
         assert_eq!(app.java.stage, JavaStage::Loading);
-        assert!(app.pending_java_list, "the loop fetches Adoptium's list");
+        assert!(
+            has_fetch_java_list(&app),
+            "the loop fetches Adoptium's list"
+        );
         assert!(app.java.runtimes.is_empty());
         assert_eq!(app.java.source, crate::java::Source::Tuna, "清华源默认");
         assert!(app.java.installed.is_empty(), "nothing downloaded yet");
@@ -3995,7 +4092,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.java.selected_runtime().unwrap().major, 21);
 
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        let (runtime, urls) = app.pending_java.clone().expect("a download started");
+        let (runtime, urls) = java_effect(&app).expect("a download started");
         assert_eq!(runtime.major, 21);
         assert!(
             urls[0].starts_with("https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/"),
@@ -4034,7 +4131,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.java.proxy, "gh-proxy.com");
 
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        let (_, urls) = app.pending_java.clone().expect("a download started");
+        let (_, urls) = java_effect(&app).expect("a download started");
         assert!(
             urls[0].starts_with("https://gh-proxy.com/github.com/adoptium/"),
             "the proxy is simply put in front: {urls:?}"
@@ -4096,7 +4193,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(app.log.iter().any(|line| line.contains("哈希不匹配")));
         // Esc still leaves, and a second Enter retries.
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.pending_java.is_some(), "retrying is one key away");
+        assert!(java_effect(&app).is_some(), "retrying is one key away");
     }
 
     #[test]
@@ -4121,13 +4218,13 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_mouse(click(10, 7));
         assert_eq!(app.java.selected, 2);
         assert!(
-            app.pending_java.is_none(),
+            java_effect(&app).is_none(),
             "one click only selects — a runtime is 50 MiB"
         );
         app.handle_mouse(click(10, 7));
-        assert!(app.pending_java.is_some(), "the second click downloads");
+        assert!(java_effect(&app).is_some(), "the second click downloads");
 
-        app.pending_java = None;
+        app.take_effects();
         app.handle_mouse(click(60, 12));
         assert_eq!(app.java.source, crate::java::Source::Github);
 
@@ -4316,7 +4413,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = tree_picker();
         app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
         app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
-        let (version, _) = app.pending_install.clone().expect("an install started");
+        let (version, _) = install_effect(&app).expect("an install started");
         assert_eq!(version, "1.21.9-pre3");
     }
 
@@ -4419,11 +4516,11 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         // One click only selects.
         app.handle_mouse(click(10, 6));
         assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
-        assert!(app.pending_install.is_none(), "one click must not install");
+        assert!(install_effect(&app).is_none(), "one click must not install");
 
         // The second click on the same row starts it.
         app.handle_mouse(click(10, 6));
-        let (version, _) = app.pending_install.clone().expect("an install started");
+        let (version, _) = install_effect(&app).expect("an install started");
         assert_eq!(version, "1.19.2");
         assert_eq!(app.download.stage, DownloadStage::Installing);
         assert_eq!(app.screen, Screen::Installing);
@@ -4437,7 +4534,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.download_click = Some((Instant::now() - std::time::Duration::from_secs(2), 1));
         app.handle_mouse(click(10, 6));
         assert!(
-            app.pending_install.is_none(),
+            install_effect(&app).is_none(),
             "clicks that far apart are separate"
         );
     }
@@ -4448,7 +4545,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_mouse(click(10, 5));
         app.handle_mouse(click(10, 6));
         assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
-        assert!(app.pending_install.is_none());
+        assert!(install_effect(&app).is_none());
     }
 
     #[test]
@@ -4488,7 +4585,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.open_download();
         assert_eq!(app.screen, Screen::Download);
         assert_eq!(app.download.stage, DownloadStage::LoadingVersions);
-        assert!(app.pending_versions);
+        assert!(has_fetch_versions(&app));
     }
 
     #[test]
@@ -4648,7 +4745,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         type_search(&mut app, "zzz");
         assert!(app.download.versions.is_empty());
         app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.pending_install.is_none());
+        assert!(install_effect(&app).is_none());
         assert_eq!(app.screen, Screen::Download);
     }
 
@@ -4763,7 +4860,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.screen, Screen::Installing);
         assert_eq!(app.download.stage, DownloadStage::Installing);
         assert_eq!(
-            app.pending_install,
+            install_effect(&app),
             Some(("1.20.1".to_string(), Loader::None))
         );
     }
@@ -4891,9 +4988,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             file: account_file.clone(),
             player_name: "Steve".into(),
             copy: 0,
-            player_uuid: "uuid".into(),
             application: "Minecraft Launcher".into(),
-            app_id: "id".into(),
         }];
         app.account = Account::SignedIn {
             name: "Steve".into(),
@@ -4909,28 +5004,34 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_signed_in_launch_refreshes_before_building_anything() {
         let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
         app.request_launch();
-        assert_eq!(
-            app.pending_refresh,
-            Some(("1.20.1".to_string(), PathBuf::from("/acc/Steve.json")))
+        assert_eq!(refresh_effect(&app), Some(PathBuf::from("/acc/Steve.json")));
+        assert!(
+            !app.log.iter().any(|line| line.contains("准备启动")),
+            "nothing is built before the refresh: {:?}",
+            app.log
         );
-        assert!(app.last_launch.is_none(), "nothing is built before refresh");
-        assert!(app.last_credentials.is_none());
     }
 
     #[test]
     fn a_signed_out_launch_goes_straight_to_offline_credentials() {
         let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
         app.request_launch();
-        assert!(app.pending_refresh.is_none());
-        let credentials = app.last_credentials.expect("offline credentials are used");
-        assert_eq!(credentials.user_type, "legacy");
-        assert_eq!(credentials.access_token, "0");
+        assert!(refresh_effect(&app).is_none());
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("准备启动 1.20.1 · 离线（Player）")),
+            "a signed-out launch is offline: {:?}",
+            app.log
+        );
     }
 
     #[test]
     fn a_refreshed_token_is_what_gets_launched() {
         let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
         app.request_launch();
+        // The main loop takes the request before the worker reports.
+        app.take_effects();
         app.handle_session_event(SessionEvent::Ready {
             username: "Steve".into(),
             uuid: "uuid".into(),
@@ -4938,11 +5039,14 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             xuid: Some("42".into()),
             refreshed: true,
         });
-        assert!(app.pending_refresh.is_none());
-        let credentials = app.last_credentials.expect("credentials recorded");
-        assert_eq!(credentials.access_token, "fresh-token");
-        assert_eq!(credentials.user_type, "msa");
-        assert_eq!(credentials.xuid.as_deref(), Some("42"));
+        assert!(refresh_effect(&app).is_none());
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("准备启动 1.20.1 · 正版会话（Steve）")),
+            "the refreshed session is what launches: {:?}",
+            app.log
+        );
         assert!(app
             .log
             .iter()
@@ -4953,13 +5057,19 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn an_expired_session_falls_back_to_offline_with_a_clear_message() {
         let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
         app.request_launch();
+        // The main loop takes the request before the worker reports.
+        app.take_effects();
         app.handle_session_event(SessionEvent::NeedsSignIn {
             username: "Steve".into(),
             reason: "invalid_grant".into(),
         });
-        let credentials = app.last_credentials.expect("falls back, does not refuse");
-        assert_eq!(credentials.user_type, "legacy");
-        assert_eq!(credentials.username, "Steve", "keeps the player name");
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("准备启动 1.20.1 · 离线（Steve）")),
+            "it falls back to offline with the player name: {:?}",
+            app.log
+        );
         assert!(app.log.iter().any(|line| line.contains("登录已失效")));
         // The follow-up line tells the user what to do about it.
         assert!(app.log.iter().any(|line| line.contains("按 l 重新登录")));
@@ -4981,14 +5091,26 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         let mut app = signed_in_app(file.clone());
         app.request_launch();
+        // The main loop takes the request before the worker reports.
+        app.take_effects();
         app.handle_session_event(SessionEvent::Failed {
             username: "Steve".into(),
             reason: "网络超时".into(),
         });
 
-        let credentials = app.last_credentials.expect("falls back to the file");
-        assert_eq!(credentials.access_token, "stored");
-        assert_eq!(credentials.user_type, "msa");
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("准备启动 1.20.1 · 正版会话（Steve）")),
+            "the token on disk is used: {:?}",
+            app.log
+        );
+        assert_eq!(
+            launch::Credentials::from_account_file(&file)
+                .expect("the file is usable")
+                .access_token,
+            "stored"
+        );
         assert!(app.log.iter().any(|line| line.contains("网络超时")));
     }
 
@@ -4996,12 +5118,19 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_failed_refresh_without_a_usable_file_still_starts_offline() {
         let mut app = signed_in_app(PathBuf::from("/acc/missing.json"));
         app.request_launch();
+        // The main loop takes the request before the worker reports.
+        app.take_effects();
         app.handle_session_event(SessionEvent::Failed {
             username: "Steve".into(),
             reason: "读取失败".into(),
         });
-        let credentials = app.last_credentials.expect("offline fallback");
-        assert_eq!(credentials.user_type, "legacy");
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("准备启动 1.20.1 · 离线（Steve）")),
+            "an unusable file falls back to offline: {:?}",
+            app.log
+        );
     }
 
     // ---- loader bases ----

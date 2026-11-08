@@ -64,12 +64,12 @@ impl Credentials {
             .to_string();
 
         Ok(Credentials {
-            username,
             uuid: if uuid.is_empty() {
-                offline_uuid("")
+                offline_uuid(&username)
             } else {
                 uuid
             },
+            username,
             access_token,
             user_type: "msa".to_string(),
             xuid: token
@@ -158,10 +158,15 @@ pub fn prepare(
             )
         })?;
 
+    // Extension points the profile may test (`has_custom_resolution`, demo mode,
+    // quick play). One map for the classpath rules and the argument rules, so the
+    // same rule cannot answer differently in two places.
+    let features = features(true);
+
     let libraries_dir = root.join("libraries");
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut missing = 0usize;
-    for path in merged.classpath_paths(&libraries_dir) {
+    for path in merged.classpath_paths(&libraries_dir, &features) {
         if path.is_file() {
             classpath.push(path);
         } else {
@@ -227,14 +232,6 @@ pub fn prepare(
     // create a directory *called* `${natives_directory}` relative to the game
     // directory — 25 MB of duplicated natives per version.
     vars.insert("natives_directory", natives_string.clone());
-
-    let mut features: HashMap<&str, bool> = HashMap::new();
-    features.insert("is_demo_user", false);
-    features.insert("has_custom_resolution", true);
-    features.insert("has_quick_plays_support", false);
-    features.insert("is_quick_play_singleplayer", false);
-    features.insert("is_quick_play_multiplayer", false);
-    features.insert("is_quick_play_realms", false);
 
     let mut args: Vec<String> = Vec::new();
     for raw in &merged.jvm_args {
@@ -312,7 +309,7 @@ pub fn prepare(
 }
 
 /// Offline UUID: the same name always maps to the same v3-style uuid.
-fn offline_uuid(name: &str) -> String {
+pub fn offline_uuid(name: &str) -> String {
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
     hasher.update(format!("OfflinePlayer:{name}").as_bytes());
@@ -440,19 +437,30 @@ struct Merged {
 
 impl Merged {
     /// Classpath-relative paths, child profile first so loader jars win.
-    fn classpath_paths(&self, libraries_dir: &Path) -> Vec<PathBuf> {
+    ///
+    /// `features` is the same map the arguments are resolved with: a library rule
+    /// that looks at `has_custom_resolution` must not get a different answer here
+    /// than it does for the arguments.
+    fn classpath_paths(
+        &self,
+        libraries_dir: &Path,
+        features: &HashMap<&'static str, bool>,
+    ) -> Vec<PathBuf> {
         let mut seen: Vec<String> = Vec::new();
         let mut paths = Vec::new();
         for library in &self.libraries {
-            if !rules_allow(&library.rules, &features(false)) {
+            if !rules_allow(&library.rules, features) {
                 continue;
             }
-            if let Some(value) = library.natives.as_ref().and_then(|n| n.get(os_key())) {
-                let _ = value;
-                // A natives jar is extracted, not put on the classpath.
-                if library.downloads.artifact.is_none() {
-                    continue;
-                }
+            // A natives jar is extracted, not put on the classpath; the library
+            // still belongs there when it also ships a regular artifact.
+            if library
+                .natives
+                .as_ref()
+                .is_some_and(|n| n.contains_key(os_key()))
+                && library.downloads.artifact.is_none()
+            {
+                continue;
             }
             let relative = match library
                 .downloads

@@ -76,6 +76,11 @@ impl Paths {
         self.root.join(LOGS)
     }
 
+    /// `data/日志/yaml.log` — the log pane's copy that survives a restart.
+    pub fn log_file(&self) -> PathBuf {
+        crate::logfile::path(&self.logs())
+    }
+
     /// `data/缓存` — the vendored download layer's global registry lives here.
     pub fn cache(&self) -> PathBuf {
         self.root.join(CACHE)

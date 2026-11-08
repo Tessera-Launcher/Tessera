@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, Area, Button, LoginStep, Screen};
+use crate::app::{App, Area, Button, Layout as Areas, LoginStep, Screen};
 use crate::discover::{self, LocalVersion};
 use crate::install::Loader;
 
@@ -22,11 +22,12 @@ const DIM: Color = Color::Rgb(0x8a, 0x8a, 0x92);
 const SAVED_ROWS: usize = 6;
 
 /// Render one frame.
-pub fn draw(frame: &mut Frame, app: &mut App) {
+pub fn draw(frame: &mut Frame, app: &mut App) -> Areas {
+    let mut layout = Areas::default();
     // Hit areas belong to the screen that recorded them. A full-screen pane does
     // not draw the main screen underneath, so a stale footer must not stay
     // clickable behind it.
-    app.layout.buttons.clear();
+    layout.buttons.clear();
 
     // Download, Installing and Java cover the whole terminal. Drawing the main
     // screen first would waste a frame's layout work (and a directory walk for the
@@ -36,22 +37,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::Download | Screen::Installing | Screen::Java
     );
     if !full_screen {
-        draw_main(frame, app);
+        draw_main(frame, app, &mut layout);
     }
 
     match app.screen {
-        Screen::Login => draw_login(frame, frame.area(), app),
-        Screen::Accounts => draw_accounts(frame, frame.area(), app),
-        Screen::Download => draw_download(frame, frame.area(), app),
-        Screen::Installing => draw_installing(frame, frame.area(), app),
-        Screen::Java => draw_java(frame, frame.area(), app),
+        Screen::Login => draw_login(frame, frame.area(), app, &mut layout),
+        Screen::Accounts => draw_accounts(frame, frame.area(), app, &mut layout),
+        Screen::Download => draw_download(frame, frame.area(), app, &mut layout),
+        Screen::Installing => draw_installing(frame, frame.area(), app, &mut layout),
+        Screen::Java => draw_java(frame, frame.area(), app, &mut layout),
         Screen::Main => {}
     }
+    layout
 }
 
 /// The main screen, drawn under the popups (login, accounts) but not under the
 /// full-screen panes.
-fn draw_main(frame: &mut Frame, app: &mut App) {
+fn draw_main(frame: &mut Frame, app: &mut App, layout: &mut Areas) {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(10),
@@ -59,19 +61,19 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
 
-    draw_header(frame, header, app);
+    draw_header(frame, header, app, layout);
 
     let [list, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Min(38)]).areas(body);
-    draw_version_list(frame, list, app);
+    draw_version_list(frame, list, app, layout);
     let [details, log] = Layout::vertical([Constraint::Length(9), Constraint::Min(4)]).areas(right);
     draw_details(frame, details, app);
-    draw_log(frame, log, app);
+    draw_log(frame, log, app, layout);
 
-    draw_footer(frame, footer, app);
+    draw_footer(frame, footer, app, layout);
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_header(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     let title = Line::from(vec![
         Span::styled(" yaml ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
         Span::styled(" Minecraft Java 版启动器 ", Style::new().fg(Color::White)),
@@ -140,7 +142,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         height: 1,
     };
     frame.render_widget(Paragraph::new(account_line), account_area);
-    app.layout.account = Area::new(
+    layout.account = Area::new(
         account_area.x,
         account_area.y,
         account_area.width,
@@ -148,7 +150,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     let hidden = app.hidden_base_count();
     let title = if hidden > 0 {
         format!(
@@ -166,7 +168,7 @@ fn draw_version_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Data rows start below the table header; that is the region clicks address.
     let rows_visible = inner.height.saturating_sub(1) as usize;
-    app.layout.list = Area::new(
+    layout.list = Area::new(
         inner.x,
         inner.y.saturating_add(1),
         inner.width,
@@ -277,7 +279,7 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &mut App) {
         );
         return;
     };
-    let paths = app.selected_paths();
+    let dir = app.selected_dir();
     // Cached by directory: walking the tree on every frame is a syscall storm on
     // a version with a full `mods/` folder, and nothing changes between frames.
     let size = app.selected_size();
@@ -300,8 +302,8 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &mut App) {
                 .unwrap_or_else(|| "-".to_string()),
         ),
     ];
-    if let Some(paths) = &paths {
-        rows.push(kv("目录", paths.dir.display().to_string()));
+    if let Some(dir) = &dir {
+        rows.push(kv("目录", dir.display().to_string()));
         rows.push(kv("大小", discover::human_size(size)));
     }
 
@@ -318,12 +320,12 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(table, inner);
 }
 
-fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_log(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     // The border carries the scroll state, so it can only be drawn once the
     // position is known; `inner` is the same either way.
     let inner = Block::bordered().inner(area);
 
-    app.layout.log = Area::new(inner.x, inner.y, inner.width, inner.height);
+    layout.log = Area::new(inner.x, inner.y, inner.width, inner.height);
 
     // The log follows the tail until the user scrolls back; `log_scroll` counts
     // lines away from the newest one.
@@ -364,7 +366,7 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     // (key, label) per screen: the label is what is drawn, the key is what a click
     // replays, so the hint and the binding cannot drift apart.
     let entries: Vec<(String, KeyCode)> = match app.screen {
@@ -451,13 +453,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     // Record the clickable spans; anything past the edge is dropped.
     for (start, width, code) in placed {
         let x = area.x as usize + start;
-        if x + width > area.x as usize + area.width as usize || width == 0 {
+        if x + width > area.x as usize + area.width as usize {
             continue;
         }
-        app.layout.buttons.push(Button::new(
-            Area::new(x as u16, area.y, width as u16, 1),
-            code,
-        ));
+        record_button(layout, x as u16, area.y, width as u16, code);
     }
 }
 
@@ -482,7 +481,7 @@ fn cell_width_of(text: &str) -> usize {
 }
 
 /// The version + loader picker.
-fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     // Full-screen pane: wipe whatever the main screen left behind, otherwise the
     // empty parts of the picker show stale rows.
     frame.render_widget(Clear, area);
@@ -508,11 +507,11 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(ACCENT));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.layout.download_versions = Area::default();
-    app.layout.download_loaders = Area::default();
-    app.layout.download_offset = 0;
-    app.layout.download_search = Area::default();
-    app.layout.download_filters.clear();
+    layout.download_versions = Area::default();
+    layout.download_loaders = Area::default();
+    layout.download_offset = 0;
+    layout.download_search = Area::default();
+    layout.download_filters.clear();
 
     if app.download.stage == crate::app::DownloadStage::LoadingVersions {
         frame.render_widget(
@@ -540,8 +539,8 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         Layout::horizontal([Constraint::Percentage(58), Constraint::Min(20)]).areas(body);
 
     let (search_hit, chips) = draw_filter_bar(frame, search_area, chips_area, &app.download);
-    app.layout.download_search = search_hit;
-    app.layout.download_filters = chips;
+    layout.download_search = search_hit;
+    layout.download_filters = chips;
 
     // ---- versions ----
     let focused = app.download.focus == crate::app::PickerFocus::Versions;
@@ -571,7 +570,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let versions_inner = versions_block.inner(versions_area);
     frame.render_widget(versions_block, versions_area);
-    app.layout.download_versions_pane = Area::new(
+    layout.download_versions_pane = Area::new(
         versions_area.x,
         versions_area.y,
         versions_area.width,
@@ -579,7 +578,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
     );
     let visible = versions_inner.height.saturating_sub(1) as usize;
     if app.download.rows.is_empty() {
-        app.layout.download_versions = Area::default();
+        layout.download_versions = Area::default();
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
@@ -601,8 +600,8 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         );
     } else {
         let (offset, hit) = draw_version_rows(frame, versions_inner, &app.download, visible);
-        app.layout.download_offset = offset;
-        app.layout.download_versions = hit;
+        layout.download_offset = offset;
+        layout.download_versions = hit;
     }
 
     // ---- loaders ----
@@ -612,7 +611,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let loaders_inner = loaders_block.inner(loaders_area);
     frame.render_widget(loaders_block, loaders_area);
-    app.layout.download_loaders_pane = Area::new(
+    layout.download_loaders_pane = Area::new(
         loaders_area.x,
         loaders_area.y,
         loaders_area.width,
@@ -628,7 +627,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         .saturating_add(loaders_inner.height.saturating_sub(1));
     let list_height = loaders_inner.height.saturating_sub(1);
     let loader_rows = (app.download.loaders.len() as u16).min(list_height);
-    app.layout.download_loaders = Area::new(
+    layout.download_loaders = Area::new(
         loaders_inner.x,
         loaders_inner.y,
         loaders_inner.width,
@@ -682,64 +681,73 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    draw_source_switch(frame, loaders_inner, switch_row, app);
+    draw_source_switch(frame, loaders_inner, switch_row, app, layout);
 }
 
 /// The download source switch, right-aligned on the loader pane's last row.
 ///
 /// `--mirror` only decides where the launcher starts; from here on the pick can be
 /// changed per install, and nothing about it is written to disk.
-fn draw_source_switch(frame: &mut Frame, inner: Rect, row: u16, app: &mut App) {
-    app.layout.download_sources.clear();
+fn draw_source_switch(frame: &mut Frame, inner: Rect, row: u16, app: &mut App, layout: &mut Areas) {
+    layout.download_sources.clear();
     let prefix = "下载源 ";
-    let chips: Vec<(crate::install::Source, String)> = crate::install::Source::ALL
+    let chips: Vec<(&str, bool)> = crate::install::Source::ALL
         .into_iter()
-        .map(|source| {
-            let label = format!(" {} ", source.label());
-            (source, label)
-        })
+        .map(|source| (source.label(), app.source == source))
         .collect();
-    let total: u16 = cell_width_of(prefix) as u16
+    let total = (cell_width_of(prefix)
         + chips
             .iter()
-            .map(|(_, text)| cell_width_of(text) as u16)
-            .sum::<u16>();
+            .map(|(label, _)| cell_width_of(label) + 2)
+            .sum::<usize>()) as u16;
     // A pane too narrow for the whole switch simply does not get one: it must not
     // push the loader rows around.
     if total > inner.width || inner.height == 0 {
         return;
     }
+    // Right-aligned: the row itself is the widest thing that fits.
+    let x = inner.x + inner.width - total;
+    layout.download_sources = draw_source_chips(frame, x, row, prefix, &chips);
+}
 
-    // The chips start after the prefix, which is drawn but not clickable.
-    let mut column = inner.x + inner.width - total + cell_width_of(prefix) as u16;
-    // The paragraph starts at the pane's left edge, so the switch is pushed to the
-    // right by a run of spaces; the chip areas above already assume that offset.
-    let mut spans = vec![
-        Span::styled(" ".repeat((inner.width - total) as usize), Style::new()),
-        Span::styled(prefix, Style::new().fg(DIM)),
-    ];
-    for (source, text) in chips {
+/// Draw `下载源 <chip> <chip>` at `x` and return one hit area per chip.
+///
+/// The download picker and the Java picker both have this switch; the chips differ
+/// only in which enum says they are active.
+fn draw_source_chips(
+    frame: &mut Frame,
+    x: u16,
+    row: u16,
+    prefix: &str,
+    chips: &[(&str, bool)],
+) -> Vec<Area> {
+    let mut spans = vec![Span::styled(prefix.to_string(), Style::new().fg(DIM))];
+    let mut column = x + cell_width_of(prefix) as u16;
+    let mut areas = Vec::with_capacity(chips.len());
+    for (label, active) in chips {
+        let text = format!(" {label} ");
         let width = cell_width_of(&text) as u16;
-        app.layout
-            .download_sources
-            .push(Area::new(column, row, width, 1));
-        spans.push(Span::styled(
-            text,
-            if app.source == source {
-                Style::new()
-                    .fg(Color::Black)
-                    .bg(ACCENT)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(DIM)
-            },
-        ));
+        areas.push(Area::new(column, row, width, 1));
+        spans.push(Span::styled(text, source_chip_style(*active)));
         column += width;
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
-        Rect::new(inner.x, row, inner.width, 1),
+        Rect::new(x, row, column - x, 1),
     );
+    areas
+}
+
+/// A source chip: filled when active, dim otherwise.
+fn source_chip_style(active: bool) -> Style {
+    if active {
+        Style::new()
+            .fg(Color::Black)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(DIM)
+    }
 }
 
 /// The filter bar: a search box on the left, the kind chips on the right.
@@ -937,11 +945,11 @@ fn draw_version_rows(
 
 /// The Java runtime picker: four feature versions, a source switch and the proxy
 /// field the GitHub source uses.
-fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     frame.render_widget(Clear, area);
-    app.layout.java_rows.clear();
-    app.layout.java_sources.clear();
-    app.layout.java_proxy = Area::default();
+    layout.java_rows.clear();
+    layout.java_sources.clear();
+    layout.java_proxy = Area::default();
 
     let block = Block::bordered()
         .title(
@@ -1028,7 +1036,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
     // Row hit areas: the header takes the first line of the table, the rows follow.
     let rows_top = table_inner.y.saturating_add(1);
     for index in 0..crate::java::FEATURES.len() {
-        app.layout.java_rows.push(Area::new(
+        layout.java_rows.push(Area::new(
             table_inner.x,
             rows_top + index as u16,
             table_inner.width,
@@ -1045,31 +1053,12 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(lines), table_inner);
 
     // ---- source switch ----
-    let mut spans = vec![Span::styled(" 下载源 ", Style::new().fg(DIM))];
-    let mut column = switch_area.x + cell_width_of(" 下载源 ") as u16;
-    for source in crate::java::Source::ALL {
-        let text = format!(" {} ", source.label());
-        let width = cell_width_of(&text) as u16;
-        app.layout
-            .java_sources
-            .push(Area::new(column, switch_area.y, width, 1));
-        spans.push(Span::styled(
-            text,
-            if app.java.source == source {
-                Style::new()
-                    .fg(Color::Black)
-                    .bg(ACCENT)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(DIM)
-            },
-        ));
-        column += width;
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect::new(switch_area.x, switch_area.y, switch_area.width, 1),
-    );
+    let chips: Vec<(&str, bool)> = crate::java::Source::ALL
+        .into_iter()
+        .map(|source| (source.label(), app.java.source == source))
+        .collect();
+    layout.java_sources =
+        draw_source_chips(frame, switch_area.x, switch_area.y, " 下载源 ", &chips);
 
     // ---- proxy field ----
     let active = app.java.source == crate::java::Source::Github;
@@ -1099,7 +1088,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(Line::from(spans)),
         Rect::new(proxy_area.x, proxy_area.y, proxy_area.width, 1),
     );
-    app.layout.java_proxy = Area::new(proxy_area.x, proxy_area.y, proxy_area.width, 1);
+    layout.java_proxy = Area::new(proxy_area.x, proxy_area.y, proxy_area.width, 1);
 
     // ---- keys ----
     let hint = if app.java.editing_proxy {
@@ -1112,7 +1101,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App) {
         Rect::new(hint_area.x, hint_area.y, hint_area.width, 1),
         &[(" ", None), (&hint, None)],
         DIM,
-        app,
+        layout,
     );
 }
 
@@ -1177,12 +1166,12 @@ fn progress_label_span(text: String, dark: bool, bar: Color, trough: Color) -> S
     )
 }
 
-fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     frame.render_widget(Clear, area);
     let [log_area, progress_area] =
         Layout::vertical([Constraint::Min(6), Constraint::Length(5)]).areas(area);
 
-    draw_log(frame, log_area, app);
+    draw_log(frame, log_area, app, layout);
 
     let download = &app.download;
     let (title, border, gauge_color) = match download.stage {
@@ -1290,12 +1279,22 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App) {
 /// as one unit and recorded in [`Layout::buttons`], so a click anywhere on the
 /// words replays that key through the same path the footer buttons use. Segments
 /// without a key are plain text in `color`.
+/// Record one clickable span in the layout.
+fn record_button(layout: &mut Areas, x: u16, y: u16, width: u16, code: KeyCode) {
+    if width == 0 {
+        return;
+    }
+    layout
+        .buttons
+        .push(Button::new(Area::new(x, y, width, 1), code));
+}
+
 fn draw_hint(
     frame: &mut Frame,
     area: Rect,
     segments: &[(&str, Option<KeyCode>)],
     color: Color,
-    app: &mut App,
+    layout: &mut Areas,
 ) {
     let mut spans = Vec::with_capacity(segments.len());
     let mut x = area.x;
@@ -1309,18 +1308,14 @@ fn draw_hint(
         };
         spans.push(Span::styled(*text, style));
         if let Some(code) = key {
-            if width > 0 {
-                app.layout
-                    .buttons
-                    .push(Button::new(Area::new(x, area.y, width, 1), *code));
-            }
+            record_button(layout, x, area.y, width, *code);
         }
         x = x.saturating_add(width);
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     let width = area.width.saturating_sub(6).clamp(40, 72);
     let rows = app.accounts.len().clamp(1, 10) as u16;
     let height = (rows + 4).min(area.height);
@@ -1332,8 +1327,8 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
         height,
     };
     frame.render_widget(Clear, popup);
-    app.layout.accounts_popup = Area::new(popup.x, popup.y, popup.width, popup.height);
-    app.layout.account_rows.clear();
+    layout.accounts_popup = Area::new(popup.x, popup.y, popup.width, popup.height);
+    layout.account_rows.clear();
 
     let block = Block::bordered()
         .title(
@@ -1374,7 +1369,7 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
         .map(|(index, account)| {
             let is_selected = index == app.accounts_ui.selected;
             let is_active = active.as_deref() == Some(account.file.as_path());
-            app.layout.account_rows.push(Area::new(
+            layout.account_rows.push(Area::new(
                 inner.x,
                 inner.y + (index - offset) as u16,
                 inner.width,
@@ -1440,7 +1435,7 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
                 ("Esc 取消", Some(KeyCode::Esc)),
             ],
             BROKEN,
-            app,
+            layout,
         );
     } else {
         draw_hint(
@@ -1457,13 +1452,13 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App) {
                 ("Esc 关闭", Some(KeyCode::Esc)),
             ],
             DIM,
-            app,
+            layout,
         );
     }
 }
 
 /// The login overlay, drawn over the main screen.
-fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_login(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     let width = area.width.saturating_sub(4).clamp(36, 68);
     let height = match &app.login.step {
         LoginStep::Choose => 10,
@@ -1487,8 +1482,8 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
         height,
     };
     frame.render_widget(Clear, popup);
-    app.layout.overlay = Area::new(popup.x, popup.y, popup.width, popup.height);
-    app.layout.overlay_options.clear();
+    layout.overlay = Area::new(popup.x, popup.y, popup.width, popup.height);
+    layout.overlay_options.clear();
 
     let title = match &app.login.step {
         LoginStep::Choose => " 登录 · 选择身份 ",
@@ -1523,7 +1518,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
             let mut lines = Vec::new();
             for (index, (name, hint)) in options.iter().enumerate() {
                 // Two clickable rows per option: the name and its hint.
-                app.layout.overlay_options.push(Area::new(
+                layout.overlay_options.push(Area::new(
                     inner.x,
                     inner.y.saturating_add((index as u16) * 2),
                     inner.width,
@@ -1560,7 +1555,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     ("Esc 取消", Some(KeyCode::Esc)),
                 ],
                 DIM,
-                app,
+                layout,
             );
         }
         LoginStep::EnterAppId => {
@@ -1592,7 +1587,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                         ("Esc 返回", Some(KeyCode::Esc)),
                     ],
                     DIM,
-                    app,
+                    layout,
                 );
             } else {
                 // Nothing can be started yet, so only the way back is clickable.
@@ -1608,7 +1603,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                         ("Esc 返回", Some(KeyCode::Esc)),
                     ],
                     BROKEN,
-                    app,
+                    layout,
                 );
             }
         }
@@ -1638,7 +1633,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                         ("Enter 重试", Some(KeyCode::Enter)),
                     ],
                     DIM,
-                    app,
+                    layout,
                 );
             } else {
                 // One row of height is enough per entry (name + id on one line),
@@ -1664,7 +1659,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     .skip(offset)
                     .take(visible)
                 {
-                    app.layout.overlay_options.push(Area::new(
+                    layout.overlay_options.push(Area::new(
                         inner.x,
                         inner.y.saturating_add(((row - offset) * 2) as u16),
                         inner.width,
@@ -1707,7 +1702,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                         (&tail, None),
                     ],
                     DIM,
-                    app,
+                    layout,
                 );
             }
         }
@@ -1749,14 +1744,14 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     ("y 复制链接", Some(KeyCode::Char('y'))),
                 ],
                 DIM,
-                app,
+                layout,
             );
             draw_hint(
                 frame,
                 Rect::new(inner.x, code_row, inner.width, 1),
                 &[(" ", None), ("c 复制设备码", Some(KeyCode::Char('c')))],
                 DIM,
-                app,
+                layout,
             );
             draw_hint(
                 frame,
@@ -1766,7 +1761,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     ("Esc 取消", Some(KeyCode::Esc)),
                 ],
                 DIM,
-                app,
+                layout,
             );
         }
         LoginStep::Done {
@@ -1798,7 +1793,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     ("Esc 关闭", Some(KeyCode::Esc)),
                 ],
                 DIM,
-                app,
+                layout,
             );
         }
         LoginStep::Failed(message) => {
@@ -1823,7 +1818,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &mut App) {
                     (" · 检查网络/代理后重试", None),
                 ],
                 DIM,
-                app,
+                layout,
             );
         }
     }
@@ -1900,6 +1895,27 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    fn login(app: &App) -> Option<crate::login::Identity> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            crate::app::Effect::Login(identity) => Some(identity.clone()),
+            _ => None,
+        })
+    }
+
+    fn copied(app: &App) -> Option<String> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            crate::app::Effect::Copy(text) => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    fn opened(app: &App) -> Option<String> {
+        app.effects().iter().rev().find_map(|effect| match effect {
+            crate::app::Effect::OpenBrowser(url) => Some(url.clone()),
+            _ => None,
+        })
+    }
+
     fn version(id: &str, kind: &str, java: u32, inherits: Option<&str>) -> LocalVersion {
         LocalVersion {
             dir: id.to_string(),
@@ -1917,7 +1933,14 @@ mod tests {
     /// Render into a fixed-size buffer and return the rows as text.
     fn render(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let mut layout = Areas::default();
+        terminal
+            .draw(|frame| {
+                layout = draw(frame, app);
+            })
+            .expect("draw to the test backend");
+        // What the main loop does with the returned layout: keep it for hit tests.
+        app.layout = layout;
         buffer_lines(terminal.backend().buffer())
     }
 
@@ -2079,7 +2102,6 @@ mod tests {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_login();
         app.login.step = crate::app::LoginStep::ChooseAppIds;
-        app.login.app_ids_path = "/data/凭据/启动器/azure_app_ids.toml".into();
         app.login.app_ids_error = Some(
             "未找到 /data/凭据/启动器/azure_app_ids.toml：按 README 里的格式写入 app id".into(),
         );
@@ -2135,18 +2157,18 @@ mod tests {
         };
         click_key(&mut app, KeyCode::Char('y'));
         assert_eq!(
-            app.pending_clipboard.as_deref(),
+            copied(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCDEFGH")
         );
 
         render(&mut app, 100, 30);
         click_key(&mut app, KeyCode::Char('c'));
-        assert_eq!(app.pending_clipboard.as_deref(), Some("ABCD-EFGH"));
+        assert_eq!(copied(&app).as_deref(), Some("ABCD-EFGH"));
 
         render(&mut app, 100, 30);
         click_key(&mut app, KeyCode::Char('o'));
         assert_eq!(
-            app.pending_browser.as_deref(),
+            opened(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCDEFGH")
         );
     }
@@ -2220,7 +2242,11 @@ mod tests {
         y: u16,
     ) -> Vec<(String, ratatui::style::Color)> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, app);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
         (0..width)
             .map(|x| {
@@ -2238,7 +2264,11 @@ mod tests {
         y: u16,
     ) -> (ratatui::style::Color, ratatui::style::Color) {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, app);
+            })
+            .unwrap();
         let cell = terminal.backend().buffer().cell((x, y)).expect("cell");
         (cell.fg, cell.bg)
     }
@@ -2448,7 +2478,7 @@ mod tests {
             "the whole phrase is clickable"
         );
         app.handle_mouse(click(area.x + area.width - 1, area.y));
-        assert_eq!(app.pending_login, Some(crate::login::Identity::Official));
+        assert_eq!(login(&app), Some(crate::login::Identity::Official));
 
         // "Esc 取消" while waiting cancels it.
         assert!(matches!(
@@ -2496,7 +2526,7 @@ mod tests {
         assert_eq!(area.width as usize, cell_width_of("Enter 登录"));
         app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(
-            app.pending_login,
+            login(&app),
             Some(crate::login::Identity::Saved {
                 name: "HMCL".to_string(),
                 app_id: "6a3728d6-27a3-4180-99bb-479895b8f88e".to_string(),
@@ -2662,7 +2692,11 @@ mod tests {
         app.request_uninstall();
 
         let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, &mut app);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
         let emphasised = (0..buffer.area.height)
             .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
@@ -3240,7 +3274,11 @@ mod tests {
         });
 
         let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, &mut app);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let rows = buffer_lines(&buffer);
         let row = rows
@@ -3283,7 +3321,11 @@ mod tests {
                 total_bytes: 1024,
             });
             let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
-            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw(frame, &mut app);
+                })
+                .unwrap();
             let buffer = terminal.backend().buffer().clone();
             let rows = buffer_lines(&buffer);
             let row = rows

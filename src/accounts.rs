@@ -34,11 +34,8 @@ pub struct Account {
     /// number of times, through any identity, and each session keeps its own
     /// tokens — so the number is the only thing telling them apart.
     pub copy: u32,
-    pub player_uuid: String,
     /// Which launcher identity issued the session (`Minecraft Launcher`, …).
     pub application: String,
-    /// Its client id, which is what makes the session refreshable.
-    pub app_id: String,
 }
 
 /// The `(1)`-style suffix a repeated session carries, empty for the first one.
@@ -175,20 +172,10 @@ pub fn list(dir: &Path) -> Vec<Account> {
                     .unwrap_or(0)
                     .try_into()
                     .unwrap_or(u32::MAX),
-                player_uuid: player
-                    .get("uuid")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
                 application: doc
                     .get("application")
                     .and_then(|v| v.as_str())
                     .unwrap_or("未知身份")
-                    .to_string(),
-                app_id: doc
-                    .get("app_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
                     .to_string(),
             })
         })

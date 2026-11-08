@@ -13,9 +13,11 @@ mod discover;
 mod install;
 mod java;
 mod launch;
+mod logfile;
 mod login;
 mod paths;
 mod session;
+mod settings;
 mod terminal;
 mod ui;
 mod version_tree;
@@ -33,8 +35,8 @@ use crossterm::terminal::{
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 
-use crate::app::{App, Screen};
-use crate::install::{InstallEvent, Settings, Source};
+use crate::app::{App, Effect, Screen};
+use crate::install::{InstallEvent, Source, ASSET_CONCURRENCY};
 use crate::login::LoginEvent;
 use crate::paths::Paths;
 use crate::session::SessionEvent;
@@ -71,16 +73,37 @@ fn main() -> std::process::ExitCode {
     let root = options.root.clone().unwrap_or_else(|| data.game());
     let root = std::path::absolute(&root).unwrap_or(root);
     let accounts = accounts::list(&data.accounts());
-    let settings = Settings::default().with_source(options.source);
     let mut app = App::new(
         root.clone(),
         data.accounts(),
         discover::scan(&root),
         accounts,
     );
-    app.source = settings.source;
+    app.source = options.source;
     app.set_runtimes(data.runtimes());
-    app.launch_options.memory_mb = options.memory;
+
+    // Settings outlive a run; flags override them for this run and are written
+    // back, so a one-off `--memory` does not have to be repeated.
+    let settings_path = settings::Settings::path(data.root());
+    let (mut settings, settings_note) = settings::load(&settings_path);
+    let loaded = settings.clone();
+    let mut settings_touched = false;
+    if let Some(memory) = options.memory {
+        settings.memory_mb = memory;
+        settings_touched = true;
+    }
+    if let Some((width, height)) = options.resolution {
+        settings.window_width = width;
+        settings.window_height = height;
+        settings_touched = true;
+    }
+    app.launch_options.memory_mb = settings.memory_mb;
+    app.launch_options.width = settings.window_width;
+    app.launch_options.height = settings.window_height;
+    app.settings = settings.clone();
+    if let Some(note) = settings_note {
+        app.log(note);
+    }
     app.log(format!("数据目录 {}", data.root().display()));
     app.log(format!("凭据目录 {}", data.accounts().display()));
     app.log(format!("下载缓存 {}", cache.display()));
@@ -118,13 +141,41 @@ fn main() -> std::process::ExitCode {
         Err(error) => eprintln!("无法打开终端: {error}"),
     }
 
-    match run(&mut app, settings) {
+    // The pane is capped at 500 lines and dies with the process; the file is the
+    // copy that outlives it. A failure here must not stop the launcher.
+    let log_file = match logfile::LogFile::open(&data.log_file()) {
+        Ok(file) => Some(file),
+        Err(error) => {
+            eprintln!("无法写入日志 {}: {error}", data.log_file().display());
+            None
+        }
+    };
+
+    let outcome = run(&mut app, ASSET_CONCURRENCY, log_file);
+    if settings_touched || app.settings != loaded {
+        if let Err(error) = settings::save(&settings_path, &app.settings) {
+            eprintln!("无法写入 {}: {error}", settings_path.display());
+        }
+    }
+    match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("终端错误: {error}");
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// `854x480` / `1280X720` → `(854, 480)`.
+fn parse_resolution(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("--resolution 需要 宽x高，收到 {value:?}"))?;
+    let parse = |part: &str| {
+        part.parse::<u32>()
+            .map_err(|_| format!("--resolution 需要数字，收到 {value:?}"))
+    };
+    Ok((parse(width)?.max(1), parse(height)?.max(1)))
 }
 
 /// Hand `url` to the desktop's default browser.
@@ -149,7 +200,11 @@ fn open_in_browser(url: &str) -> io::Result<()> {
 }
 
 /// Interactive loop: collect events, then draw.
-fn run(app: &mut App, settings: Settings) -> io::Result<()> {
+fn run(
+    app: &mut App,
+    asset_concurrency: usize,
+    mut log_file: Option<logfile::LogFile>,
+) -> io::Result<()> {
     let mut terminal = enter()?;
     let client = match reqwest::Client::builder()
         .user_agent(concat!("yaml-launcher/", env!("CARGO_PKG_VERSION")))
@@ -167,114 +222,100 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
     let mut session_rx: Option<Receiver<SessionEvent>> = None;
     let mut java_rx: Option<Receiver<java::Event>> = None;
     let mut sweep_rx: Option<Receiver<cleanup::Sweep>> = None;
-    let mut game_rx: Option<Receiver<(String, io::Result<std::process::ExitStatus>)>> = None;
+    let mut game_rx: Vec<Receiver<(String, io::Result<std::process::ExitStatus>)>> = Vec::new();
     // The launcher is idle most of the time; redraw only when something changed.
     let mut dirty = true;
 
     let result = loop {
-        // A login thread is requested by the state machine and spawned here, so
-        // `app` never needs to know about threads or runtimes.
-        if let Some(identity) = app.pending_login.take() {
-            login_rx = Some(login::spawn(
-                client.clone(),
-                identity,
-                app.accounts_dir.clone(),
-            ));
+        // Everything the state machine asked for, executed here: this is the only
+        // place that owns threads, processes and the network.
+        for effect in app.take_effects() {
             dirty = true;
-        }
-
-        // Java work, same shape: the state machine asks, the loop spawns.
-        if std::mem::take(&mut app.pending_java_list) {
-            java_rx = Some(java::spawn_list());
-            dirty = true;
-        }
-        if let Some((runtime, urls)) = app.pending_java.take() {
-            java_rx = Some(java::spawn_install(app.runtimes.clone(), runtime, urls));
-            dirty = true;
-        }
-
-        // Clipboard and browser are the loop's job too: the state machine only
-        // records what the user asked for, so it stays testable without a tty.
-        if let Some(text) = app.pending_clipboard.take() {
-            match clipboard::copy(&text) {
-                // Which route worked matters: a terminal that ignores OSC 52
-                // looks exactly like a successful copy otherwise.
-                Ok(method) => {
-                    app.log(format!("剪贴板：{method}"));
-                    if method.starts_with("OSC 52") {
-                        app.log(
-                            "提示：OSC 52 需要终端支持；粘贴不出来就安装 wl-clipboard/xclip，\
-                             或在终端里允许 OSC 52（tmux 另需 set-clipboard on）",
-                        );
+            match effect {
+                Effect::Login(identity) => {
+                    login_rx = Some(login::spawn(
+                        client.clone(),
+                        identity,
+                        app.accounts_dir.clone(),
+                    ));
+                }
+                Effect::FetchVersions => {
+                    install_rx = Some(install::spawn_versions(
+                        app.root.clone(),
+                        app.source,
+                        asset_concurrency,
+                    ));
+                }
+                Effect::Install { version, loader } => {
+                    install_rx = Some(install::spawn_install(
+                        app.root.clone(),
+                        app.runtimes.clone(),
+                        app.source,
+                        asset_concurrency,
+                        version,
+                        loader,
+                    ));
+                }
+                Effect::RefreshSession(file) => {
+                    if session_rx.is_some() {
+                        // One refresh at a time, and a click that arrives while one
+                        // is in flight must not be dropped: put it back for the
+                        // next iteration.
+                        app.request(Effect::RefreshSession(file));
+                    } else {
+                        session_rx = Some(session::spawn_refresh(file));
                     }
                 }
-                Err(error) => {
-                    app.log(format!("复制失败：{error}"));
-                    app.status = "复制失败".to_string();
+                Effect::FetchJavaList => {
+                    java_rx = Some(java::spawn_list());
                 }
-            }
-            dirty = true;
-        }
-        if let Some(url) = app.pending_browser.take() {
-            if let Err(error) = open_in_browser(&url) {
-                app.log(format!("打开浏览器失败：{error}（可按 y 复制链接）"));
-                app.status = "打开浏览器失败".to_string();
-            }
-            dirty = true;
-        }
-
-        // Download work, same shape: the state machine asks, the loop spawns.
-        // The source is read from the app, not from the command line: the picker
-        // can switch it, and that switch has to reach the worker.
-        if std::mem::take(&mut app.pending_versions) {
-            install_rx = Some(install::spawn_versions(
-                app.root.clone(),
-                app.source,
-                settings.asset_concurrency,
-            ));
-            dirty = true;
-        }
-        if let Some((version, loader)) = app.pending_install.take() {
-            install_rx = Some(install::spawn_install(
-                app.root.clone(),
-                app.runtimes.clone(),
-                app.source,
-                settings.asset_concurrency,
-                version,
-                loader,
-            ));
-            dirty = true;
-        }
-
-        // Reclaiming shared libraries after an uninstall walks and stats
-        // thousands of files, so it never runs on this thread.
-        if let Some(installed) = app.pending_sweep.take() {
-            sweep_rx = Some(cleanup::spawn(
-                app.root.clone(),
-                app.cache.clone(),
-                installed,
-            ));
-            dirty = true;
-        }
-
-        // A launched game is reaped on a worker thread: waiting here would
-        // freeze the UI for the whole session, dropping the handle would leave a
-        // zombie and lose the exit code.
-        if let Some((dir, mut child)) = app.pending_watches.pop() {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = sender.send((dir, child.wait()));
-            });
-            game_rx = Some(receiver);
-            dirty = true;
-        }
-
-        if let Some((_, file)) = app.pending_refresh.clone() {
-            // The state machine asked for a refresh; take the request and spawn it.
-            if session_rx.is_none() {
-                app.pending_refresh = None;
-                session_rx = Some(session::spawn_refresh(file));
-                dirty = true;
+                Effect::InstallJava { runtime, urls } => {
+                    java_rx = Some(java::spawn_install(app.runtimes.clone(), runtime, urls));
+                }
+                Effect::Copy(text) => {
+                    match clipboard::copy(&text) {
+                        // Which route worked matters: a terminal that ignores
+                        // OSC 52 looks exactly like a successful copy otherwise.
+                        Ok(method) => {
+                            app.log(format!("剪贴板：{method}"));
+                            if method.starts_with("OSC 52") {
+                                app.log(
+                                    "提示：OSC 52 需要终端支持；粘贴不出来就安装 wl-clipboard/xclip，\
+                                     或在终端里允许 OSC 52（tmux 另需 set-clipboard on）",
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            app.log(format!("复制失败：{error}"));
+                            app.status = "复制失败".to_string();
+                        }
+                    }
+                }
+                Effect::OpenBrowser(url) => {
+                    if let Err(error) = open_in_browser(&url) {
+                        app.log(format!("打开浏览器失败：{error}（可按 y 复制链接）"));
+                        app.status = "打开浏览器失败".to_string();
+                    }
+                }
+                Effect::Sweep(installed) => {
+                    // Reclaiming shared libraries walks and stats thousands of
+                    // files, so it never runs on this thread.
+                    sweep_rx = Some(cleanup::spawn(
+                        app.root.clone(),
+                        app.cache.clone(),
+                        installed,
+                    ));
+                }
+                Effect::Watch(dir, mut child) => {
+                    // Waiting here would freeze the UI for the whole session;
+                    // dropping the handle would leave a zombie and lose the exit
+                    // code.
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = sender.send((dir, child.wait()));
+                    });
+                    game_rx.push(receiver);
+                }
             }
         }
 
@@ -286,17 +327,55 @@ fn run(app: &mut App, settings: Settings) -> io::Result<()> {
 
         dirty |= drain(&mut sweep_rx, |sweep| app.handle_sweep(sweep));
 
-        dirty |= drain(&mut game_rx, |(dir, outcome)| match outcome {
-            Ok(status) => app.handle_game_exit(&dir, status),
-            Err(error) => app.log(format!("无法等待游戏进程：{error}")),
+        // One channel per launched game; keep the ones still running.
+        game_rx.retain_mut(|receiver| loop {
+            match receiver.try_recv() {
+                Ok((dir, Ok(status))) => {
+                    app.handle_game_exit(&dir, status);
+                    dirty = true;
+                }
+                Ok((_, Err(error))) => {
+                    app.log(format!("无法等待游戏进程：{error}"));
+                    dirty = true;
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => return false,
+            }
         });
 
         dirty |= drain(&mut login_rx, |event| app.handle_login_event(event));
 
+        if !app.pending_log.is_empty() {
+            // One write per line; the file is opened in append mode and only a few
+            // lines are produced per second even during a download.
+            if let Some(file) = log_file.as_mut() {
+                let lines = std::mem::take(&mut app.pending_log);
+                let mut failure = None;
+                for line in &lines {
+                    if let Err(error) = file.write(line) {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+                if let Some(error) = failure {
+                    // Stop trying: a full disk would otherwise fail on every frame.
+                    log_file = None;
+                    app.pending_log.clear();
+                    eprintln!("日志文件写入失败：{error}");
+                }
+            } else {
+                app.pending_log.clear();
+            }
+            dirty = true;
+        }
+
         dirty |= app.tick();
 
         if dirty {
-            if let Err(error) = terminal.draw(|frame| ui::draw(frame, app)) {
+            let drawn = terminal.draw(|frame| {
+                app.layout = ui::draw(frame, app);
+            });
+            if let Err(error) = drawn {
                 break Err(error);
             }
             dirty = false;
@@ -389,7 +468,9 @@ fn leave() -> io::Result<()> {
 fn print_once(app: &mut App, width: u16, height: u16) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("headless terminal");
     terminal
-        .draw(|frame| ui::draw(frame, app))
+        .draw(|frame| {
+            ui::draw(frame, app);
+        })
         .expect("draw to the test backend");
     for line in ui::buffer_lines(terminal.backend().buffer()) {
         println!("{line}");
@@ -440,8 +521,10 @@ struct Options {
     /// Open the Java runtime picker immediately (likewise).
     jre: bool,
     source: Source,
-    /// `--memory`: heap size in MiB.
-    memory: u32,
+    /// `--memory`: heap size in MiB, overriding `data/配置.toml`.
+    memory: Option<u32>,
+    /// `--resolution WxH`: game window, overriding `data/配置.toml`.
+    resolution: Option<(u32, u32)>,
     /// `--print-launch <version>`: build and print the command, then exit.
     print_launch: Option<String>,
     width: u16,
@@ -457,7 +540,8 @@ impl Options {
         let mut accounts = false;
         let mut jre = false;
         let mut source = Source::default();
-        let mut memory = 2048;
+        let mut memory = None;
+        let mut resolution = None;
         let mut print_launch = None;
         let mut width = 100;
         let mut height = 28;
@@ -492,9 +576,17 @@ impl Options {
                     let value = argv
                         .next()
                         .ok_or_else(|| "--memory 需要 MiB 数".to_string())?;
-                    memory = value
-                        .parse()
-                        .map_err(|_| format!("--memory 需要数字，收到 {value:?}"))?;
+                    memory = Some(
+                        value
+                            .parse()
+                            .map_err(|_| format!("--memory 需要数字，收到 {value:?}"))?,
+                    );
+                }
+                "--resolution" => {
+                    let value = argv
+                        .next()
+                        .ok_or_else(|| "--resolution 需要 宽x高".to_string())?;
+                    resolution = Some(parse_resolution(&value)?);
                 }
                 "--mirror" => {
                     let value = argv
@@ -533,6 +625,7 @@ impl Options {
             jre,
             source,
             memory,
+            resolution,
             print_launch,
             width,
             height,
@@ -553,7 +646,9 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   --accounts        启动时直接打开账户管理
   --jre             启动时直接打开 Java 下载界面
   --mirror <源>     bmclapi（默认）或 mojang，决定从哪下载
-  --memory <MiB>    堆大小（默认 2048）
+  --memory <MiB>    堆大小；写入 data/配置.toml
+  --resolution <宽x高>
+                    游戏窗口，如 854x480；写入 data/配置.toml
   --print-launch <版本>
                     只打印会执行的启动命令，不启动（调试用）
   --width <列数>    与 --once 搭配（默认 100）
@@ -566,17 +661,19 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
 目录:
   data/游戏/            游戏文件（versions/libraries/assets）
   data/凭据/账户/       每个账户一个 json
-  data/日志/
+  data/日志/           yaml.log（每次启动追加）
+  data/配置.toml       堆大小 / 窗口尺寸 / GitHub Proxy
 
 按键（主界面）:
   ↑/k ↓/j 选择   g/G 首尾   PgUp/PgDn 滚动日志
   a 或点击右上角账户  账户管理（登录 / 切换 / 移除）
-  d 下载：选版本 + Loader，Enter 开始
+  d 下载：选版本 + Loader，Enter 开始    v Java 运行时
   r 刷新   h 显示/隐藏基础版本   q/Esc 退出
-  Enter 安装/启动（未实现）
+  x 卸载（再按一次确认）   Enter 启动   Ctrl-C 退出
 
 鼠标:
   滚轮            日志区滚动日志，版本区切换选择
-  点击版本行       选中它
+  点击版本行       选中它；双击启动
   点击右上角账户   打开账户管理
+  右键            返回 / 取消（主界面除外）
   登录面板内点击   选择身份；点击面板外取消";

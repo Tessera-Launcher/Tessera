@@ -361,6 +361,11 @@ fn install(
 }
 
 /// Remove other builds of `major`, keeping `keep`.
+///
+/// Only directories named like the ones this launcher writes are considered:
+/// `21.0.13+9` (feature.minor.patch+build) or `8u512-b09`. A hand-made
+/// `运行时/21` or `运行时/jdk-21` is somebody's own copy — usable for launching,
+/// but not the launcher's to delete.
 fn prune_older(runtimes: &Path, major: u32, keep: &Path, sender: &Sender<Event>) {
     let Ok(entries) = fs::read_dir(runtimes) else {
         return;
@@ -371,12 +376,23 @@ fn prune_older(runtimes: &Path, major: u32, keep: &Path, sender: &Sender<Event>)
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if major_of(&name) != Some(major) {
+        if major_of(&name) != Some(major) || !is_install_dir_name(&name) {
             continue;
         }
         if fs::remove_dir_all(&path).is_ok() {
             let _ = sender.send(Event::Log(format!("移除旧运行时 {name}")));
         }
+    }
+}
+
+/// Whether `name` is the spelling [`install_dir`] gives a downloaded runtime.
+fn is_install_dir_name(name: &str) -> bool {
+    match major_of(name) {
+        // Java 8 is `8u512-b09`.
+        Some(8) => name.starts_with("8u") && name.contains("-b"),
+        // Everything else is `21.0.13+9`.
+        Some(_) => name.split_once('.').is_some() && name.contains('+'),
+        None => false,
     }
 }
 
@@ -760,6 +776,18 @@ mod tests {
         );
         let error = verify(&path, &"0".repeat(64)).unwrap_err();
         assert!(error.contains("哈希不匹配"), "{error}");
+    }
+
+    #[test]
+    fn only_the_launchers_own_directory_names_are_pruned() {
+        // What `install_dir` writes.
+        assert!(is_install_dir_name("21.0.13+9"));
+        assert!(is_install_dir_name("8u512-b09"));
+        // Somebody else's copy: usable, but not ours to delete.
+        assert!(!is_install_dir_name("21"));
+        assert!(!is_install_dir_name("jdk-21.0.1"));
+        assert!(!is_install_dir_name("17.0.1"));
+        assert!(!is_install_dir_name("runtime"));
     }
 
     #[test]

@@ -140,7 +140,7 @@ pub fn spawn_versions(
     asset_concurrency: usize,
 ) -> Receiver<InstallEvent> {
     spawn_worker(move |sender| {
-        let client = build_client(&root, source, asset_concurrency, None, sender.clone());
+        let client = build_client(&root, source, asset_concurrency, None, sender.clone())?;
         let runtime = runtime()?;
         runtime.block_on(async move {
             let versions = client
@@ -189,7 +189,7 @@ pub fn spawn_install(
             asset_concurrency,
             java.as_deref(),
             sender.clone(),
-        );
+        )?;
         let runtime = runtime()?;
         runtime.block_on(async move {
             let loader_version = match loader.to_mdt() {
@@ -322,7 +322,7 @@ fn build_client(
     asset_concurrency: usize,
     java: Option<&Path>,
     sender: Sender<InstallEvent>,
-) -> MdtClient {
+) -> Result<MdtClient, String> {
     let builder = MdtClient::builder()
         .mirror(source.to_mdt())
         .root_dir(root)
@@ -333,7 +333,9 @@ fn build_client(
         Some(java) => builder.java(java),
         None => builder,
     };
-    builder.build().expect("building the download client")
+    builder
+        .build()
+        .map_err(|error| format!("无法创建下载客户端：{error}"))
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -420,36 +422,13 @@ impl ProgressReporter for Reporter {
     fn finish(&self) {}
 }
 
-/// Session-wide download settings, kept out of the state machine.
-#[derive(Debug, Clone, Copy)]
-pub struct Settings {
-    pub source: Source,
-    pub asset_concurrency: usize,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            source: Source::default(),
-            // Both mirrors take 32 without trouble: 219 real asset objects from
-            // BMCLAPI took 14.7 s at 8 and 4.6 s at 32 (3.2x), with the same ~0.5%
-            // per-file failure rate at both settings -- failures go through the
-            // mirror chain, so a throttled request costs a retry, not the install.
-            asset_concurrency: 32,
-        }
-    }
-}
-
-impl Settings {
-    /// Called once with the command-line mirror choice.
-    pub fn with_source(mut self, source: Source) -> Self {
-        // Both mirrors take the same value; see `Default::default` for the
-        // measurement behind it.
-        self.asset_concurrency = 32;
-        self.source = source;
-        self
-    }
-}
+/// Asset download concurrency, for both mirrors.
+///
+/// There is nothing to tune at runtime: 219 real asset objects from BMCLAPI took
+/// 14.7 s at 8 and 4.6 s at 32 (3.2x), with the same ~0.5% per-file failure rate
+/// at both settings — failures go through the mirror chain, so a throttled
+/// request costs a retry, not the install.
+pub const ASSET_CONCURRENCY: usize = 32;
 
 #[cfg(test)]
 mod tests {
@@ -472,16 +451,10 @@ mod tests {
     fn sources_have_labels_and_map_to_mdt() {
         assert_eq!(Source::Bmclapi.label(), "BMCLAPI");
         assert_eq!(Source::Mojang.label(), "官方源");
-        // The mapping is only checked through the public label, keeping MDT types
-        // out of this module's tests.
-        assert_eq!(Settings::default().source, Source::Bmclapi);
-        assert_eq!(Settings::default().asset_concurrency, 32);
-        assert_eq!(
-            Settings::default()
-                .with_source(Source::Mojang)
-                .asset_concurrency,
-            32
-        );
+        // The picker's switch starts on the community mirror, and the value is a
+        // measured one rather than a guess (see `ASSET_CONCURRENCY`).
+        assert_eq!(Source::default(), Source::Bmclapi);
+        assert_eq!(ASSET_CONCURRENCY, 32);
     }
 
     /// Live check of the picker's data path: one manifest request, no install.

@@ -5,11 +5,12 @@
 
 ## 当前状态
 
-主界面 + 登录。主界面扫描 `<root>/versions`、列出本地已装版本、显示启动层将来需要的
-信息（基础版本 / Java / 主类 / 目录 / 大小）。登录走微软 device code，支持三种身份：
-官方启动器（title client id）、自定义 Azure 应用 id（**必须填 id 才能开始**）、
-以及 `凭据/启动器/azure_app_ids.toml` 里列出的现成 app id。
-下载与启动还没接，界面会明说"尚未实现"而不是假装成功。
+可用的启动器：扫描并启动本地版本、微软 device code 登录（官方 / 自定义 app id /
+`azure_app_ids.toml` 清单）、版本与 5 种 Mod Loader 下载、Adoptium JRE 下载、
+令牌刷新、卸载与共享库/资源回收、日志落盘。主界面扫描 `<root>/versions` 并显示
+基础版本 / Java / 主类 / 目录 / 大小；游戏退出后状态栏会报告退出码。
+
+未做：mods/资源包管理、服务器列表、实例设置页、自动更新。
 
 ### 便携布局
 
@@ -22,7 +23,8 @@
 ├── 凭据/账户/     一个会话一个 json（玩家名.json / 玩家名 (1).json …）
 ├── 凭据/启动器/   azure_app_ids.toml：可选的启动器 app id 清单
 ├── 缓存/          下载缓存（见下）
-└── 日志/
+├── 日志/          yaml.log：每次启动追加（内存里的面板只留 500 行）
+└── 配置.toml      堆大小 / 窗口尺寸 / GitHub Proxy（首次改动时才写）
 ```
 
 `缓存/` 是 vendor 里的 MDT 的内容寻址注册表：它默认写 `$HOME/.mdt/registry`，
@@ -128,6 +130,10 @@ yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
 - 客户端 jar 找 `<id>.jar` → `<父id>.jar` → 目录里任意 jar（Loader 是复制父目录来的）
 - **natives**：找 `<id>-natives` 或 `<父id>-natives`，写进 `-Djava.library.path`；
   1.19+ 没有 natives 目录也不影响（现代版本的 natives 直接在 classpath 上）
+- **工作目录是版本目录本身**（`versions/<id>/`）：`mods/`、`saves/`、`options.txt`、
+  `logs/` 都按实例各一份。这是有意的实例隔离，但和原版启动器共享 `.minecraft/mods`
+  不同——把 mod 放进 `data/游戏/mods/` 不会生效，要放进
+  `data/游戏/versions/<id>/mods/`（崩溃日志也在这个目录下）
 - **占位符**：`${auth_player_name}` `${auth_uuid}` `${auth_access_token}` `${assets_root}`
   `${assets_index_name}` `${game_directory}` `${user_type}` `${classpath}`
   `${library_directory}` `${resolution_width}` `${natives_directory}` 等；未识别的
@@ -172,6 +178,25 @@ yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
 
 刷新在独立线程里跑（同登录/下载），失败原因都会写进日志。未登录或没有凭据文件时
 直接用离线身份（`user_type=legacy`、令牌 `0`、确定性离线 UUID）。
+
+### 设置与日志
+
+启动参数里只有两样会被记住，写在 `data/配置.toml`（手改也行，缺失就是默认值）：
+
+```toml
+memory_mb = 2048      # --memory 4096 会改成这里并保存
+window_width = 854    # --resolution 1280x720 同理
+window_height = 480
+github_proxy = ""     # Java 下载界面里填的 GitHub Proxy，关掉界面也还在
+```
+
+下载源**故意不写进去**（见下载一节：一次切换不该变成长期设置）。游戏窗口默认
+854×480，改分辨率用 `--resolution 宽x高` 或直接编辑这个文件；`--width/--height` 仍然
+只作用于 `--once` 的渲染尺寸。
+
+每次启动都会在 `data/日志/yaml.log` 追加一段日志（带一行 session 头），面板里的
+500 行是内存副本，退出就没了。日志文件写不进去（比如磁盘满）时只提示一次，不影响
+启动器的其余部分。
 
 ### 下载
 
@@ -402,7 +427,8 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 | 下载 | `vendor/mdt-minecraft` | `versions/<id>/` 全部文件 + 完整 version.json |
 | Java | `api.adoptium.net` + 清华/GitHub | `运行时/<版本号>/` 一个解包好的 JRE |
 | 登录 | `vendor/minecraft-auth` | `player_name/uuid/access_token/xuid` |
-| 启动 | 本仓库（待写） | 读 JSON 链 → 合并 → 拼 argv → `Command` |
+| 启动 | 本仓库 | 读 JSON 链 → 合并 → 拼 argv → `Command` |
+| 清理 | 本仓库 | 引用计数后回收 `libraries/`、`assets/`、下载缓存 |
 
 ## 路线
 
@@ -414,7 +440,9 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 5. **令牌自动刷新** ✅（过期才联网，轮换后的 refresh token 写回凭据）
 6. **Java 运行时** ✅（Adoptium 最新 JRE × 8/17/21/25，清华源/官方源+GitHub Proxy，sha256 校验，
    装到 `data/运行时/<版本号>/`，启动时优先使用）
-7. 设置页、日志落盘
+7. 日志落盘 ✅（`data/日志/yaml.log`，面板仍只留 500 行）；设置持久化 ✅
+   （`data/配置.toml`：堆、窗口、GitHub Proxy）
+8. 设置页（目前只有命令行开关和手改 toml）
 
 ## 许可
 
