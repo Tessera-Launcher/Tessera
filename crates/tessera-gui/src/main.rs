@@ -96,6 +96,12 @@ struct Launcher {
     /// `overflow_y_scroll` path uses, without the extra `ScrollBounce` layer.
     log_scroll: ScrollHandle,
     download_scroll: ScrollHandle,
+    /// Whether the log pane sticks to the newest line. Cleared when the user
+    /// scrolls up to read older lines, restored when they return to the bottom.
+    log_follow: bool,
+    /// The log offset seen last frame, so a user-driven move can be told apart
+    /// from the pane growing under an unchanged offset.
+    log_offset_seen: Pixels,
     /// The download cursor last seen, so keyboard movement can scroll it into
     /// view without fighting the user's own wheel/drag scrolling.
     download_cursor_seen: usize,
@@ -202,6 +208,8 @@ impl Launcher {
             clipboard_rx: Vec::new(),
             log_scroll: ScrollHandle::default(),
             download_scroll: ScrollHandle::default(),
+            log_follow: true,
+            log_offset_seen: px(0.0),
             download_cursor_seen: 0,
             log_file,
             focus_handle,
@@ -945,7 +953,19 @@ impl Launcher {
         panel("详情", body, false)
     }
 
-    fn log_panel(&self) -> impl IntoElement {
+    fn log_panel(&mut self) -> impl IntoElement {
+        // Stick to the tail while the pane grows, but stop following as soon as
+        // the user moves it away from the bottom; coming back re-arms it.
+        let offset = self.log_scroll.offset().y;
+        let max = self.log_scroll.max_offset().y;
+        let at_bottom = offset >= max - px(2.0);
+        if offset != self.log_offset_seen {
+            self.log_follow = at_bottom;
+            self.log_offset_seen = offset;
+        }
+        if self.log_follow && !at_bottom {
+            self.log_scroll.scroll_to_bottom();
+        }
         let mut body = div()
             .id("log")
             .v_flex()
