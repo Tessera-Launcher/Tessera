@@ -644,6 +644,19 @@ impl App {
             return;
         };
 
+        // An interrupted install can leave a version directory with no profile.
+        // Refuse before refreshing the token: the error would otherwise surface
+        // only after a network round-trip, and the raw "No such file" says
+        // nothing about what to do.
+        if !version.has_profile {
+            self.status = "版本文件不完整".to_string();
+            self.log(format!(
+                "启动失败：versions/{0}/{0}.json 不存在（安装可能中断），请右键卸载后重新下载",
+                version.dir
+            ));
+            return;
+        }
+
         // By file, never by name: the same player may be signed in several times
         // and only the file says which session's tokens get refreshed.
         let account_file = self.account.file().map(Path::to_path_buf);
@@ -904,6 +917,7 @@ mod tests {
             has_jar: true,
             release_time: None,
             is_base_only: false,
+            has_profile: true,
             aot: false,
         }
     }
@@ -2861,6 +2875,30 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
                 .iter()
                 .any(|line| line.contains("准备启动 1.20.1 · 离线（Player）")),
             "a signed-out launch is offline: {:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn a_version_without_a_profile_is_refused_before_any_network_work() {
+        let mut app = App::new(
+            "/mc",
+            "/acc",
+            vec![LocalVersion {
+                has_profile: false,
+                ..version("half-installed")
+            }],
+            vec![],
+        );
+        app.request_launch();
+        assert!(
+            refresh_effect(&app).is_none(),
+            "a broken version must not refresh a token: {:?}",
+            app.effects()
+        );
+        assert!(
+            app.log.iter().any(|line| line.contains("安装可能中断")),
+            "the log must say what to do: {:?}",
             app.log
         );
     }

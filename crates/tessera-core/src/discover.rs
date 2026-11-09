@@ -39,6 +39,10 @@ pub struct LocalVersion {
     /// `inheritsFrom`, so the vanilla version must stay on disk — but showing it
     /// next to the loader as if it were a second, independent install is noise.
     pub is_base_only: bool,
+    /// Whether `<dir>/<dir>.json` parsed. A directory can survive an interrupted
+    /// install without one; such a version is listed (so it can be removed) but
+    /// is not launchable.
+    pub has_profile: bool,
     /// Whether an AOT training run left a cache (and its metadata) here.
     ///
     /// Training always forces Java 28, and launching a cached version uses the
@@ -101,6 +105,7 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
                 has_jar,
                 release_time: None,
                 is_base_only: false,
+                has_profile: false,
                 aot: has_aot_cache(&dir, &id),
             },
         });
@@ -150,6 +155,7 @@ fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
         release_time: string("releaseTime"),
         // Filled in by `scan` once every profile is known.
         is_base_only: false,
+        has_profile: true,
         aot: has_aot_cache(dir, id),
     })
 }
@@ -281,6 +287,7 @@ mod tests {
         let versions = scan(tmp.path());
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].kind, "-", "unreadable profile is still listed");
+        assert!(!versions[0].has_profile, "and it is marked unlaunchable");
 
         assert!(scan(&tmp.path().join("nowhere")).is_empty());
     }
