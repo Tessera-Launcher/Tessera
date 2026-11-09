@@ -574,6 +574,9 @@ impl App {
     /// What a confirmation dialog needs: the version, what depends on it, and
     /// how much disk it occupies.
     pub fn uninstall_plan(&mut self) -> Option<(String, Vec<String>, u64)> {
+        // Only a pending question has a plan: without this the dialog renders on
+        // every frame in which some version happens to be selected.
+        self.uninstall_confirm.as_ref()?;
         let version = self.selected_version()?.clone();
         // Measured on demand: the dialog is the only reader, and the details pane
         // may not have run yet.
@@ -3145,6 +3148,22 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.download.focus, PickerFocus::Versions);
         // 1.12.2 rules out Fabric and Quilt, so the loader list is rebuilt.
         assert!(!app.download.loaders.contains(&Loader::Fabric));
+    }
+
+    #[test]
+    fn uninstall_plan_only_exists_while_a_confirmation_is_pending() {
+        let mut app = app();
+        // Selecting a version is not a question; a front-end that draws a dialog
+        // whenever a plan exists would show it on every frame.
+        assert!(app.uninstall_plan().is_none());
+
+        app.request_uninstall();
+        let (dir, dependents, _) = app.uninstall_plan().expect("a pending question has a plan");
+        assert_eq!(dir, "a");
+        assert!(dependents.is_empty());
+
+        app.cancel_uninstall();
+        assert!(app.uninstall_plan().is_none());
     }
 
     #[test]

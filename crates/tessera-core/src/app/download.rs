@@ -700,8 +700,11 @@ impl App {
                 self.status = "下载：选择版本与 Loader".to_string();
             }
             InstallEvent::Log(line) => {
+                // Only the text: `start_install` already moved the stage, and the
+                // worker also logs while fetching the *version list* ("Updating
+                // BMCLAPI index"), which used to flip the picker into the
+                // progress screen for one frame.
                 self.log(line);
-                self.download.stage = DownloadStage::Installing;
             }
             InstallEvent::Progress {
                 done,

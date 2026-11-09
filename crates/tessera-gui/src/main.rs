@@ -128,7 +128,12 @@ impl Launcher {
             return;
         };
         // A pending uninstall owns Escape: answering "no" must not also quit.
-        if self.state.uninstall_confirm().is_some() && code == Key::Esc {
+        // Scoped to the main screen, where the dialog lives: on other screens the
+        // key belongs to that screen (closing the picker, the login overlay…).
+        if self.state.screen == Screen::Main
+            && self.state.uninstall_confirm().is_some()
+            && code == Key::Esc
+        {
             self.state.cancel_uninstall();
             cx.notify();
             return;
@@ -1538,12 +1543,19 @@ impl Launcher {
         );
         Some(
             div()
+                .id("uninstall-scrim")
                 .absolute()
                 .inset_0()
                 .flex()
                 .items_center()
                 .justify_center()
                 .bg(rgba(0x00_00_00_b8))
+                // `occlude` is the part that matters: it keeps a stray click from
+                // reaching the footer button underneath and answering the
+                // question by accident. The listener only consumes the event.
+                .occlude()
+                .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, _| {}))
+                .on_mouse_down(MouseButton::Right, cx.listener(|_, _, _, _| {}))
                 .child(body)
                 .into_any_element(),
         )
