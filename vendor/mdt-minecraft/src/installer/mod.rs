@@ -59,8 +59,6 @@ pub use mcr::{
 };
 pub use uninstall::uninstall_modloader;
 #[cfg(not(feature = "minimal"))]
-pub(crate) use forge::uses_official_installer;
-#[cfg(not(feature = "minimal"))]
 pub use version_json::{
     apply_mirror_to_json, GeneratedArtifact, GeneratedLibrary, GeneratedLibraryDownloads,
     GeneratedVersionJson,

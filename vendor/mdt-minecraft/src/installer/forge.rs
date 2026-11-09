@@ -21,9 +21,10 @@ use super::{
 const MODERN_FORGE_MIN: McVersion = McVersion::new(1, 13, 0);
 
 /// Whether this Minecraft version's Forge install uses the official installer
-/// (Method A). Older versions are unpacked by hand (Method B) and land in the
-/// `<mc>+Forge<ver>` isolation directory rather than the installer's own id.
-pub(crate) fn uses_official_installer(mc_version: &str) -> bool {
+/// (Method A). Older versions are unpacked by hand (Method B) but keep the
+/// installer's own `<mc>-forge-<ver>` id: Forge 1.8.9's FML URL-decodes the
+/// version name, so a `+` in the directory name breaks it.
+fn uses_official_installer(mc_version: &str) -> bool {
     // Unparseable versions (e.g. snapshots) are treated as modern.
     match McVersion::parse(mc_version) {
         Some(v) => v >= MODERN_FORGE_MIN,

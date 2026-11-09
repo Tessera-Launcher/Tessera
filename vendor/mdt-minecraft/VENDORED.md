@@ -202,17 +202,20 @@ required both removed entries and failed with
   them: `clientreq: false` only tells the official installer to skip a jar, but
   it stays in the version JSON and the launcher still needs it);
 - synthesizes the version JSON from `install_profile.versionInfo` when
-  `version.json` is absent, keeping the existing mirror/id rewrite.
+  `version.json` is absent, keeping the existing mirror rewrite;
+- names the install `<mc>-forge-<ver>` (the installer's own id), not the
+  `<mc>+Forge<ver>` isolation convention: Forge 1.8.9's FML URL-decodes the
+  version name, which turns `+` into a space, then looks for
+  `versions/<mc> Forge<ver>/<mc>.jar` and refuses to start ("CRITICAL
+  TAMPERING WITH MINECRAFT").
 
 Installers that still ship `maven/` and `version.json` take the original path
 unchanged.
 
-The copy-on-write step in `MdtClient::install_modloader` pre-created the
-*installer* id directory (`<mc>-forge-<ver>`) before installing. Forge's legacy
-manual unpack writes `<mc>+Forge<ver>` instead, so that copy was never used and
-survived every failed attempt as a phantom version with no JSON. The copy is now
-removed when the finished install lands elsewhere (and on a failed install), so
-the launcher no longer lists an unlaunchable leftover.
+The copy-on-write step in `MdtClient::install_modloader` pre-creates the
+installer-id directory and copies vanilla into it. If the finished install lands
+elsewhere (or fails), that copy is now removed, so the launcher no longer lists
+a phantom version with no JSON.
 
 ## Tests added
 

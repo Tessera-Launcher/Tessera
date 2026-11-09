@@ -289,16 +289,7 @@ impl MdtClient {
         // installing, so vanilla is never mutated. Otherwise install in place.
         let mut isolated = None;
         let target_dir = if copy_vanilla {
-            // Method B (legacy Forge) writes `<mc>+Forge<ver>`; copy-on-write must
-            // target that same directory, otherwise the vanilla jar/natives are
-            // left in a directory the installed version never reads.
-            let isolated_id = if loader == ModLoader::Forge
-                && !installer::uses_official_installer(&mc_version)
-            {
-                installer::loader_version_id(&mc_version, loader, loader_version)
-            } else {
-                installer::installer_version_id(&mc_version, loader, loader_version)
-            };
+            let isolated_id = installer::installer_version_id(&mc_version, loader, loader_version);
             let isolated_dir = installer::version_dir(&self.root, &isolated_id);
             debug_line(
                 self.reporter.as_ref(),
@@ -336,12 +327,10 @@ impl MdtClient {
         };
         let result = installer::install_modloader(self.downloader.as_ref(), req).await;
 
-        // The copy above used the *installer* id, but Forge's legacy manual
-        // unpack names its own directory `<mc>+Forge<ver>` (the isolation
-        // convention). The pre-copied tree is then never written to: leaving it
-        // behind makes the launcher list a phantom version with no JSON. Drop it
-        // unless the finished install actually lives there; a failed install
-        // leaves only that same unused vanilla copy behind.
+        // A loader may still choose a different directory than the copy above
+        // (a failed install leaves an unused vanilla copy). Drop it unless the
+        // finished install actually lives there, so the launcher does not list a
+        // phantom version with no JSON.
         if let Some((isolated_id, isolated_dir)) = &isolated {
             let keep = result
                 .as_ref()
