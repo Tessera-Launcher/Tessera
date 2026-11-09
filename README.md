@@ -29,9 +29,11 @@
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-能用的：列出 `data/游戏/versions`、点行切换详情、`刷新` 重新扫描、`退出`。
-未接的：下载 / 卸载 / 账户 / Java / 启动（按钮位置先占住）。数据目录仍由
-`TESSERA_DATA` 或 `<exe>/data` 决定，和 TUI 一致。
+能用的：列出 `data/游戏/versions`（按 TUI 的规则折叠基础版本）、点行切换详情、
+`启动`（走和 TUI 同一条链路：选中版本 → 刷新令牌或离线身份 → 拼命令 → 起进程，
+缺 Java / 缺库都会写进日志）、`刷新`、`退出`。
+未接的：下载 / 卸载 / 账户 / Java（按钮位置先占住）。数据目录仍由 `TESSERA_DATA`
+或 `<exe>/data` 决定，和 TUI 一致。
 
 ```sh
 cargo run -p tessera-gui
@@ -490,9 +492,11 @@ token 只存在于登录线程和那个文件里，**UI 永远拿不到 token**�
 ## 仓库结构
 
 ```
-crates/tessera-core/  纯逻辑：发现、启动参数、下载、Java、账户、清理（不依赖终端）
-crates/tessera-tui/   终端前端：屏幕、输入状态机、剪贴板（依赖 tessera-core）
-crates/tessera-gui/   桌面前端：gpui-kit 的窗口，复刻 TUI 主界面布局
+crates/tessera-core/  纯逻辑 + 屏幕状态机：发现、启动参数、下载、Java、账户、清理
+crates/tessera-core/src/app/   状态机（App / Screen / Effect）+ 每个流程的状态
+crates/tessera-core/src/input.rs  前端无关的按键/鼠标事件类型
+crates/tessera-tui/   终端前端：渲染、crossterm 输入翻译、剪贴板
+crates/tessera-gui/   桌面前端：gpui-kit 窗口，复用同一个状态机
 src/main.rs           组装：解析参数，把 core 与 tui 接起来
 crates/tessera-core/assets/  AOT 预加载与 fastmenu 两个 Java agent 的源码和 jar
 vendor/mdt-minecraft  下载层（upstream + 本地修复，见其 VENDORED.md）

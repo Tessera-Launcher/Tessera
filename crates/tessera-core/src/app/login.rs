@@ -30,7 +30,7 @@ pub struct LoginUi {
     /// Typed client id, only used by the custom identity.
     pub app_id: String,
     /// The list read from `azure_app_ids.toml`, in file order.
-    pub app_ids: Vec<tessera_core::app_ids::AppId>,
+    pub app_ids: Vec<crate::app_ids::AppId>,
     /// Why the list could not be read, if it could not. Shown instead of rows.
     pub app_ids_error: Option<String>,
     /// Selected row in [`LoginUi::app_ids`].
@@ -98,7 +98,7 @@ impl App {
     /// so tests and `--dir` runs keep everything inside the same tree.
     pub fn app_ids_path(&self) -> PathBuf {
         match self.accounts_dir.parent() {
-            Some(credentials) => tessera_core::app_ids::path_under(credentials),
+            Some(credentials) => crate::app_ids::path_under(credentials),
             None => PathBuf::new(),
         }
     }
@@ -109,7 +109,7 @@ impl App {
         let path = self.app_ids_path();
         self.login.app_id_choice = 0;
         self.login.app_id_offset = 0;
-        match tessera_core::app_ids::load(&path) {
+        match crate::app_ids::load(&path) {
             Ok(ids) if !ids.is_empty() => {
                 self.login.app_ids = ids;
                 self.login.app_ids_error = None;
@@ -142,8 +142,8 @@ impl App {
 
     /// All keyboard handling, so a mouse click can replay a key and behave
     /// identically to pressing it.
-    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+    pub fn handle_key(&mut self, code: Key, modifiers: Modifiers) {
+        if modifiers.contains(Modifiers::CONTROL) && code == Key::Char('c') {
             self.should_quit = true;
             return;
         }
@@ -167,49 +167,49 @@ impl App {
             Screen::Main => {}
         }
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
-            KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
-            KeyCode::Home | KeyCode::Char('g') => self.select_first(),
-            KeyCode::End | KeyCode::Char('G') => self.select_last(),
-            KeyCode::Char('r') => self.reload(),
-            KeyCode::Char('h') => self.toggle_base_versions(),
-            KeyCode::Char('l') => self.open_login(),
-            KeyCode::Char('a') => self.open_accounts(),
-            KeyCode::Char('d') => self.open_download(),
+            Key::Char('q') | Key::Esc => self.should_quit = true,
+            Key::Down | Key::Char('j') => self.select_next(),
+            Key::Up | Key::Char('k') => self.select_prev(),
+            Key::Home | Key::Char('g') => self.select_first(),
+            Key::End | Key::Char('G') => self.select_last(),
+            Key::Char('r') => self.reload(),
+            Key::Char('h') => self.toggle_base_versions(),
+            Key::Char('l') => self.open_login(),
+            Key::Char('a') => self.open_accounts(),
+            Key::Char('d') => self.open_download(),
             // `j` already moves the selection; the Java screen gets `v` (虚拟机).
-            KeyCode::Char('v') => self.open_java(),
+            Key::Char('v') => self.open_java(),
             // Two presses, like removing an account: deleting a whole version
             // directory is not something a single stray key may do.
-            KeyCode::Char('x') | KeyCode::Delete => self.request_uninstall(),
+            Key::Char('x') | Key::Delete => self.request_uninstall(),
             // Keyboard equivalent of the wheel, for terminals without mouse reporting.
-            KeyCode::PageUp => self.scroll_log(5),
-            KeyCode::PageDown => self.scroll_log_back(5),
-            KeyCode::Enter => self.request_launch(),
+            Key::PageUp => self.scroll_log(5),
+            Key::PageDown => self.scroll_log_back(5),
+            Key::Enter => self.request_launch(),
             _ => {}
         }
         // Anything other than the uninstall key itself drops the pending
         // confirmation, so "press x again" cannot survive the user wandering off
         // and coming back minutes later.
-        if !matches!(code, KeyCode::Char('x') | KeyCode::Delete) {
+        if !matches!(code, Key::Char('x') | Key::Delete) {
             self.uninstall_confirm = None;
         }
     }
 
     /// Keys while the overlay is open. Returns `true` when the key was consumed.
-    pub fn handle_login_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    pub fn handle_login_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
         match &self.login.step {
             LoginStep::Choose => match code {
-                KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                Key::Esc | Key::Char('q') => self.close_login(),
+                Key::Up | Key::Char('k') | Key::BackTab => {
                     self.login.choice = self.login.choice.saturating_sub(1);
                 }
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                Key::Down | Key::Char('j') | Key::Tab => {
                     self.login.choice = (self.login.choice + 1).min(LoginUi::CHOICES - 1);
                 }
-                KeyCode::Char('g') | KeyCode::Home => self.login.choice = 0,
-                KeyCode::Char('G') | KeyCode::End => self.login.choice = LoginUi::CHOICES - 1,
-                KeyCode::Enter | KeyCode::Char(' ') => match self.login.choice {
+                Key::Char('g') | Key::Home => self.login.choice = 0,
+                Key::Char('G') | Key::End => self.login.choice = LoginUi::CHOICES - 1,
+                Key::Enter | Key::Char(' ') => match self.login.choice {
                     1 => {
                         self.login.step = LoginStep::EnterAppId;
                         self.status = "登录：输入 app id".to_string();
@@ -224,22 +224,22 @@ impl App {
                 _ => {}
             },
             LoginStep::ChooseAppIds => match code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+                Key::Esc | Key::Char('q') => {
                     self.login.step = LoginStep::Choose;
                     self.status = "登录：选择身份".to_string();
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
+                Key::Up | Key::Char('k') => {
                     self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                Key::Down | Key::Char('j') => {
                     let last = self.login.app_ids.len().saturating_sub(1);
                     self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
                 }
-                KeyCode::Home | KeyCode::Char('g') => self.login.app_id_choice = 0,
-                KeyCode::End | KeyCode::Char('G') => {
+                Key::Home | Key::Char('g') => self.login.app_id_choice = 0,
+                Key::End | Key::Char('G') => {
                     self.login.app_id_choice = self.login.app_ids.len().saturating_sub(1);
                 }
-                KeyCode::Enter | KeyCode::Char(' ') => {
+                Key::Enter | Key::Char(' ') => {
                     if let Some(identity) = self.login.identity() {
                         self.start_login(identity);
                     } else {
@@ -255,14 +255,14 @@ impl App {
                 _ => {}
             },
             LoginStep::EnterAppId => match code {
-                KeyCode::Esc => {
+                Key::Esc => {
                     self.login.step = LoginStep::Choose;
                     self.status = "登录：选择身份".to_string();
                 }
-                KeyCode::Backspace => {
+                Key::Backspace => {
                     self.login.app_id.pop();
                 }
-                KeyCode::Enter => {
+                Key::Enter => {
                     if let Some(identity) = self.login.identity() {
                         self.start_login(identity);
                     } else {
@@ -270,8 +270,8 @@ impl App {
                         self.status = "请输入 app id（不能为空）".to_string();
                     }
                 }
-                KeyCode::Char(c)
-                    if !modifiers.contains(KeyModifiers::CONTROL)
+                Key::Char(c)
+                    if !modifiers.contains(Modifiers::CONTROL)
                         && self.login.app_id.len() < 64 =>
                 {
                     self.login.app_id.push(c);
@@ -285,18 +285,18 @@ impl App {
                 // A blank code or link is the "asking Microsoft" placeholder, so
                 // the guards keep the buttons from copying nothing.
                 match code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.close_login(),
-                    KeyCode::Char('c') if !user_code.is_empty() => {
+                    Key::Esc | Key::Char('q') => self.close_login(),
+                    Key::Char('c') if !user_code.is_empty() => {
                         self.request(Effect::Copy(user_code.clone()));
                         self.log(format!("复制设备码：{user_code}"));
                         self.status = "已复制设备码".to_string();
                     }
-                    KeyCode::Char('y') if !url.is_empty() => {
+                    Key::Char('y') if !url.is_empty() => {
                         self.request(Effect::Copy(url.clone()));
                         self.log(format!("复制链接：{url}"));
                         self.status = "已复制链接".to_string();
                     }
-                    KeyCode::Char('o') if !url.is_empty() => {
+                    Key::Char('o') if !url.is_empty() => {
                         self.request(Effect::OpenBrowser(url.clone()));
                         self.log(format!("在浏览器打开：{url}"));
                         self.status = "正在打开浏览器…".to_string();
@@ -307,7 +307,7 @@ impl App {
             LoginStep::Done { .. } | LoginStep::Failed(_) => {
                 if matches!(
                     code,
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char(' ')
+                    Key::Esc | Key::Enter | Key::Char('q') | Key::Char(' ')
                 ) {
                     self.close_login();
                 }

@@ -16,15 +16,15 @@ use std::path::{Path, PathBuf};
 
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crate::input::{Key, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use tessera_core::accounts::{self, Account as SavedAccount};
-use tessera_core::cleanup;
-use tessera_core::discover::{self, LocalVersion};
-use tessera_core::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
-use tessera_core::launch;
-use tessera_core::login::{Identity, LoginEvent};
-use tessera_core::session::SessionEvent;
+use crate::accounts::{self, Account as SavedAccount};
+use crate::cleanup;
+use crate::discover::{self, LocalVersion};
+use crate::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
+use crate::launch;
+use crate::login::{Identity, LoginEvent};
+use crate::session::SessionEvent;
 
 /// How many log lines to keep before dropping the oldest.
 const LOG_CAPACITY: usize = 500;
@@ -76,7 +76,7 @@ pub enum Effect {
     FetchJavaList,
     /// Download one Java runtime from the first URL that works.
     InstallJava {
-        runtime: tessera_core::java::Runtime,
+        runtime: crate::java::Runtime,
         urls: Vec<String>,
     },
     /// Put `text` on the clipboard (tool first, then OSC 52).
@@ -112,7 +112,7 @@ pub enum Account {
 }
 
 impl Account {
-    /// `Steve (1) · 官方启动器` — the number is [`tessera_core::accounts::suffix`].
+    /// `Steve (1) · 官方启动器` — the number is [`crate::accounts::suffix`].
     pub fn label(&self) -> String {
         match self {
             Account::SignedOut => "未登录".to_string(),
@@ -216,11 +216,11 @@ pub struct Layout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Button {
     pub area: Area,
-    pub code: KeyCode,
+    pub code: Key,
 }
 
 impl Button {
-    pub fn new(area: Area, code: KeyCode) -> Self {
+    pub fn new(area: Area, code: Key) -> Self {
         Button { area, code }
     }
 }
@@ -231,7 +231,7 @@ pub struct App {
     pub root: PathBuf,
     pub accounts_dir: PathBuf,
     /// `data/运行时`: the Java runtimes this launcher downloaded, one directory
-    /// per version. Set by `main` from [`tessera_core::paths::Paths`]; the default is
+    /// per version. Set by `main` from [`crate::paths::Paths`]; the default is
     /// derived from `accounts_dir` so tests and `--dir` runs stay self-contained.
     pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
@@ -265,12 +265,12 @@ pub struct App {
     /// can fall back to the token already on disk.
     refreshing: Option<PathBuf>,
     /// Where files come from; shown in the picker title.
-    pub source: tessera_core::install::Source,
+    pub source: crate::install::Source,
     /// Launch tuning, applied to the next launch.
     pub launch_options: launch::Options,
     /// The persisted defaults (`data/配置.toml`): heap, window size, proxy. The
     /// main loop writes this back when it changed.
-    pub settings: tessera_core::settings::Settings,
+    pub settings: crate::settings::Settings,
     /// The Java picker's state.
     pub java: JavaUi,
     /// Where the last frame put things. The renderer returns this instead of
@@ -305,7 +305,7 @@ impl App {
         let root = root.into();
         let accounts_dir = accounts_dir.into();
         // `<data>/凭据/账户` → `<data>/运行时`.
-        let runtimes = tessera_core::paths::runtime_dir_beside(&accounts_dir);
+        let runtimes = crate::paths::runtime_dir_beside(&accounts_dir);
         let mut app = App {
             status: format!("扫描 {}", root.display()),
             root,
@@ -327,9 +327,9 @@ impl App {
             download: DownloadUi::default(),
             effects: Vec::new(),
             refreshing: None,
-            source: tessera_core::install::Source::default(),
+            source: crate::install::Source::default(),
             launch_options: launch::Options::default(),
-            settings: tessera_core::settings::Settings::default(),
+            settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
             layout: Layout::default(),
             list_offset: 0,
@@ -519,8 +519,7 @@ impl App {
         std::mem::take(&mut self.effects)
     }
 
-    /// Read-only view, for tests.
-    #[cfg(test)]
+    /// Read-only view of what is queued, without consuming it.
     pub fn effects(&self) -> &[Effect] {
         &self.effects
     }
@@ -732,7 +731,7 @@ impl App {
         // right click must not close the launcher.
         if matches!(event.kind, MouseEventKind::Down(MouseButton::Right)) {
             if self.screen != Screen::Main {
-                self.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+                self.handle_key(Key::Esc, Modifiers::NONE);
             }
             return;
         }
@@ -751,7 +750,7 @@ impl App {
                 if self.screen == Screen::Download {
                     self.download.focus = PickerFocus::Versions;
                 }
-                self.handle_key(button.code, KeyModifiers::NONE);
+                self.handle_key(button.code, Modifiers::NONE);
                 return;
             }
         }
@@ -835,7 +834,7 @@ impl App {
                         }
                         _ => self.login.choice = index.min(LoginUi::CHOICES - 1),
                     }
-                    self.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+                    self.handle_login_key(Key::Enter, Modifiers::NONE);
                     return;
                 }
                 if !layout.overlay.contains(column, row) {
@@ -867,7 +866,7 @@ impl App {
     ///
     /// A signed-in account with a saved file is refreshed first — the refreshed
     /// access token is what the game needs, and the rotated refresh token has to
-    /// be written back (see [`tessera_core::session`]). Everything else goes straight to
+    /// be written back (see [`crate::session`]). Everything else goes straight to
     /// [`App::start_game`] with offline credentials.
     pub fn request_launch(&mut self) {
         let Some(version) = self.selected_version().cloned() else {
@@ -1084,7 +1083,7 @@ mod tests {
     }
 
     /// The one Java download the app queued, if any.
-    fn java_effect(app: &App) -> Option<(tessera_core::java::Runtime, Vec<String>)> {
+    fn java_effect(app: &App) -> Option<(crate::java::Runtime, Vec<String>)> {
         app.effects().iter().rev().find_map(|effect| match effect {
             Effect::InstallJava { runtime, urls } => Some((runtime.clone(), urls.clone())),
             _ => None,
@@ -1494,7 +1493,7 @@ mod tests {
 
         // A runtime that exits as soon as it is started, so the test never waits.
         let runtimes = tmp.path().join("运行时");
-        let bin = tessera_core::java::install_dir(&runtimes, "17.0.1+1").join("bin");
+        let bin = crate::java::install_dir(&runtimes, "17.0.1+1").join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let java = bin.join("java");
         std::fs::write(
@@ -1556,9 +1555,9 @@ mod tests {
     #[test]
     fn any_other_key_cancels_a_pending_uninstall() {
         let mut app = app();
-        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_key(Key::Char('x'), Modifiers::NONE);
         assert_eq!(app.uninstall_confirm(), Some("a"));
-        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        app.handle_key(Key::Char('h'), Modifiers::NONE);
         assert!(app.uninstall_confirm().is_none());
     }
 
@@ -1630,7 +1629,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Login);
         assert!(app.login.identity().is_some(), "official needs no input");
 
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert_eq!(login_effect(&app), Some(Identity::Official));
         assert!(matches!(app.login.step, LoginStep::Waiting { .. }));
     }
@@ -1639,23 +1638,23 @@ mod tests {
     fn custom_identity_opens_an_input_and_refuses_to_start_empty() {
         let mut app = app();
         app.open_login();
-        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Down, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.login.step, LoginStep::EnterAppId);
         assert!(login_effect(&app).is_none());
 
         // Enter on an empty field must not start a login (and must not fall back
         // to any built-in id).
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert!(login_effect(&app).is_none(), "empty app id must not start");
         assert!(app.status.contains("不能为空"));
 
         for c in "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".chars() {
-            app.handle_login_key(KeyCode::Char(c), KeyModifiers::NONE);
+            app.handle_login_key(Key::Char(c), Modifiers::NONE);
         }
-        app.handle_login_key(KeyCode::Backspace, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Char('b'), KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Backspace, Modifiers::NONE);
+        app.handle_login_key(Key::Char('b'), Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
 
         assert_eq!(
             login_effect(&app),
@@ -1667,7 +1666,7 @@ mod tests {
 
     /// Builds the app-id file where `App::app_ids_path` looks for it.
     fn write_app_ids(accounts_dir: &std::path::Path, body: &str) {
-        let path = tessera_core::app_ids::path_under(accounts_dir.parent().unwrap());
+        let path = crate::app_ids::path_under(accounts_dir.parent().unwrap());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     }
@@ -1695,13 +1694,13 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
 "#,
         );
         app.open_login();
-        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_login_key(Key::Down, Modifiers::NONE);
+        app.handle_login_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.login.choice, 2);
         // Nothing is read until the entry is opened.
         assert!(app.login.app_ids.is_empty());
 
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.login.step, LoginStep::ChooseAppIds);
         assert!(
             app.login.app_ids_error.is_none(),
@@ -1715,8 +1714,8 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
         );
 
         // The first row is preselected; Down moves to the second.
-        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Down, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert_eq!(
             login_effect(&app),
             Some(Identity::Saved {
@@ -1738,17 +1737,17 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 "#,
         );
         app.open_login();
-        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Down, Modifiers::NONE);
+        app.handle_login_key(Key::Down, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
 
         // One entry: Down and End cannot walk past it, Up cannot go negative.
-        for code in [KeyCode::Down, KeyCode::End, KeyCode::Up, KeyCode::Home] {
-            app.handle_login_key(code, KeyModifiers::NONE);
+        for code in [Key::Down, Key::End, Key::Up, Key::Home] {
+            app.handle_login_key(code, Modifiers::NONE);
             assert!(app.login.app_id_choice < app.login.app_ids.len());
         }
 
-        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_login_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.login.step, LoginStep::Choose);
         assert_eq!(app.screen, Screen::Login);
         assert!(login_effect(&app).is_none());
@@ -1762,14 +1761,14 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         let mut app = App::new("/mc", accounts, vec![version("a")], Vec::new());
 
         app.open_login();
-        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::End, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.login.step, LoginStep::ChooseAppIds);
         let error = app.login.app_ids_error.clone().expect("an error is shown");
         assert!(error.contains("azure_app_ids.toml"), "{error}");
 
         // Enter on an empty list says why instead of starting a login.
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert!(login_effect(&app).is_none());
         assert!(
             app.status.contains("未找到") || app.status.contains("没有可用"),
@@ -1782,8 +1781,8 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn a_malformed_app_id_file_is_reported() {
         let (_tmp, mut app) = saved_app("api_keys = 1\n");
         app.open_login();
-        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::End, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         let error = app.login.app_ids_error.clone().expect("an error is shown");
         assert!(error.contains("解析失败"), "{error}");
         assert!(app.login.app_ids.is_empty());
@@ -1793,7 +1792,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn escape_leaves_the_overlay_without_starting_anything() {
         let mut app = app();
         app.open_login();
-        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_login_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
         assert!(login_effect(&app).is_none());
     }
@@ -1916,8 +1915,8 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.open_accounts();
         // Remove the first Steve while the second one is active.
         app.accounts_ui.selected = 0;
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
 
         assert_eq!(app.accounts.len(), 1);
         assert_eq!(
@@ -1932,9 +1931,9 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn removing_the_active_session_signs_out_even_if_a_namesake_remains() {
         let (_tmp, mut app) = with_two_steves();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::End, KeyModifiers::NONE);
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::End, Modifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
 
         assert_eq!(app.account, Account::SignedOut);
         assert_eq!(app.accounts.len(), 1, "the namesake is not touched");
@@ -1956,7 +1955,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn the_device_code_screen_can_copy_and_open_what_it_shows() {
         let mut app = waiting_app();
 
-        app.handle_login_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        app.handle_login_key(Key::Char('c'), Modifiers::NONE);
         assert_eq!(
             copy_effect(&app).as_deref(),
             Some("ABCD-1234"),
@@ -1965,14 +1964,14 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert!(app.status.contains("设备码"), "{}", app.status);
 
         app.take_effects();
-        app.handle_login_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        app.handle_login_key(Key::Char('y'), Modifiers::NONE);
         assert_eq!(
             copy_effect(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCD1234")
         );
 
         app.take_effects();
-        app.handle_login_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        app.handle_login_key(Key::Char('o'), Modifiers::NONE);
         assert_eq!(
             browser_effect(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCD1234")
@@ -1981,7 +1980,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 
         // Everything else still cancels, and nothing was started by copying.
         assert!(login_effect(&app).is_none());
-        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_login_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
     }
 
@@ -1994,9 +1993,9 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             user_code: String::new(),
             url: String::new(),
         };
-        app.handle_login_key(KeyCode::Char('c'), KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Char('y'), KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        app.handle_login_key(Key::Char('c'), Modifiers::NONE);
+        app.handle_login_key(Key::Char('y'), Modifiers::NONE);
+        app.handle_login_key(Key::Char('o'), Modifiers::NONE);
         assert!(copy_effect(&app).is_none());
         assert!(browser_effect(&app).is_none());
     }
@@ -2015,7 +2014,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 
     // ---- mouse ----
 
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use crate::input::{MouseButton, MouseEvent, MouseEventKind};
 
     /// A click whose predecessors are ancient, so it can never pair up into a
     /// double click (which would start a download the test did not ask for).
@@ -2030,7 +2029,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             kind: MouseEventKind::Down(MouseButton::Left),
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         }
     }
 
@@ -2043,7 +2042,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             },
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         }
     }
 
@@ -2113,7 +2112,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             kind: MouseEventKind::Down(MouseButton::Right),
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         }
     }
 
@@ -2203,7 +2202,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         );
         std::fs::write(root.join("versions/1.21.9/1.21.9.jar"), b"jar").unwrap();
 
-        let scanned = tessera_core::discover::scan(&root);
+        let scanned = crate::discover::scan(&root);
         let mut app = App::new(&root, "/acc", scanned, vec![]);
         app.set_runtimes(tmp.path().join("运行时"));
         app.start_game(launch::Credentials::offline("Steve"));
@@ -2272,7 +2271,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn right_click_leaves_the_login_overlay_where_it_was_opened_from() {
         let (_tmp, mut app) = with_accounts();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Char('l'), Modifiers::NONE);
         assert_eq!(app.screen, Screen::Login);
         app.handle_mouse(right_click(10, 10));
         assert_eq!(app.screen, Screen::Accounts, "back, not home");
@@ -2281,7 +2280,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     #[test]
     fn right_click_while_installing_returns_to_the_main_screen_not_the_picker() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Installing);
         app.handle_mouse(right_click(10, 10));
         assert_eq!(app.screen, Screen::Main);
@@ -2345,8 +2344,8 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn enter_switches_the_active_account() {
         let (_tmp, mut app) = with_accounts();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::Home, KeyModifiers::NONE);
-        app.handle_accounts_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Home, Modifiers::NONE);
+        app.handle_accounts_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
         assert!(app.log.iter().any(|line| line.contains("切换账户")));
     }
@@ -2355,12 +2354,12 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn deleting_needs_two_presses_and_updates_the_list_and_the_header() {
         let (_tmp, mut app) = with_accounts();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::Home, KeyModifiers::NONE); // Alex
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Home, Modifiers::NONE); // Alex
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
         assert!(app.accounts_ui.confirm_delete);
         assert_eq!(app.accounts.len(), 2, "first press only asks");
 
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
         assert_eq!(app.accounts.len(), 1, "second press deletes");
         assert!(!app.accounts_ui.confirm_delete);
         assert_eq!(app.accounts[0].player_name, "Steve");
@@ -2372,9 +2371,9 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn deleting_the_active_account_signs_out() {
         let (_tmp, mut app) = with_accounts();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::End, KeyModifiers::NONE); // Steve, active
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::End, Modifiers::NONE); // Steve, active
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
 
         assert_eq!(app.account, Account::SignedOut);
         assert_eq!(app.accounts.len(), 1);
@@ -2388,9 +2387,9 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn moving_the_selection_cancels_a_pending_delete() {
         let (_tmp, mut app) = with_accounts();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
         assert!(app.accounts_ui.confirm_delete);
-        app.handle_accounts_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Down, Modifiers::NONE);
         assert!(!app.accounts_ui.confirm_delete);
     }
 
@@ -2398,7 +2397,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn deleting_an_empty_list_is_a_no_op() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
         assert!(app.accounts.is_empty());
         assert!(!app.accounts_ui.confirm_delete);
     }
@@ -2407,9 +2406,9 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn login_opened_from_the_manager_returns_to_it() {
         let (_tmp, mut app) = with_accounts();
         app.open_accounts();
-        app.handle_accounts_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        app.handle_accounts_key(Key::Char('l'), Modifiers::NONE);
         assert_eq!(app.screen, Screen::Login);
-        app.handle_login_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_login_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Accounts, "not the main screen");
     }
 
@@ -2527,8 +2526,8 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 "#,
         );
         app.open_login();
-        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_login_key(Key::End, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.login.app_ids.len(), 2);
 
         // The renderer scrolled the list; row 0 on screen is entry 1 on disk.
@@ -2589,9 +2588,9 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
     // ---- java runtimes ----
 
-    fn java_runtime(major: u32) -> tessera_core::java::Runtime {
-        let (os, arch) = tessera_core::java::platform();
-        tessera_core::java::Runtime {
+    fn java_runtime(major: u32) -> crate::java::Runtime {
+        let (os, arch) = crate::java::platform();
+        crate::java::Runtime {
             major,
             release: format!("jdk-{major}.0.1+1"),
             name: format!("OpenJDK{major}U-jre_{arch}_{os}_hotspot_{major}.0.1_1.tar.gz"),
@@ -2615,7 +2614,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             "the loop fetches Adoptium's list"
         );
         assert!(app.java.runtimes.is_empty());
-        assert_eq!(app.java.source, tessera_core::java::Source::Tuna, "清华源默认");
+        assert_eq!(app.java.source, crate::java::Source::Tuna, "清华源默认");
         assert!(app.java.installed.is_empty(), "nothing downloaded yet");
     }
 
@@ -2637,7 +2636,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(tessera_core::java::Event::Listed(vec![
+        app.handle_java_event(crate::java::Event::Listed(vec![
             java_runtime(8),
             java_runtime(17),
             java_runtime(21),
@@ -2648,11 +2647,11 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.java.runtimes.len(), 5);
         assert_eq!(app.java.selected_runtime().unwrap().major, 8);
 
-        app.handle_java_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_java_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_java_key(Key::Down, Modifiers::NONE);
+        app.handle_java_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.java.selected_runtime().unwrap().major, 21);
 
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
         let (runtime, urls) = java_effect(&app).expect("a download started");
         assert_eq!(runtime.major, 21);
         assert!(
@@ -2673,7 +2672,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let tmp = tempfile::tempdir().unwrap();
         let runtimes = tmp.path().join("运行时");
         for version in ["8u502-b07", "17.0.10+1"] {
-            let dir = tessera_core::java::install_dir(&runtimes, version);
+            let dir = crate::java::install_dir(&runtimes, version);
             std::fs::create_dir_all(dir.join("bin")).unwrap();
             std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
         }
@@ -2685,19 +2684,19 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         eight.release = "jdk8u512-b09".to_string();
         let mut seventeen = java_runtime(17);
         seventeen.release = "jdk-17.0.21+9".to_string();
-        app.handle_java_event(tessera_core::java::Event::Listed(vec![eight, seventeen]));
+        app.handle_java_event(crate::java::Event::Listed(vec![eight, seventeen]));
         assert_eq!(app.java.update_count(), 2);
         assert!(app.status.contains("2 个可更新"), "{}", app.status);
 
-        app.handle_java_key(KeyCode::Char('u'), KeyModifiers::NONE);
+        app.handle_java_key(Key::Char('u'), Modifiers::NONE);
         let (first, _) = java_effect(&app).expect("the first update started");
         assert_eq!(first.major, 8);
 
         // Pretend the first install landed; the queue must move to 17.
-        let installed = tessera_core::java::install_dir(&runtimes, "8u512-b09");
+        let installed = crate::java::install_dir(&runtimes, "8u512-b09");
         std::fs::create_dir_all(installed.join("bin")).unwrap();
         std::fs::write(installed.join("bin/java"), b"#!/bin/sh\n").unwrap();
-        app.handle_java_event(tessera_core::java::Event::Installed {
+        app.handle_java_event(crate::java::Event::Installed {
             major: 8,
             version: "8u512-b09".to_string(),
             java: installed.join("bin/java"),
@@ -2705,10 +2704,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let (second, _) = java_effect(&app).expect("the next update started after the first");
         assert_eq!(second.major, 17);
 
-        let installed = tessera_core::java::install_dir(&runtimes, "17.0.21+9");
+        let installed = crate::java::install_dir(&runtimes, "17.0.21+9");
         std::fs::create_dir_all(installed.join("bin")).unwrap();
         std::fs::write(installed.join("bin/java"), b"#!/bin/sh\n").unwrap();
-        app.handle_java_event(tessera_core::java::Event::Installed {
+        app.handle_java_event(crate::java::Event::Installed {
             major: 17,
             version: "17.0.21+9".to_string(),
             java: installed.join("bin/java"),
@@ -2727,26 +2726,26 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_java_source_and_the_proxy_decide_the_urls() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(21)]));
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
 
         // The proxy is only consulted by the GitHub source.
-        app.handle_java_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        app.handle_java_key(Key::Char('p'), Modifiers::NONE);
         assert!(!app.java.editing_proxy, "not while the mirror is selected");
         assert!(app.status.contains("官方源"), "{}", app.status);
 
-        app.handle_java_key(KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!(app.java.source, tessera_core::java::Source::Github);
+        app.handle_java_key(Key::Char('s'), Modifiers::NONE);
+        assert_eq!(app.java.source, crate::java::Source::Github);
 
-        app.handle_java_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        app.handle_java_key(Key::Char('p'), Modifiers::NONE);
         assert!(app.java.editing_proxy);
         for c in "gh-proxy.com".chars() {
-            app.handle_java_key(KeyCode::Char(c), KeyModifiers::NONE);
+            app.handle_java_key(Key::Char(c), Modifiers::NONE);
         }
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
         assert!(!app.java.editing_proxy, "Enter leaves the field");
         assert_eq!(app.java.proxy, "gh-proxy.com");
 
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
         let (_, urls) = java_effect(&app).expect("a download started");
         assert!(
             urls[0].starts_with("https://gh-proxy.com/github.com/adoptium/"),
@@ -2760,17 +2759,17 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_finished_java_download_is_recorded_and_shown() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let dir = tessera_core::java::install_dir(&root.join("运行时"), "21.0.1+1");
+        let dir = crate::java::install_dir(&root.join("运行时"), "21.0.1+1");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
         let mut app = App::new(&root, "/acc", vec![], vec![]);
         app.set_runtimes(root.join("运行时"));
         app.open_java();
-        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(21)]));
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
 
-        app.handle_java_event(tessera_core::java::Event::Progress {
+        app.handle_java_event(crate::java::Event::Progress {
             done: 10 * 1024 * 1024,
             total: 50 * 1024 * 1024,
             speed: 3.0 * 1024.0 * 1024.0,
@@ -2782,7 +2781,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             app.java.progress_text()
         );
 
-        app.handle_java_event(tessera_core::java::Event::Installed {
+        app.handle_java_event(crate::java::Event::Installed {
             major: 21,
             version: "21.0.1+1".to_string(),
             java: dir.join("bin/java"),
@@ -2792,7 +2791,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(app.java.message.as_ref().unwrap().contains("21.0.1+1"));
         assert_eq!(app.java.progress, (0, 0, 0.0));
 
-        app.handle_java_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_java_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
     }
 
@@ -2800,15 +2799,15 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_failed_java_download_keeps_the_reason_on_screen() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(17)]));
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_java_event(tessera_core::java::Event::Failed("哈希不匹配".to_string()));
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(17)]));
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
+        app.handle_java_event(crate::java::Event::Failed("哈希不匹配".to_string()));
 
         assert_eq!(app.java.stage, JavaStage::Failed);
         assert_eq!(app.java.message.as_deref(), Some("哈希不匹配"));
         assert!(app.log.iter().any(|line| line.contains("哈希不匹配")));
         // Esc still leaves, and a second Enter retries.
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
         assert!(java_effect(&app).is_some(), "retrying is one key away");
     }
 
@@ -2816,7 +2815,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_java_picker_takes_clicks_and_wheel() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(tessera_core::java::Event::Listed(vec![
+        app.handle_java_event(crate::java::Event::Listed(vec![
             java_runtime(8),
             java_runtime(17),
             java_runtime(21),
@@ -2842,7 +2841,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         app.take_effects();
         app.handle_mouse(click(60, 12));
-        assert_eq!(app.java.source, tessera_core::java::Source::Github);
+        assert_eq!(app.java.source, crate::java::Source::Github);
 
         app.handle_mouse(click(25, 13));
         assert!(app.java.editing_proxy, "clicking the field starts editing");
@@ -2914,7 +2913,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(rows.len(), 3, "five versions, one folded cycle: {rows:?}");
         assert!(matches!(
             rows[1].kind,
-            tessera_core::version_tree::RowKind::Group {
+            crate::version_tree::RowKind::Group {
                 first: 1,
                 last: 3,
                 expanded: false,
@@ -2922,7 +2921,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             }
         ));
         assert_eq!(
-            tessera_core::version_tree::title(&app.download.all, app.download.visible(), 1, 3),
+            crate::version_tree::title(&app.download.all, app.download.visible(), 1, 3),
             "1.21.9-pre3 ~ 1.21.9-pre1"
         );
         // The title's count is cached when the rows are laid out, not scanned on
@@ -2960,67 +2959,67 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn the_keyboard_treats_a_folded_group_as_one_stop() {
         let mut app = tree_picker();
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(
             app.download.picked_version().unwrap().id,
             "1.21.9-pre3",
             "the folded cycle is one step, not three"
         );
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.7");
         // Wrapping goes back to the first row.
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
     }
 
     #[test]
     fn the_arrow_keys_open_and_close_the_group_under_the_cursor() {
         let mut app = tree_picker();
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE); // on the folded cycle
-        app.handle_download_key(KeyCode::Right, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE); // on the folded cycle
+        app.handle_download_key(Key::Right, Modifiers::NONE);
         assert_eq!(app.download.expanded.len(), 1);
         assert_eq!(app.download.rows.len(), 6);
 
         // Inside an opened group the arrows reach the members individually.
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
 
         // `←` closes the group this member belongs to.
-        app.handle_download_key(KeyCode::Left, KeyModifiers::NONE);
+        app.handle_download_key(Key::Left, Modifiers::NONE);
         assert!(app.download.expanded.is_empty());
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
 
         // `Space` flips it, and does nothing on a plain version.
-        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char(' '), Modifiers::NONE);
         assert_eq!(app.download.expanded.len(), 1);
-        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char(' '), Modifiers::NONE);
         assert!(app.download.expanded.is_empty());
-        app.handle_download_key(KeyCode::Up, KeyModifiers::NONE); // 1.21.8
+        app.handle_download_key(Key::Up, Modifiers::NONE); // 1.21.8
         let before = app.download.rows.clone();
-        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char(' '), Modifiers::NONE);
         assert_eq!(app.download.rows, before, "a release has no children");
     }
 
     #[test]
     fn other_filters_and_a_search_keep_every_version_on_its_own_row() {
         let mut app = tree_picker();
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE); // 正式版
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE); // 正式版
         assert_eq!(app.download.filter, VersionFilter::Release);
         assert_eq!(app.download.rows.len(), app.download.matched());
         assert!(app
             .download
             .rows
             .iter()
-            .all(|row| matches!(row.kind, tessera_core::version_tree::RowKind::Version(_))));
+            .all(|row| matches!(row.kind, crate::version_tree::RowKind::Version(_))));
 
         // Back to "全部", then search: a folded group would hide the match.
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::All);
-        app.handle_download_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('/'), Modifiers::NONE);
         for c in "pre2".chars() {
-            app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
+            app.handle_download_key(Key::Char(c), Modifiers::NONE);
         }
         assert_eq!(app.download.matched(), 1);
         assert_eq!(app.download.rows.len(), 1, "the match is its own row");
@@ -3030,8 +3029,8 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn installing_from_a_folded_group_installs_its_newest_member() {
         let mut app = tree_picker();
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         let (version, _) = install_effect(&app).expect("an install started");
         assert_eq!(version, "1.21.9-pre3");
     }
@@ -3072,10 +3071,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         );
 
         // An opened cycle puts its members on the wheel's path too.
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
-        app.handle_download_key(KeyCode::Right, KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_download_key(Key::Right, Modifiers::NONE);
+        app.handle_download_key(Key::Up, Modifiers::NONE);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
         app.handle_mouse(wheel(false, 10, 6));
         assert_eq!(
@@ -3220,7 +3219,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(!app.download.loaders.contains(&Loader::Lite));
 
         // Move to 1.8.9: Fabric/Quilt/NeoForge disappear, Forge and LiteLoader stay.
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked, 1);
         assert!(!app.download.loaders.contains(&Loader::Fabric));
         assert!(app.download.loaders.contains(&Loader::Forge));
@@ -3244,10 +3243,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     }
 
     fn type_search(app: &mut App, text: &str) {
-        app.handle_download_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('/'), Modifiers::NONE);
         assert_eq!(app.download.focus, PickerFocus::Search);
         for c in text.chars() {
-            app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
+            app.handle_download_key(Key::Char(c), Modifiers::NONE);
         }
     }
 
@@ -3271,13 +3270,13 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn esc_clears_the_search_before_it_leaves_the_screen() {
         let mut app = mixed_picker();
         type_search(&mut app, "1.20");
-        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_download_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Download, "still here");
         assert!(app.download.query.is_empty());
         assert_eq!(app.download.matched(), 4);
         assert_eq!(app.download.focus, PickerFocus::Search, "caret stays put");
 
-        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_download_key(Key::Esc, Modifiers::NONE);
         assert_eq!(
             app.download.focus,
             PickerFocus::Versions,
@@ -3285,7 +3284,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         );
         assert_eq!(app.screen, Screen::Download);
 
-        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_download_key(Key::Esc, Modifiers::NONE);
         assert_ne!(app.screen, Screen::Download, "third Esc closes");
     }
 
@@ -3293,11 +3292,11 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn backspace_widens_the_search_again() {
         let mut app = mixed_picker();
         type_search(&mut app, "1.19");
-        app.handle_download_key(KeyCode::Backspace, KeyModifiers::NONE);
+        app.handle_download_key(Key::Backspace, Modifiers::NONE);
         // "1.1" still matches only 1.19.2 ... until the dot goes.
         assert_eq!(app.download.matched(), 1);
         for _ in 0..2 {
-            app.handle_download_key(KeyCode::Backspace, KeyModifiers::NONE);
+            app.handle_download_key(Key::Backspace, Modifiers::NONE);
         }
         assert_eq!(app.download.query, "1");
         // A single digit matches any id containing it: "1" is in all four.
@@ -3309,20 +3308,20 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = mixed_picker();
         assert_eq!(app.download.matched(), 4);
 
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Release);
         assert_eq!(app.download.matched(), 2);
         assert!(app.download.versions().all(|v| v.kind == "release"));
 
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Snapshot);
         assert_eq!(app.download.picked_version().unwrap().id, "23w31a");
 
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Old);
         assert_eq!(app.download.picked_version().unwrap().id, "a1.2.6");
 
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::All);
         assert_eq!(app.download.matched(), 4);
     }
@@ -3330,7 +3329,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn filtering_keeps_the_picked_version_when_it_survives() {
         let mut app = mixed_picker();
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
 
         type_search(&mut app, "1.19");
@@ -3342,7 +3341,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.download.picked, 0);
 
         // Clearing the search restores the full list and re-finds it.
-        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_download_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.download.matched(), 4);
         assert_eq!(app.download.picked, 1);
     }
@@ -3353,7 +3352,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         type_search(&mut app, "1.20");
         assert!(app.download.loaders.contains(&Loader::Fabric));
         // Nothing left to pick: the loader list collapses to vanilla.
-        app.handle_download_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('x'), Modifiers::NONE);
         assert!(app.download.matched() == 0);
         assert_eq!(app.download.loaders, vec![Loader::None]);
     }
@@ -3363,7 +3362,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = mixed_picker();
         type_search(&mut app, "zzz");
         assert!(app.download.matched() == 0);
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         assert!(install_effect(&app).is_none());
         assert_eq!(app.screen, Screen::Download);
     }
@@ -3373,20 +3372,20 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = downloader();
         assert_eq!(
             app.source,
-            tessera_core::install::Source::Bmclapi,
+            crate::install::Source::Bmclapi,
             "the default source"
         );
         assert_eq!(app.source_label(), "BMCLAPI");
 
-        app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!(app.source, tessera_core::install::Source::Mojang);
+        app.handle_download_key(Key::Char('s'), Modifiers::NONE);
+        assert_eq!(app.source, crate::install::Source::Mojang);
         assert_eq!(app.source_label(), "官方源");
         assert!(app.log.iter().any(|line| line.contains("下载源：官方源")));
 
-        app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('s'), Modifiers::NONE);
         assert_eq!(
             app.source,
-            tessera_core::install::Source::Bmclapi,
+            crate::install::Source::Bmclapi,
             "the switch is a two-way toggle"
         );
     }
@@ -3399,13 +3398,13 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_mouse(click(52, 14));
         assert_eq!(
             app.source,
-            tessera_core::install::Source::Mojang,
+            crate::install::Source::Mojang,
             "the first chip is 官方源"
         );
         assert_eq!(app.download.focus, PickerFocus::Loaders);
 
         app.handle_mouse(click(60, 14));
-        assert_eq!(app.source, tessera_core::install::Source::Bmclapi);
+        assert_eq!(app.source, crate::install::Source::Bmclapi);
 
         // The chips sit on the pane's last row, which is not a loader row.
         assert_eq!(app.download.loader_pick, 0, "no loader was picked");
@@ -3426,7 +3425,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = mixed_picker();
         app.handle_mouse(click(5, 2));
         assert_eq!(app.download.focus, PickerFocus::Search);
-        app.handle_download_key(KeyCode::Char('2'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('2'), Modifiers::NONE);
         assert_eq!(app.download.query, "2");
     }
 
@@ -3435,7 +3434,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = mixed_picker();
         type_search(&mut app, "1");
         // The footer replays the key, which must not become search text.
-        app.layout.buttons = vec![Button::new(Area::new(0, 27, 8, 1), KeyCode::Char('f'))];
+        app.layout.buttons = vec![Button::new(Area::new(0, 27, 8, 1), Key::Char('f'))];
         app.handle_mouse(click(2, 27));
         assert_eq!(app.download.query, "1");
         assert_eq!(app.download.filter, VersionFilter::Release);
@@ -3444,11 +3443,11 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn tab_cycles_versions_loaders_and_the_search_box() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_download_key(Key::Tab, Modifiers::NONE);
         assert_eq!(app.download.focus, PickerFocus::Loaders);
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_download_key(Key::Tab, Modifiers::NONE);
         assert_eq!(app.download.focus, PickerFocus::Search);
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_download_key(Key::Tab, Modifiers::NONE);
         assert_eq!(app.download.focus, PickerFocus::Versions);
 
         let quilt = app
@@ -3460,14 +3459,14 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.download.loader_pick = quilt;
 
         // Switching panes does not forget the loader.
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_download_key(Key::Tab, Modifiers::NONE);
         assert_eq!(app.download.focus, PickerFocus::Loaders);
         assert_eq!(app.download.picked_loader(), Loader::Quilt);
 
         // Dropping to 1.8.9 loses Quilt, so the choice falls back to the first entry.
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Tab, KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_download_key(Key::Tab, Modifiers::NONE);
+        app.handle_download_key(Key::Tab, Modifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
         assert_eq!(app.download.picked, 1);
         assert_eq!(app.download.picked_loader(), Loader::None);
     }
@@ -3475,7 +3474,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn enter_starts_the_install_and_switches_to_the_progress_screen() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Installing);
         assert_eq!(app.download.stage, DownloadStage::Installing);
         assert_eq!(
@@ -3487,7 +3486,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn progress_uses_bytes_when_the_batch_size_is_known() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
 
         // A batch announces its full size with done == 0.
         app.handle_install_event(InstallEvent::Progress {
@@ -3511,7 +3510,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn progress_falls_back_to_file_counts_without_a_byte_total() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         app.handle_install_event(InstallEvent::Progress {
             done: 3,
             total: 4,
@@ -3524,7 +3523,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn speed_is_derived_from_successive_samples_and_decays_when_idle() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         app.handle_install_event(InstallEvent::Progress {
             done: 0,
             total: 10,
@@ -3558,7 +3557,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         app.handle_install_event(InstallEvent::Finished {
             version: "1.20.1".to_string(),
             loader: Some("Fabric 0.16.0".to_string()),
@@ -3569,7 +3568,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             Some(("1.20.1".to_string(), Some("Fabric 0.16.0".to_string())))
         );
 
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
     }
 
@@ -3616,7 +3615,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             version: "26.3".to_string(),
             loader: None,
         });
-        app.handle_aot_event(tessera_core::aot::Event::Progress {
+        app.handle_aot_event(crate::aot::Event::Progress {
             version: "26.3".to_string(),
             loaded: 100,
             total: 200,
@@ -3625,12 +3624,12 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.download.aot_loaded, 100);
         assert_eq!(app.download.aot_total, 200);
 
-        app.handle_aot_event(tessera_core::aot::Event::Assembling {
+        app.handle_aot_event(crate::aot::Event::Assembling {
             version: "26.3".to_string(),
         });
         assert!(app.download.aot_assembling);
 
-        app.handle_aot_event(tessera_core::aot::Event::Finished {
+        app.handle_aot_event(crate::aot::Event::Finished {
             version: "26.3".to_string(),
             loaded: 190,
             total: 200,
@@ -3653,21 +3652,21 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     #[test]
     fn a_failure_is_shown_and_can_be_dismissed() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         app.handle_install_event(InstallEvent::Failed("镜像超时".to_string()));
         assert_eq!(app.download.stage, DownloadStage::Failed);
         assert_eq!(app.download.error.as_deref(), Some("镜像超时"));
         assert!(app.log.iter().any(|line| line.contains("镜像超时")));
 
-        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_download_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
     }
 
     #[test]
     fn escape_while_installing_leaves_the_download_running() {
         let mut app = downloader();
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
+        app.handle_download_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
         assert_eq!(
             app.download.stage,

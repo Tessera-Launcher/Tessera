@@ -19,13 +19,14 @@ use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 
 use tessera_core::{
-    accounts, aot, cleanup, discover, install, java, launch, logfile, login, session, settings,
+    accounts, aot, cleanup, discover, input, install, java, launch, logfile, login, session,
+    settings,
 };
 use tessera_core::install::{InstallEvent, Source, ASSET_CONCURRENCY};
 use tessera_core::login::LoginEvent;
 use tessera_core::paths::Paths;
 use tessera_core::session::SessionEvent;
-use tessera_tui::app::{App, Effect, Screen};
+use tessera_core::app::{App, Effect, Screen};
 use tessera_tui::{clipboard, terminal, ui};
 
 fn main() -> std::process::ExitCode {
@@ -398,9 +399,11 @@ fn run(
                 dirty = true;
                 match event::read() {
                     Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                        app.handle_key(key.code, key.modifiers)
+                        if let Some(code) = input_key(key.code) {
+                            app.handle_key(code, input_modifiers(key.modifiers))
+                        }
                     }
-                    Ok(Event::Mouse(mouse)) => app.handle_mouse(mouse),
+                    Ok(Event::Mouse(mouse)) => app.handle_mouse(input_mouse(mouse)),
                     Ok(_) => {}
                     Err(error) => break Err(error),
                 }
@@ -411,6 +414,68 @@ fn run(
     };
     leave()?;
     result
+}
+
+/// Translate a terminal key into the state machine's vocabulary.
+///
+/// Unmapped keys are dropped: the state machine only acts on the fifteen it
+/// names, and a front-end that had to know more would be a second state machine.
+fn input_key(code: crossterm::event::KeyCode) -> Option<input::Key> {
+    use crossterm::event::KeyCode;
+    Some(match code {
+        KeyCode::Char(c) => input::Key::Char(c),
+        KeyCode::Enter => input::Key::Enter,
+        KeyCode::Esc => input::Key::Esc,
+        KeyCode::Tab => input::Key::Tab,
+        KeyCode::BackTab => input::Key::BackTab,
+        KeyCode::Backspace => input::Key::Backspace,
+        KeyCode::Delete => input::Key::Delete,
+        KeyCode::Up => input::Key::Up,
+        KeyCode::Down => input::Key::Down,
+        KeyCode::Left => input::Key::Left,
+        KeyCode::Right => input::Key::Right,
+        KeyCode::Home => input::Key::Home,
+        KeyCode::End => input::Key::End,
+        KeyCode::PageUp => input::Key::PageUp,
+        KeyCode::PageDown => input::Key::PageDown,
+        _ => return None,
+    })
+}
+
+fn input_modifiers(modifiers: crossterm::event::KeyModifiers) -> input::Modifiers {
+    use crossterm::event::KeyModifiers;
+    let mut out = input::Modifiers::NONE;
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        out = out | input::Modifiers::SHIFT;
+    }
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        out = out | input::Modifiers::CONTROL;
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        out = out | input::Modifiers::ALT;
+    }
+    out
+}
+
+fn input_mouse(mouse: crossterm::event::MouseEvent) -> input::MouseEvent {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let kind = match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => input::MouseEventKind::Down(input::MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Right) => input::MouseEventKind::Down(input::MouseButton::Right),
+        MouseEventKind::Down(MouseButton::Middle) => input::MouseEventKind::Down(input::MouseButton::Middle),
+        MouseEventKind::Up(MouseButton::Left) => input::MouseEventKind::Up(input::MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Right) => input::MouseEventKind::Up(input::MouseButton::Right),
+        MouseEventKind::Up(MouseButton::Middle) => input::MouseEventKind::Up(input::MouseButton::Middle),
+        MouseEventKind::ScrollUp => input::MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollDown => input::MouseEventKind::ScrollDown,
+        _ => input::MouseEventKind::Down(input::MouseButton::Left),
+    };
+    input::MouseEvent {
+        kind,
+        column: mouse.column,
+        row: mouse.row,
+        modifiers: input_modifiers(mouse.modifiers),
+    }
 }
 
 /// Drain every event a worker has queued, and say whether any arrived.

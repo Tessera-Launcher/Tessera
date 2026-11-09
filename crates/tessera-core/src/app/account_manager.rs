@@ -32,29 +32,29 @@ impl App {
     }
 
     /// Keys while the account manager is open.
-    pub fn handle_accounts_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    pub fn handle_accounts_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
         let count = self.accounts.len();
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => self.close_accounts(),
-            KeyCode::Up | KeyCode::Char('k') if count > 0 => {
+            Key::Esc | Key::Char('q') => self.close_accounts(),
+            Key::Up | Key::Char('k') if count > 0 => {
                 self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
                 self.accounts_ui.confirm_delete = false;
             }
-            KeyCode::Down | KeyCode::Char('j') if count > 0 => {
+            Key::Down | Key::Char('j') if count > 0 => {
                 self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
                 self.accounts_ui.confirm_delete = false;
             }
-            KeyCode::Home | KeyCode::Char('g') => {
+            Key::Home | Key::Char('g') => {
                 self.accounts_ui.selected = 0;
                 self.accounts_ui.confirm_delete = false;
             }
-            KeyCode::End | KeyCode::Char('G') => {
+            Key::End | Key::Char('G') => {
                 self.accounts_ui.selected = count.saturating_sub(1);
                 self.accounts_ui.confirm_delete = false;
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_account(),
-            KeyCode::Char('d') | KeyCode::Delete => self.remove_selected_account(),
-            KeyCode::Char('l') => self.open_login(),
+            Key::Enter | Key::Char(' ') => self.activate_selected_account(),
+            Key::Char('d') | Key::Delete => self.remove_selected_account(),
+            Key::Char('l') => self.open_login(),
             _ => {}
         }
         let _ = modifiers;

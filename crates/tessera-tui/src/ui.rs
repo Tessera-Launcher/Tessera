@@ -5,7 +5,7 @@
 //! pane measures the selected version once per selection. Nothing here starts a
 //! thread, touches the network or changes a screen.
 
-use crossterm::event::KeyCode;
+use tessera_core::input::Key;
 use ratatui::buffer::CellWidth;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, Area, Button, Layout as Areas, LoginStep, Screen};
+use tessera_core::app::{App, Area, Button, Layout as Areas, LoginStep, Screen};
 use tessera_core::discover::{self, LocalVersion};
 use tessera_core::install::Loader;
 
@@ -93,10 +93,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas)
     // measured rect instead of as a block title: a title lives on the border row,
     // which is where a click on it has to be hit-tested.
     let account_line = match &app.account {
-        crate::app::Account::SignedOut => {
+        tessera_core::app::Account::SignedOut => {
             Line::from(Span::styled(" 未登录 · 点此登录", Style::new().fg(ACCENT)))
         }
-        crate::app::Account::SignedIn {
+        tessera_core::app::Account::SignedIn {
             name,
             copy,
             application,
@@ -109,7 +109,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas)
         ]),
     };
     let account_text = match &app.account {
-        crate::app::Account::SignedOut => "未登录 · 点此登录".to_string(),
+        tessera_core::app::Account::SignedOut => "未登录 · 点此登录".to_string(),
         signed_in => signed_in.label(),
     };
     let account_width = account_text.cell_width().saturating_add(2).min(inner.width);
@@ -374,30 +374,30 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
 fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     // (key, label) per screen: the label is what is drawn, the key is what a click
     // replays, so the hint and the binding cannot drift apart.
-    let entries: Vec<(String, KeyCode)> = match app.screen {
+    let entries: Vec<(String, Key)> = match app.screen {
         Screen::Main => vec![
-            ("d 下载".to_string(), KeyCode::Char('d')),
-            ("x 卸载".to_string(), KeyCode::Char('x')),
-            ("a 账户".to_string(), KeyCode::Char('a')),
-            ("v Java".to_string(), KeyCode::Char('v')),
-            ("h 基础".to_string(), KeyCode::Char('h')),
-            ("r 刷新".to_string(), KeyCode::Char('r')),
-            ("q 退出".to_string(), KeyCode::Char('q')),
+            ("d 下载".to_string(), Key::Char('d')),
+            ("x 卸载".to_string(), Key::Char('x')),
+            ("a 账户".to_string(), Key::Char('a')),
+            ("v Java".to_string(), Key::Char('v')),
+            ("h 基础".to_string(), Key::Char('h')),
+            ("r 刷新".to_string(), Key::Char('r')),
+            ("q 退出".to_string(), Key::Char('q')),
         ],
         Screen::Accounts => vec![
-            ("l 登录".to_string(), KeyCode::Char('l')),
-            ("d 移除".to_string(), KeyCode::Char('d')),
-            ("Esc/右键 关闭".to_string(), KeyCode::Esc),
+            ("l 登录".to_string(), Key::Char('l')),
+            ("d 移除".to_string(), Key::Char('d')),
+            ("Esc/右键 关闭".to_string(), Key::Esc),
         ],
         Screen::Download => vec![
-            ("/ 搜索".to_string(), KeyCode::Char('/')),
-            ("f 类型".to_string(), KeyCode::Char('f')),
-            ("Esc/右键 取消".to_string(), KeyCode::Esc),
+            ("/ 搜索".to_string(), Key::Char('/')),
+            ("f 类型".to_string(), Key::Char('f')),
+            ("Esc/右键 取消".to_string(), Key::Esc),
         ],
-        Screen::Installing => vec![("Esc/右键 后台运行".to_string(), KeyCode::Esc)],
+        Screen::Installing => vec![("Esc/右键 后台运行".to_string(), Key::Esc)],
         // The Java picker is a full-screen pane, so its keys are drawn inside it.
         Screen::Java => Vec::new(),
-        Screen::Login => vec![("Esc/右键 取消".to_string(), KeyCode::Esc)],
+        Screen::Login => vec![("Esc/右键 取消".to_string(), Key::Esc)],
     };
 
     let sep = " · ";
@@ -434,7 +434,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas)
         Span::styled(status, Style::new().fg(ACCENT)),
         Span::styled(" ".repeat(gap), Style::new()),
     ];
-    let mut placed: Vec<(usize, usize, KeyCode)> = Vec::new();
+    let mut placed: Vec<(usize, usize, Key)> = Vec::new();
     let mut column = buttons_column;
     for (index, (text, code)) in entries.iter().enumerate() {
         if index > 0 {
@@ -518,7 +518,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
     layout.download_search = Area::default();
     layout.download_filters.clear();
 
-    if app.download.stage == crate::app::DownloadStage::LoadingVersions {
+    if app.download.stage == tessera_core::app::DownloadStage::LoadingVersions {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(""),
@@ -548,7 +548,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
     layout.download_filters = chips;
 
     // ---- versions ----
-    let focused = app.download.focus == crate::app::PickerFocus::Versions;
+    let focused = app.download.focus == tessera_core::app::PickerFocus::Versions;
     // The picker covers the footer, so the fold hint lives in the pane's title
     // rather than in a key label nobody can see.
     let folded = app.download.folded_rows();
@@ -597,7 +597,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
     }
 
     // ---- loaders ----
-    let focused = app.download.focus == crate::app::PickerFocus::Loaders;
+    let focused = app.download.focus == tessera_core::app::PickerFocus::Loaders;
     let loaders_block = Block::bordered()
         .title(Line::from(" 安装内容 "))
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
@@ -747,9 +747,9 @@ fn draw_filter_bar(
     frame: &mut Frame,
     search: Rect,
     chips: Rect,
-    download: &crate::app::DownloadUi,
+    download: &tessera_core::app::DownloadUi,
 ) -> (Area, Vec<Area>) {
-    let focused = download.focus == crate::app::PickerFocus::Search;
+    let focused = download.focus == tessera_core::app::PickerFocus::Search;
     let search_block = Block::bordered()
         .title(Line::from(" 搜索 "))
         .border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
@@ -795,7 +795,7 @@ fn draw_filter_bar(
     let mut chips_hit = Vec::new();
     let mut spans = Vec::new();
     let mut column = chips_inner.x;
-    for filter in crate::app::VersionFilter::ALL {
+    for filter in tessera_core::app::VersionFilter::ALL {
         let active = download.filter == filter;
         let text = format!(" {} ", filter.label());
         let width = cell_width_of(&text) as u16;
@@ -836,7 +836,7 @@ fn draw_filter_bar(
 fn draw_version_rows(
     frame: &mut Frame,
     inner: Rect,
-    download: &crate::app::DownloadUi,
+    download: &tessera_core::app::DownloadUi,
     visible: usize,
 ) -> (usize, Area) {
     let cursor = download.cursor();
@@ -992,7 +992,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
             tessera_core::discover::human_size(runtime.size)
         });
         let update = runtime.and_then(|runtime| app.java.update_for(runtime));
-        let running = app.java.stage == crate::app::JavaStage::Downloading
+        let running = app.java.stage == tessera_core::app::JavaStage::Downloading
             && app.java.current == Some(feature.major);
         let status = if running {
             format!("下载中 {}", app.java.progress_text())
@@ -1004,7 +1004,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
             match (&app.java.message, app.java.current) {
                 (Some(message), Some(current))
                     if feature.major == current
-                        && app.java.stage == crate::app::JavaStage::Failed =>
+                        && app.java.stage == tessera_core::app::JavaStage::Failed =>
                 {
                     message.clone()
                 }
@@ -1015,7 +1015,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
             Style::new().fg(ACCENT)
         } else if update.is_some() {
             Style::new().fg(SNAPSHOT)
-        } else if app.java.stage == crate::app::JavaStage::Failed
+        } else if app.java.stage == tessera_core::app::JavaStage::Failed
             && app.java.current == Some(feature.major)
         {
             Style::new().fg(BROKEN)
@@ -1051,7 +1051,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
             1,
         ));
     }
-    if app.java.stage == crate::app::JavaStage::Loading {
+    if app.java.stage == tessera_core::app::JavaStage::Loading {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  正在向 Adoptium 查询最新 JRE…",
@@ -1188,9 +1188,9 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
 
     let download = &app.download;
     let (title, border, gauge_color) = match download.stage {
-        crate::app::DownloadStage::Done => (" 安装完成 ", ACCENT, ACCENT),
-        crate::app::DownloadStage::Failed => (" 安装失败 ", BROKEN, BROKEN),
-        crate::app::DownloadStage::Training => (" AOT 训练 ", SNAPSHOT, SNAPSHOT),
+        tessera_core::app::DownloadStage::Done => (" 安装完成 ", ACCENT, ACCENT),
+        tessera_core::app::DownloadStage::Failed => (" 安装失败 ", BROKEN, BROKEN),
+        tessera_core::app::DownloadStage::Training => (" AOT 训练 ", SNAPSHOT, SNAPSHOT),
         _ => (" 安装进度 ", ACCENT, ACCENT),
     };
     let block = Block::bordered()
@@ -1200,7 +1200,7 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
     frame.render_widget(block, progress_area);
 
     match download.stage {
-        crate::app::DownloadStage::Failed => {
+        tessera_core::app::DownloadStage::Failed => {
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::from(Span::styled(
@@ -1213,7 +1213,7 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
             );
             return;
         }
-        crate::app::DownloadStage::Done => {
+        tessera_core::app::DownloadStage::Done => {
             let (version, loader) = download
                 .installed
                 .clone()
@@ -1235,7 +1235,7 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
             frame.render_widget(Paragraph::new(lines), inner);
             return;
         }
-        crate::app::DownloadStage::Training => {
+        tessera_core::app::DownloadStage::Training => {
             let ratio = download.aot_fraction();
             let label = if download.aot_preparing {
                 "准备 Java 28 EA…".to_string()
@@ -1334,7 +1334,7 @@ fn draw_installing(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Ar
 /// words replays that key through the same path the footer buttons use. Segments
 /// without a key are plain text in `color`.
 /// Record one clickable span in the layout.
-fn record_button(layout: &mut Areas, x: u16, y: u16, width: u16, code: KeyCode) {
+fn record_button(layout: &mut Areas, x: u16, y: u16, width: u16, code: Key) {
     if width == 0 {
         return;
     }
@@ -1346,7 +1346,7 @@ fn record_button(layout: &mut Areas, x: u16, y: u16, width: u16, code: KeyCode) 
 fn draw_hint(
     frame: &mut Frame,
     area: Rect,
-    segments: &[(&str, Option<KeyCode>)],
+    segments: &[(&str, Option<Key>)],
     color: Color,
     layout: &mut Areas,
 ) {
@@ -1484,9 +1484,9 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
             hint_area,
             &[
                 (" 再按一次 ", None),
-                ("d 确认移除", Some(KeyCode::Char('d'))),
+                ("d 确认移除", Some(Key::Char('d'))),
                 (" · ", None),
-                ("Esc 取消", Some(KeyCode::Esc)),
+                ("Esc 取消", Some(Key::Esc)),
             ],
             BROKEN,
             layout,
@@ -1497,13 +1497,13 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
             hint_area,
             &[
                 (" ", None),
-                ("Enter 切换", Some(KeyCode::Enter)),
+                ("Enter 切换", Some(Key::Enter)),
                 (" · ", None),
-                ("d 移除", Some(KeyCode::Char('d'))),
+                ("d 移除", Some(Key::Char('d'))),
                 (" · ", None),
-                ("l 登录新账户", Some(KeyCode::Char('l'))),
+                ("l 登录新账户", Some(Key::Char('l'))),
                 (" · ", None),
-                ("Esc 关闭", Some(KeyCode::Esc)),
+                ("Esc 关闭", Some(Key::Esc)),
             ],
             DIM,
             layout,
@@ -1622,9 +1622,9 @@ fn draw_login_choose(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut
         &[
             (" ↑↓ 选择", None),
             (" · ", None),
-            ("Enter 下一步", Some(KeyCode::Enter)),
+            ("Enter 下一步", Some(Key::Enter)),
             (" · ", None),
-            ("Esc 取消", Some(KeyCode::Esc)),
+            ("Esc 取消", Some(Key::Esc)),
         ],
         DIM,
         layout,
@@ -1656,9 +1656,9 @@ fn draw_login_app_id(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut
             Rect::new(inner.x, hint_row, inner.width, 1),
             &[
                 (" ", None),
-                ("Enter 开始登录", Some(KeyCode::Enter)),
+                ("Enter 开始登录", Some(Key::Enter)),
                 (" · ", None),
-                ("Esc 返回", Some(KeyCode::Esc)),
+                ("Esc 返回", Some(Key::Esc)),
             ],
             DIM,
             layout,
@@ -1674,7 +1674,7 @@ fn draw_login_app_id(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut
                     None,
                 ),
                 (" · ", None),
-                ("Esc 返回", Some(KeyCode::Esc)),
+                ("Esc 返回", Some(Key::Esc)),
             ],
             BROKEN,
             layout,
@@ -1704,9 +1704,9 @@ fn draw_login_saved(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut 
             Rect::new(inner.x, hint_row, inner.width, 1),
             &[
                 (" ", None),
-                ("Esc 返回", Some(KeyCode::Esc)),
+                ("Esc 返回", Some(Key::Esc)),
                 (" · 编辑上面这个文件后按 ", None),
-                ("Enter 重试", Some(KeyCode::Enter)),
+                ("Enter 重试", Some(Key::Enter)),
             ],
             DIM,
             layout,
@@ -1772,9 +1772,9 @@ fn draw_login_saved(frame: &mut Frame, inner: Rect, app: &mut App, layout: &mut 
             &[
                 (" ↑↓ 选择", None),
                 (" · ", None),
-                ("Enter 登录", Some(KeyCode::Enter)),
+                ("Enter 登录", Some(Key::Enter)),
                 (" · ", None),
-                ("Esc 返回", Some(KeyCode::Esc)),
+                ("Esc 返回", Some(Key::Esc)),
                 (&tail, None),
             ],
             DIM,
@@ -1823,9 +1823,9 @@ fn draw_login_waiting(
         Rect::new(inner.x, url_row, inner.width, 1),
         &[
             (" ", None),
-            ("o 浏览器打开", Some(KeyCode::Char('o'))),
+            ("o 浏览器打开", Some(Key::Char('o'))),
             (" · ", None),
-            ("y 复制链接", Some(KeyCode::Char('y'))),
+            ("y 复制链接", Some(Key::Char('y'))),
         ],
         DIM,
         layout,
@@ -1833,7 +1833,7 @@ fn draw_login_waiting(
     draw_hint(
         frame,
         Rect::new(inner.x, code_row, inner.width, 1),
-        &[(" ", None), ("c 复制设备码", Some(KeyCode::Char('c')))],
+        &[(" ", None), ("c 复制设备码", Some(Key::Char('c')))],
         DIM,
         layout,
     );
@@ -1842,7 +1842,7 @@ fn draw_login_waiting(
         Rect::new(inner.x, hint_row, inner.width, 1),
         &[
             (" 等待浏览器确认… ", None),
-            ("Esc 取消", Some(KeyCode::Esc)),
+            ("Esc 取消", Some(Key::Esc)),
         ],
         DIM,
         layout,
@@ -1877,9 +1877,9 @@ fn draw_login_done(
         &[
             (" 凭据已写入 data/凭据/账户/", None),
             (" · ", None),
-            ("Enter 返回", Some(KeyCode::Enter)),
+            ("Enter 返回", Some(Key::Enter)),
             (" · ", None),
-            ("Esc 关闭", Some(KeyCode::Esc)),
+            ("Esc 关闭", Some(Key::Esc)),
         ],
         DIM,
         layout,
@@ -1905,7 +1905,7 @@ fn draw_login_failed(frame: &mut Frame, inner: Rect, layout: &mut Areas, message
         Rect::new(inner.x, hint_row, inner.width, 1),
         &[
             (" ", None),
-            ("Esc 返回", Some(KeyCode::Esc)),
+            ("Esc 返回", Some(Key::Esc)),
             (" · 检查网络/代理后重试", None),
         ],
         DIM,
@@ -1977,30 +1977,30 @@ fn kind_color(kind: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
+    use tessera_core::app::App;
     use tessera_core::discover::LocalVersion;
     use tessera_core::install::InstallEvent;
-    use crossterm::event::KeyModifiers;
+    use tessera_core::input::{Key, Modifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn login(app: &App) -> Option<tessera_core::login::Identity> {
         app.effects().iter().rev().find_map(|effect| match effect {
-            crate::app::Effect::Login(identity) => Some(identity.clone()),
+            tessera_core::app::Effect::Login(identity) => Some(identity.clone()),
             _ => None,
         })
     }
 
     fn copied(app: &App) -> Option<String> {
         app.effects().iter().rev().find_map(|effect| match effect {
-            crate::app::Effect::Copy(text) => Some(text.clone()),
+            tessera_core::app::Effect::Copy(text) => Some(text.clone()),
             _ => None,
         })
     }
 
     fn opened(app: &App) -> Option<String> {
         app.effects().iter().rev().find_map(|effect| match effect {
-            crate::app::Effect::OpenBrowser(url) => Some(url.clone()),
+            tessera_core::app::Effect::OpenBrowser(url) => Some(url.clone()),
             _ => None,
         })
     }
@@ -2110,7 +2110,7 @@ mod tests {
 
         // Second step: the typed client id is what gets used.
         app.login.choice = 1;
-        app.login.step = crate::app::LoginStep::EnterAppId;
+        app.login.step = tessera_core::app::LoginStep::EnterAppId;
         app.login.app_id = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string();
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("c36a9fb6"), "{screen}");
@@ -2145,7 +2145,7 @@ mod tests {
     fn the_saved_list_shows_names_with_their_ids_and_marks_the_selection() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_login();
-        app.login.step = crate::app::LoginStep::ChooseAppIds;
+        app.login.step = tessera_core::app::LoginStep::ChooseAppIds;
         app.login.app_ids = vec![
             saved("HMCL", "6a3728d6-27a3-4180-99bb-479895b8f88e"),
             saved("Prism", "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"),
@@ -2170,7 +2170,7 @@ mod tests {
     fn a_long_saved_list_scrolls_to_keep_the_selection_visible() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_login();
-        app.login.step = crate::app::LoginStep::ChooseAppIds;
+        app.login.step = tessera_core::app::LoginStep::ChooseAppIds;
         app.login.app_ids = (0..8)
             .map(|n| saved(&format!("launcher-{n}"), &format!("{n}0000000-0000")))
             .collect();
@@ -2190,7 +2190,7 @@ mod tests {
     fn an_unreadable_saved_list_says_why_instead_of_showing_rows() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_login();
-        app.login.step = crate::app::LoginStep::ChooseAppIds;
+        app.login.step = tessera_core::app::LoginStep::ChooseAppIds;
         app.login.app_ids_error = Some(
             "未找到 /data/凭据/启动器/azure_app_ids.toml：按 README 里的格式写入 app id".into(),
         );
@@ -2232,7 +2232,7 @@ mod tests {
         assert!(screen.contains("c 复制设备码"), "{screen}");
 
         // Each label is one clickable button that replays its key.
-        let click_key = |app: &mut App, code: KeyCode| {
+        let click_key = |app: &mut App, code: Key| {
             let area = app
                 .layout
                 .buttons
@@ -2244,18 +2244,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {code:?} button in the popup"));
             app.handle_mouse(click(area.x + area.width - 1, area.y));
         };
-        click_key(&mut app, KeyCode::Char('y'));
+        click_key(&mut app, Key::Char('y'));
         assert_eq!(
             copied(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCDEFGH")
         );
 
         render(&mut app, 100, 30);
-        click_key(&mut app, KeyCode::Char('c'));
+        click_key(&mut app, Key::Char('c'));
         assert_eq!(copied(&app).as_deref(), Some("ABCD-EFGH"));
 
         render(&mut app, 100, 30);
-        click_key(&mut app, KeyCode::Char('o'));
+        click_key(&mut app, Key::Char('o'));
         assert_eq!(
             opened(&app).as_deref(),
             Some("https://www.microsoft.com/link?otc=ABCDEFGH")
@@ -2458,7 +2458,7 @@ mod tests {
         assert!(screen.contains("再按一次 d 确认移除"), "{screen}");
     }
 
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
 
     /// The middle of an area, which is always inside it.
     fn middle(area: Area) -> (u16, u16) {
@@ -2470,13 +2470,13 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         }
     }
 
     /// The button inside the popup that replays `code`: the footer has its own
     /// copies of `l` / `d` / `Esc`, so the hit area has to be disambiguated.
-    fn popup_button(app: &App, code: KeyCode, inside: Area) -> Area {
+    fn popup_button(app: &App, code: Key, inside: Area) -> Area {
         app.layout
             .buttons
             .iter()
@@ -2511,7 +2511,7 @@ mod tests {
 
         // `l 登录新账户` in the popup opens the login overlay. The whole phrase is
         // the button, so clicking the words — not just the `l` — has to work.
-        let area = popup_button(&app, KeyCode::Char('l'), app.layout.accounts_popup);
+        let area = popup_button(&app, Key::Char('l'), app.layout.accounts_popup);
         assert_eq!(
             area.width as usize,
             cell_width_of("l 登录新账户"),
@@ -2519,26 +2519,26 @@ mod tests {
         );
         app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(app.screen, Screen::Login);
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Accounts);
 
         // `Enter 切换` activates the highlighted row.
         app.accounts_ui.selected = 0;
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Enter, app.layout.accounts_popup);
+        let area = popup_button(&app, Key::Enter, app.layout.accounts_popup);
         let (x, y) = middle(area);
         app.handle_mouse(click(x, y));
         assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
 
         // `d 移除` asks first, and the confirm hint's `d` deletes for real.
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Char('d'), app.layout.accounts_popup);
+        let area = popup_button(&app, Key::Char('d'), app.layout.accounts_popup);
         let (x, y) = middle(area);
         app.handle_mouse(click(x, y));
         assert!(app.accounts_ui.confirm_delete, "first click only asks");
 
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Char('d'), app.layout.accounts_popup);
+        let area = popup_button(&app, Key::Char('d'), app.layout.accounts_popup);
         let (x, y) = middle(area);
         app.handle_mouse(click(x, y));
         assert_eq!(app.accounts.len(), 1, "second click deletes");
@@ -2546,7 +2546,7 @@ mod tests {
 
         // `Esc 关闭` leaves the manager.
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Esc, app.layout.accounts_popup);
+        let area = popup_button(&app, Key::Esc, app.layout.accounts_popup);
         let (x, y) = middle(area);
         app.handle_mouse(click(x, y));
         assert_eq!(app.screen, Screen::Main);
@@ -2560,7 +2560,7 @@ mod tests {
 
         // "Enter 下一步" on the official identity starts the flow, and the words
         // after the key are part of the button.
-        let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
+        let area = popup_button(&app, Key::Enter, app.layout.overlay);
         assert_eq!(
             area.width as usize,
             cell_width_of("Enter 下一步"),
@@ -2572,10 +2572,10 @@ mod tests {
         // "Esc 取消" while waiting cancels it.
         assert!(matches!(
             app.login.step,
-            crate::app::LoginStep::Waiting { .. }
+            tessera_core::app::LoginStep::Waiting { .. }
         ));
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Esc, app.layout.overlay);
+        let area = popup_button(&app, Key::Esc, app.layout.overlay);
         let (x, y) = middle(area);
         app.handle_mouse(click(x, y));
         assert_eq!(app.screen, Screen::Main);
@@ -2584,7 +2584,7 @@ mod tests {
         app.open_login();
         app.handle_login_event(tessera_core::login::LoginEvent::Failed("网络不可达".into()));
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Esc, app.layout.overlay);
+        let area = popup_button(&app, Key::Esc, app.layout.overlay);
         let (x, y) = middle(area);
         app.handle_mouse(click(x, y));
         assert_eq!(app.screen, Screen::Main);
@@ -2605,13 +2605,13 @@ mod tests {
 
         let mut app = App::new("/mc", &accounts, vec![], vec![]);
         app.open_login();
-        app.handle_login_key(KeyCode::End, KeyModifiers::NONE);
-        app.handle_login_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.login.step, crate::app::LoginStep::ChooseAppIds);
+        app.handle_login_key(Key::End, Modifiers::NONE);
+        app.handle_login_key(Key::Enter, Modifiers::NONE);
+        assert_eq!(app.login.step, tessera_core::app::LoginStep::ChooseAppIds);
 
         // "Enter 登录" picks the highlighted entry; the words count too.
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
+        let area = popup_button(&app, Key::Enter, app.layout.overlay);
         assert_eq!(area.width as usize, cell_width_of("Enter 登录"));
         app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(
@@ -2638,7 +2638,7 @@ mod tests {
             file: saved_file,
         });
         render(&mut app, 100, 28);
-        let area = popup_button(&app, KeyCode::Enter, app.layout.overlay);
+        let area = popup_button(&app, Key::Enter, app.layout.overlay);
         assert_eq!(area.width as usize, cell_width_of("Enter 返回"));
         app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(app.screen, Screen::Main);
@@ -2691,14 +2691,14 @@ mod tests {
 
     #[test]
     fn footer_hints_are_buttons_and_replay_their_key() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use tessera_core::input::Key;
+        use tessera_core::input::{MouseButton, MouseEvent, MouseEventKind};
 
         let click = |column: u16, row: u16| MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column,
             row,
-            modifiers: crossterm::event::KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         };
 
         let mut app = App::new(
@@ -2709,7 +2709,7 @@ mod tests {
         );
         render(&mut app, 100, 28);
 
-        let find = |app: &App, code: KeyCode| {
+        let find = |app: &App, code: Key| {
             app.layout
                 .buttons
                 .iter()
@@ -2719,27 +2719,27 @@ mod tests {
         };
 
         // d 下载
-        let button = find(&app, KeyCode::Char('d'));
+        let button = find(&app, Key::Char('d'));
         app.handle_mouse(click(button.area.x, button.area.y));
         assert_eq!(app.screen, Screen::Download);
 
         // Back to the main screen and try the toggle.
-        app.handle_key(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        app.handle_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Main);
         render(&mut app, 100, 28);
-        let button = find(&app, KeyCode::Char('h'));
+        let button = find(&app, Key::Char('h'));
         app.handle_mouse(click(button.area.x, button.area.y));
         assert!(app.show_base_versions, "h button must toggle bases");
 
         // q 退出
-        let button = find(&app, KeyCode::Char('q'));
+        let button = find(&app, Key::Char('q'));
         app.handle_mouse(click(button.area.x, button.area.y));
         assert!(app.should_quit);
     }
 
     #[test]
     fn the_main_footer_offers_a_clickable_uninstall() {
-        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use tessera_core::input::{MouseButton, MouseEvent, MouseEventKind};
 
         let mut app = App::new(
             "/mc",
@@ -2753,14 +2753,14 @@ mod tests {
             .layout
             .buttons
             .iter()
-            .find(|button| button.code == KeyCode::Char('x'))
+            .find(|button| button.code == Key::Char('x'))
             .copied()
             .expect("uninstall button");
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: button.area.x,
             row: button.area.y,
-            modifiers: crossterm::event::KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         });
 
         assert_eq!(app.uninstall_confirm(), Some("1.20.1"));
@@ -2812,14 +2812,14 @@ mod tests {
             .layout
             .buttons
             .iter()
-            .find(|button| button.code == crossterm::event::KeyCode::Char('l'))
+            .find(|button| button.code == Key::Char('l'))
             .copied()
             .expect("login button");
-        app.handle_mouse(crossterm::event::MouseEvent {
-            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
             column: button.area.x,
             row: button.area.y,
-            modifiers: crossterm::event::KeyModifiers::NONE,
+            modifiers: Modifiers::NONE,
         });
         assert_eq!(app.screen, Screen::Login);
     }
@@ -2916,7 +2916,7 @@ mod tests {
         ]));
         // Start the 21 download, then pretend a third of it arrived.
         app.java.selected = 1;
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
         app.handle_java_event(tessera_core::java::Event::Progress {
             done: 12 * 1024 * 1024,
             total: 50 * 1024 * 1024,
@@ -2957,7 +2957,7 @@ mod tests {
             21,
             "21.0.13+9",
         )]));
-        app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_java_key(Key::Enter, Modifiers::NONE);
         app.handle_java_event(tessera_core::java::Event::Failed("哈希不匹配".to_string()));
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("哈希不匹配"), "{screen}");
@@ -3138,7 +3138,7 @@ mod tests {
         let title = app.source_label();
         assert!(title == "BMCLAPI", "{title}");
 
-        app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('s'), Modifiers::NONE);
         let screen = render(&mut app, 110, 28).join("\n");
         assert!(
             screen.contains("下载 官方源"),
@@ -3154,15 +3154,15 @@ mod tests {
         assert!(screen.contains("Space 展开"), "{screen}");
 
         // Opening it drops the hint, since nothing is folded any more.
-        app.handle_download_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_download_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        app.handle_download_key(Key::Down, Modifiers::NONE);
+        app.handle_download_key(Key::Char(' '), Modifiers::NONE);
         assert_eq!(app.download.expanded.len(), 1);
         let screen = render(&mut app, 110, 28).join("\n");
         assert!(!screen.contains("组折叠"), "{screen}");
 
         // The flat views have nothing to fold, so no hint either.
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
-        assert_eq!(app.download.filter, crate::app::VersionFilter::Release);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+        assert_eq!(app.download.filter, tessera_core::app::VersionFilter::Release);
         let screen = render(&mut app, 110, 28).join("\n");
         assert!(!screen.contains("组折叠"), "{screen}");
     }
@@ -3254,9 +3254,9 @@ mod tests {
                 released: "2023-06-12T00:00:00+00:00".into(),
             },
         ]));
-        app.handle_download_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('/'), Modifiers::NONE);
         for c in "zzz".chars() {
-            app.handle_download_key(KeyCode::Char(c), KeyModifiers::NONE);
+            app.handle_download_key(Key::Char(c), Modifiers::NONE);
         }
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("没有匹配的版本"), "{screen}");
@@ -3284,7 +3284,7 @@ mod tests {
                 released: "2023-08-02T00:00:00+00:00".into(),
             },
         ]));
-        app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("1 / 2"), "{screen}");
     }
@@ -3340,8 +3340,8 @@ mod tests {
             },
         ]));
         app.handle_download_key(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
+            Key::Enter,
+            Modifiers::NONE,
         );
         app.handle_install_event(tessera_core::install::InstallEvent::Progress {
             done: 0,
@@ -3372,7 +3372,7 @@ mod tests {
     fn the_install_screen_shows_aot_training_progress() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.screen = Screen::Installing;
-        app.download.stage = crate::app::DownloadStage::Training;
+        app.download.stage = tessera_core::app::DownloadStage::Training;
         app.download.installed = Some(("26.3".to_string(), None));
         app.download.aot_loaded = 1234;
         app.download.aot_total = 43246;
@@ -3402,7 +3402,7 @@ mod tests {
                 released: "2023-06-12T00:00:00+00:00".into(),
             },
         ]));
-        app.handle_download_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_download_key(Key::Enter, Modifiers::NONE);
         app.handle_install_event(InstallEvent::Progress {
             done: 50,
             total: 100,
@@ -3493,8 +3493,8 @@ mod tests {
             },
         ]));
         app.handle_download_key(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
+            Key::Enter,
+            Modifiers::NONE,
         );
 
         app.handle_install_event(tessera_core::install::InstallEvent::Failed("镜像超时".into()));

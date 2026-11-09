@@ -1,15 +1,18 @@
 //! Tessera's desktop front-end.
 //!
-//! This first iteration mirrors the terminal layout: a header with the data
-//! directory and account state, a version list beside a details/log column, and
-//! a footer with the same actions as the TUI.
+//! The screen state and every action live in `tessera_core::app`; this crate
+//! only draws that state and runs the effects it queues. A worker thread per
+//! effect (token refresh, game process) reports back through channels, and the
+//! state machine turns those reports into the next status line.
+
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::Duration;
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::*;
 
-use tessera_core::accounts as core_accounts;
-use tessera_core::discover;
-use tessera_core::paths::Paths;
+use tessera_core::app::{App as State, Effect};
+use tessera_core::{accounts, discover, launch, paths::Paths, session};
 
 const ACCENT: u32 = 0x6c_d6_7a;
 const SNAPSHOT: u32 = 0xe8_c9_6a;
@@ -23,49 +26,122 @@ const TEXT: u32 = 0xff_ff_ff;
 const ROW: u32 = 0x26_28_2e;
 
 struct Launcher {
-    data_dir: String,
-    versions: Vec<discover::LocalVersion>,
-    accounts: Vec<core_accounts::Account>,
-    selected: usize,
-    status: String,
-    log: Vec<String>,
+    state: State,
+    session_rx: Option<Receiver<session::SessionEvent>>,
+    launch_rx: Vec<Receiver<launch::GameEvent>>,
 }
 
 impl Launcher {
     fn new() -> Self {
-        let paths = Paths::discover();
-        let root = paths.game();
-        let versions = discover::scan(&root);
-        let accounts = core_accounts::list(&paths.accounts());
-        let status = if versions.is_empty() {
-            "没有找到任何版本".to_string()
-        } else {
-            format!("已扫描 {} 个版本", versions.len())
-        };
-        let mut log = vec![format!("数据目录 {}", paths.root().display())];
-        log.push(format!("游戏目录 {}", root.display()));
-        log.push(format!("账户 {}", accounts.len()));
+        let data = Paths::discover();
+        let root = data.game();
+        let mut state = State::new(
+            root.clone(),
+            data.accounts(),
+            discover::scan(&root),
+            accounts::list(&data.accounts()),
+        );
+        state.set_runtimes(data.runtimes());
+        state.launch_options.fastmenu_agent =
+            Some(data.root().join("缓存").join("fastmenu-agent.jar"));
+        state.settings = tessera_core::settings::load(&tessera_core::settings::Settings::path(
+            data.root(),
+        ))
+        .0;
+        state.log(format!("数据目录 {}", data.root().display()));
+        state.log(format!("游戏目录 {}", root.display()));
+        state.log(format!("JRE 目录 {}", data.runtimes().display()));
         Self {
-            data_dir: root.display().to_string(),
-            versions,
-            accounts,
-            selected: 0,
-            status,
-            log,
+            state,
+            session_rx: None,
+            launch_rx: Vec::new(),
         }
     }
 
-    fn rescan(&mut self) {
-        let paths = Paths::discover();
-        self.versions = discover::scan(&paths.game());
-        self.accounts = core_accounts::list(&paths.accounts());
-        self.selected = self.selected.min(self.versions.len().saturating_sub(1));
-        self.status = format!("已扫描 {} 个版本", self.versions.len());
-        self.log.push("重新扫描完成".to_string());
+    /// Run the effects the state machine queued, and feed worker reports back.
+    fn step(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
+
+        for effect in self.state.take_effects() {
+            changed = true;
+            match effect {
+                Effect::RefreshSession(file) => {
+                    if self.session_rx.is_some() {
+                        // One refresh at a time; put it back for the next tick.
+                        self.state.request(Effect::RefreshSession(file));
+                    } else {
+                        self.session_rx = Some(session::spawn_refresh(file));
+                    }
+                }
+                Effect::Launch { dir, credentials } => {
+                    self.launch_rx.push(launch::spawn_game(
+                        self.state.root.clone(),
+                        dir,
+                        credentials,
+                        self.state.launch_options.clone(),
+                    ));
+                }
+                Effect::Copy(_) => self.state.log("剪贴板还没有接到 GUI"),
+                Effect::OpenBrowser(_) => self.state.log("打开浏览器还没有接到 GUI"),
+                _ => self.state.log("这个操作还没有接到 GUI"),
+            }
+        }
+
+        if let Some(rx) = self.session_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_session_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.session_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut open = Vec::new();
+        for rx in self.launch_rx.drain(..) {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_game_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        open.push(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        self.launch_rx = open;
+
+        if changed {
+            cx.notify();
+        }
     }
 
-    fn selected_version(&self) -> Option<&discover::LocalVersion> {
-        self.versions.get(self.selected)
+    fn start(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(80))
+                .await;
+            if this.update(cx, |this, cx| this.step(cx)).is_err() {
+                break;
+            }
+        })
+        .detach();
     }
 
     fn kind_color(kind: &str) -> u32 {
@@ -73,14 +149,6 @@ impl Launcher {
             "snapshot" => SNAPSHOT,
             "old_beta" | "old_alpha" => LEGACY,
             _ => ACCENT,
-        }
-    }
-
-    fn account_line(&self) -> String {
-        match self.accounts.first() {
-            Some(account) if account.copy == 0 => account.player_name.clone(),
-            Some(account) => format!("{} ({})", account.player_name, account.copy),
-            None => "未登录 · 点此登录".to_string(),
         }
     }
 
@@ -93,7 +161,11 @@ impl Launcher {
             .border_color(rgb(BORDER))
             .bg(rgb(PANEL))
             .overflow_hidden();
-        outer = if grow { outer.flex_1().h_full() } else { outer.h(px(232.0)) };
+        outer = if grow {
+            outer.flex_1().h_full()
+        } else {
+            outer.h(px(232.0))
+        };
         outer
             .child(
                 div()
@@ -127,19 +199,19 @@ impl Launcher {
                     .font_weight(FontWeight::BOLD)
                     .child("Tessera"),
             )
-            .child(div().text_sm().text_color(rgb(TEXT)).child("Minecraft Java 版启动器"))
-            .child(div().flex_1())
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(DIM))
-                    .child(format!(
-                        "{}  ·  {} 个版本  ·  {} 个账户",
-                        self.data_dir,
-                        self.versions.len(),
-                        self.accounts.len()
-                    )),
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .child("Minecraft Java 版启动器"),
             )
+            .child(div().flex_1())
+            .child(div().text_xs().text_color(rgb(DIM)).child(format!(
+                "{}  ·  {} 个版本  ·  {} 个账户",
+                self.state.root.display(),
+                self.state.versions.len(),
+                self.state.accounts.len()
+            )))
             .child(
                 div()
                     .px_2()
@@ -148,25 +220,30 @@ impl Launcher {
                     .bg(rgb(ROW))
                     .text_xs()
                     .text_color(rgb(ACCENT))
-                    .child(self.account_line()),
+                    .child(self.state.account.label()),
             )
     }
 
     fn version_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = format!("版本 ({})", self.versions.len());
-        let mut list = div().id("version-list").v_flex().gap_1().p_2().overflow_y_scroll();
+        let title = format!("版本 ({})", self.state.versions.len());
+        let mut list = div()
+            .id("version-list")
+            .v_flex()
+            .gap_1()
+            .p_2()
+            .overflow_y_scroll();
 
-        if self.versions.is_empty() {
+        if self.state.versions.is_empty() {
             list = list.child(
                 div()
                     .p_4()
                     .text_sm()
                     .text_color(rgb(DIM))
-                    .child("没有找到任何版本 —— 按 r 重新扫描，或先下载一个版本"),
+                    .child("没有找到任何版本 —— 按「刷新」重新扫描，或先下载一个版本"),
             );
         } else {
-            for (index, version) in self.versions.iter().enumerate() {
-                let selected = index == self.selected;
+            for (index, version) in self.state.versions.iter().enumerate() {
+                let selected = index == self.state.selected;
                 let broken = !version.has_jar && version.inherits.is_none();
                 let java = version
                     .java
@@ -183,7 +260,7 @@ impl Launcher {
                         .rounded_sm()
                         .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
                         .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                            this.selected = index;
+                            this.state.selected = index;
                             cx.notify();
                         }))
                         .child(
@@ -210,7 +287,7 @@ impl Launcher {
 
     fn details(&self) -> impl IntoElement {
         let mut body = div().v_flex().gap_1().p_2();
-        match self.selected_version() {
+        match self.state.selected_version() {
             Some(version) => {
                 body = body
                     .child(field("目录", version.dir.clone()))
@@ -222,12 +299,18 @@ impl Launcher {
                             .map(|major| major.to_string())
                             .unwrap_or_else(|| "—".to_string()),
                     ))
-                    .child(field("主类", version.main_class.clone().unwrap_or_else(|| "—".into())))
+                    .child(field(
+                        "主类",
+                        version.main_class.clone().unwrap_or_else(|| "—".into()),
+                    ))
                     .child(field(
                         "继承",
                         version.inherits.clone().unwrap_or_else(|| "—".to_string()),
                     ))
-                    .child(field("客户端 jar", if version.has_jar { "有" } else { "无" }.into()));
+                    .child(field(
+                        "客户端 jar",
+                        if version.has_jar { "有" } else { "无" }.into(),
+                    ));
             }
             None => {
                 body = body.child(div().p_2().text_sm().text_color(rgb(DIM)).child("未选择版本"));
@@ -238,10 +321,10 @@ impl Launcher {
 
     fn log(&self) -> impl IntoElement {
         let mut body = div().id("log").v_flex().gap_0p5().p_2().overflow_y_scroll();
-        if self.log.is_empty() {
+        if self.state.log.is_empty() {
             body = body.child(div().text_sm().text_color(rgb(DIM)).child("（空）"));
         }
-        for line in &self.log {
+        for line in self.state.log.iter().rev().take(200).rev() {
             body = body.child(div().text_xs().text_color(rgb(DIM)).child(line.clone()));
         }
         Self::panel("日志", body, true)
@@ -255,10 +338,17 @@ impl Launcher {
             .px_3()
             .py_1()
             .text_xs()
-            .child(div().flex_1().text_color(rgb(ACCENT)).child(self.status.clone()))
-            .child(button("刷新", cx, |this: &mut Launcher| this.rescan()))
+            .child(div().flex_1().text_color(rgb(ACCENT)).child(self.state.status.clone()))
+            .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
+                this.state.request_launch();
+                cx.notify();
+            }))
+            .child(button("刷新", cx, |this: &mut Launcher, cx| {
+                this.state.reload();
+                cx.notify();
+            }))
             .child(div().text_color(rgb(DIM)).child("下载 · 卸载 · 账户 · Java 尚未接入"))
-            .child(button("退出", cx, |_| {}))
+            .child(button("退出", cx, |_, cx| cx.quit()))
     }
 }
 
@@ -266,14 +356,20 @@ fn field(label: &str, value: String) -> impl IntoElement {
     div()
         .h_flex()
         .gap_2()
-        .child(div().w(px(72.0)).text_xs().text_color(rgb(DIM)).child(label.to_string()))
+        .child(
+            div()
+                .w(px(72.0))
+                .text_xs()
+                .text_color(rgb(DIM))
+                .child(label.to_string()),
+        )
         .child(div().flex_1().text_xs().text_color(rgb(TEXT)).child(value))
 }
 
 fn button(
     label: &str,
     cx: &mut Context<Launcher>,
-    action: impl Fn(&mut Launcher) + 'static,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
     div()
         .id(label.to_string())
@@ -282,10 +378,32 @@ fn button(
         .rounded_sm()
         .bg(rgb(ROW))
         .text_color(rgb(ACCENT))
-        .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-            action(this);
-            cx.notify();
-        }))
+        .on_click(cx.listener(
+            move |this: &mut Launcher, _event, _window, cx| {
+                action(this, cx);
+            },
+        ))
+        .child(label.to_string())
+}
+
+fn primary_button(
+    label: &str,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(label.to_string())
+        .px_3()
+        .py_1()
+        .rounded_sm()
+        .bg(rgb(ACCENT))
+        .text_color(rgb(0x0b_0d_10))
+        .font_weight(FontWeight::SEMIBOLD)
+        .on_click(cx.listener(
+            move |this: &mut Launcher, _event, _window, cx| {
+                action(this, cx);
+            },
+        ))
         .child(label.to_string())
 }
 
@@ -325,7 +443,11 @@ impl Render for Launcher {
 fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
-        let launcher = cx.new(|_| Launcher::new());
+        let launcher = cx.new(|cx| {
+            let mut launcher = Launcher::new();
+            launcher.start(cx);
+            launcher
+        });
         let view = launcher.clone();
         gpui_kit::open_window(
             WindowOptions {

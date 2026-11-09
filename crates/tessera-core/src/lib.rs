@@ -5,11 +5,13 @@
 //! consumer; a future GUI is another.
 
 pub mod accounts;
+pub mod app;
 pub mod aot;
 pub mod app_ids;
 pub mod cleanup;
 pub mod discover;
 pub mod fastmenu;
+pub mod input;
 pub mod install;
 pub mod java;
 pub mod launch;

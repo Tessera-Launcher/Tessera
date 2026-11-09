@@ -98,8 +98,8 @@ pub struct DownloadUi {
     visible: Vec<usize>,
     /// Folded snapshot families, by key, that are currently opened.
     pub expanded: Vec<String>,
-    /// The filtered list laid out as drawn lines (see [`tessera_core::version_tree`]).
-    pub rows: Vec<tessera_core::version_tree::Row>,
+    /// The filtered list laid out as drawn lines (see [`crate::version_tree`]).
+    pub rows: Vec<crate::version_tree::Row>,
     /// Folded groups in [`DownloadUi::rows`], cached so the pane title does not
     /// walk every row on every frame.
     folded: usize,
@@ -230,7 +230,7 @@ impl DownloadUi {
     pub fn cursor(&self) -> usize {
         self.rows
             .iter()
-            .position(|row| matches!(row.kind, tessera_core::version_tree::RowKind::Version(index) if index == self.picked))
+            .position(|row| matches!(row.kind, crate::version_tree::RowKind::Version(index) if index == self.picked))
             .or_else(|| self.rows.iter().position(|row| row.anchor() == self.picked))
             .unwrap_or(0)
     }
@@ -246,14 +246,14 @@ impl DownloadUi {
     /// no search: a search must never hide the version it matched.
     pub fn rebuild_rows(&mut self) {
         let tree = self.filter == VersionFilter::All && self.query.trim().is_empty();
-        self.rows = tessera_core::version_tree::build(&self.all, &self.visible, &self.expanded, tree);
+        self.rows = crate::version_tree::build(&self.all, &self.visible, &self.expanded, tree);
         self.folded = self
             .rows
             .iter()
             .filter(|row| {
                 matches!(
                     row.kind,
-                    tessera_core::version_tree::RowKind::Group {
+                    crate::version_tree::RowKind::Group {
                         expanded: false,
                         ..
                     }
@@ -269,13 +269,13 @@ impl DownloadUi {
         let rows = &self.rows;
         if matches!(
             rows.get(cursor)?.kind,
-            tessera_core::version_tree::RowKind::Group { .. }
+            crate::version_tree::RowKind::Group { .. }
         ) {
             return Some(cursor);
         }
         rows[..cursor]
             .iter()
-            .rposition(|row| matches!(row.kind, tessera_core::version_tree::RowKind::Group { .. }))
+            .rposition(|row| matches!(row.kind, crate::version_tree::RowKind::Group { .. }))
     }
 
     pub fn picked_loader(&self) -> Loader {
@@ -356,7 +356,7 @@ impl App {
     /// Switch where downloads come from. Deliberately not persisted: the next
     /// start falls back to the default (or `--mirror`), so a one-off switch does
     /// not quietly become the new normal.
-    pub fn set_source(&mut self, source: tessera_core::install::Source) {
+    pub fn set_source(&mut self, source: crate::install::Source) {
         if self.source == source {
             return;
         }
@@ -384,11 +384,11 @@ impl App {
         self.download.stage = DownloadStage::Picking;
     }
 
-    pub fn handle_download_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    pub fn handle_download_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
         let _ = modifiers;
         match self.download.stage {
             DownloadStage::LoadingVersions => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                if matches!(code, Key::Esc | Key::Char('q')) {
                     self.close_download();
                 }
             }
@@ -396,7 +396,7 @@ impl App {
                 // The search box swallows printable keys, so it gets first say.
                 if self.download.focus == PickerFocus::Search {
                     match code {
-                        KeyCode::Esc => {
+                        Key::Esc => {
                             if self.download.query.is_empty() {
                                 self.download.focus = PickerFocus::Versions;
                             } else {
@@ -404,17 +404,17 @@ impl App {
                                 self.download.apply_filter();
                             }
                         }
-                        KeyCode::Backspace => {
+                        Key::Backspace => {
                             if self.download.query.pop().is_some() {
                                 self.download.apply_filter();
                             }
                         }
-                        KeyCode::Tab => self.download.focus = self.download.focus.next(),
+                        Key::Tab => self.download.focus = self.download.focus.next(),
                         // Arrows still walk the list while the caret is in the box.
-                        KeyCode::Up => self.picker_step(-1, true),
-                        KeyCode::Down => self.picker_step(1, true),
-                        KeyCode::Enter => self.start_install(),
-                        KeyCode::Char(c) if !c.is_control() => {
+                        Key::Up => self.picker_step(-1, true),
+                        Key::Down => self.picker_step(1, true),
+                        Key::Enter => self.start_install(),
+                        Key::Char(c) if !c.is_control() => {
                             self.download.query.push(c);
                             self.download.apply_filter();
                         }
@@ -423,34 +423,34 @@ impl App {
                     return true;
                 }
                 match code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.close_download(),
-                    KeyCode::Tab => self.download.focus = self.download.focus.next(),
-                    KeyCode::Char('/') => self.download.focus = PickerFocus::Search,
-                    KeyCode::Char('s') => self.toggle_source(),
-                    KeyCode::Char('f') => {
+                    Key::Esc | Key::Char('q') => self.close_download(),
+                    Key::Tab => self.download.focus = self.download.focus.next(),
+                    Key::Char('/') => self.download.focus = PickerFocus::Search,
+                    Key::Char('s') => self.toggle_source(),
+                    Key::Char('f') => {
                         self.download.filter = self.download.filter.next();
                         self.download.apply_filter();
                         self.status = format!("下载：{} 版本", self.download.filter.label());
                     }
-                    KeyCode::Up | KeyCode::Char('k') => self.picker_step(-1, true),
-                    KeyCode::Down | KeyCode::Char('j') => self.picker_step(1, true),
+                    Key::Up | Key::Char('k') => self.picker_step(-1, true),
+                    Key::Down | Key::Char('j') => self.picker_step(1, true),
                     // Tree controls: `←` closes, `→` opens, `Space` flips whichever
                     // group the cursor is in (its header, or one of its members).
-                    KeyCode::Left => self.toggle_group_at_cursor(Some(false)),
-                    KeyCode::Right => self.toggle_group_at_cursor(Some(true)),
-                    KeyCode::Char(' ') => self.toggle_group_at_cursor(None),
-                    KeyCode::Enter => self.start_install(),
+                    Key::Left => self.toggle_group_at_cursor(Some(false)),
+                    Key::Right => self.toggle_group_at_cursor(Some(true)),
+                    Key::Char(' ') => self.toggle_group_at_cursor(None),
+                    Key::Enter => self.start_install(),
                     _ => {}
                 }
             }
             DownloadStage::Installing | DownloadStage::Training => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                if matches!(code, Key::Esc | Key::Char('q')) {
                     self.screen = Screen::Main;
                     self.log("安装/训练转为后台进行，完成后会重新扫描版本");
                 }
             }
             DownloadStage::Done | DownloadStage::Failed => {
-                if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                if matches!(code, Key::Esc | Key::Enter | Key::Char('q')) {
                     self.reload();
                     self.screen = Screen::Main;
                 }
@@ -548,7 +548,7 @@ impl App {
                     // The switch lives in the loader pane, so clicking it focuses
                     // that pane like any other click there would.
                     self.download.focus = PickerFocus::Loaders;
-                    self.set_source(tessera_core::install::Source::ALL[index]);
+                    self.set_source(crate::install::Source::ALL[index]);
                 } else if over_versions_rows {
                     self.download.focus = PickerFocus::Versions;
                     let drawn =
@@ -587,20 +587,20 @@ impl App {
             return;
         };
         match row.kind {
-            tessera_core::version_tree::RowKind::Version(index) => {
+            crate::version_tree::RowKind::Version(index) => {
                 self.download.picked = index;
                 self.download.refresh_loaders();
             }
             // The row says "there is more behind me", so clicking it is what unfolds
             // it; clicking the opened header folds it back up.
-            tessera_core::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
+            crate::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
         }
     }
 
     /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
     /// `drawn` is `None`.
     fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
-        let Some(tessera_core::version_tree::RowKind::Group {
+        let Some(crate::version_tree::RowKind::Group {
             key,
             first,
             expanded,
@@ -707,7 +707,7 @@ impl App {
                 // 26.1+ vanilla installs pay for one training run as part of the
                 // install. Mod loaders are excluded: their classes go through a
                 // custom ClassLoader and cannot enter the AOT cache anyway.
-                if loader.is_none() && tessera_core::aot::eligible(&version) {
+                if loader.is_none() && crate::aot::eligible(&version) {
                     self.download.stage = DownloadStage::Training;
                     self.status = format!("安装完成，正在训练 {version} 的 AOT 缓存");
                     self.log("开始 AOT 训练（26.1+ 原版）");
@@ -727,8 +727,8 @@ impl App {
     }
 
     /// Apply a forced-AOT-training event.
-    pub fn handle_aot_event(&mut self, event: tessera_core::aot::Event) {
-        use tessera_core::aot::Event;
+    pub fn handle_aot_event(&mut self, event: crate::aot::Event) {
+        use crate::aot::Event;
         let (version, showing) = match &event {
             Event::Preparing { version, .. }
             | Event::Progress { version, .. }
