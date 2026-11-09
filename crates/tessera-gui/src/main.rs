@@ -10,14 +10,15 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use gpui_kit::base::StyledExt;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 
-use tessera_core::app::{App as State, DownloadStage, Effect, LoginStep, Screen};
+use tessera_core::app::{App as State, DownloadStage, Effect, JavaStage, LoginStep, Screen, VersionFilter};
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::input::{Key, Modifiers};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};
-use tessera_core::{accounts, aot, cleanup, discover, logfile, paths::Paths, session, version_tree::RowKind};
+use tessera_core::{accounts, aot, cleanup, discover, java, logfile, paths::Paths, session, version_tree::RowKind};
 
 const ACCENT: u32 = 0x6c_d6_7a;
 const SNAPSHOT: u32 = 0xe8_c9_6a;
@@ -38,6 +39,7 @@ struct Launcher {
     install_rx: Option<Receiver<InstallEvent>>,
     aot_rx: Option<Receiver<aot::Event>>,
     sweep_rx: Option<Receiver<cleanup::Sweep>>,
+    java_rx: Option<Receiver<java::Event>>,
     launch_rx: Vec<Receiver<launch::GameEvent>>,
     /// `data/日志/tessera.log`; `None` once a write failed, so a full disk does
     /// not fail again on every frame.
@@ -49,6 +51,13 @@ struct Launcher {
     /// yet and the first draw drops the focus again, so it is retried once the
     /// view has rendered.
     focus_scheduled: bool,
+    /// Text fields, created on first use because `InputState::new` needs a window.
+    search: Option<Entity<InputState>>,
+    search_sub: Option<Subscription>,
+    app_id_input: Option<Entity<InputState>>,
+    app_id_sub: Option<Subscription>,
+    proxy_input: Option<Entity<InputState>>,
+    proxy_sub: Option<Subscription>,
 }
 
 impl Launcher {
@@ -93,10 +102,17 @@ impl Launcher {
             install_rx: None,
             aot_rx: None,
             sweep_rx: None,
+            java_rx: None,
             launch_rx: Vec::new(),
             log_file,
             focus_handle,
             focus_scheduled: false,
+            search: None,
+            search_sub: None,
+            app_id_input: None,
+            app_id_sub: None,
+            proxy_input: None,
+            proxy_sub: None,
         }
     }
 
@@ -111,6 +127,12 @@ impl Launcher {
         let Some(code) = gui_key(&event.keystroke) else {
             return;
         };
+        // A pending uninstall owns Escape: answering "no" must not also quit.
+        if self.state.uninstall_confirm().is_some() && code == Key::Esc {
+            self.state.cancel_uninstall();
+            cx.notify();
+            return;
+        }
         let mut modifiers = Modifiers::NONE;
         if event.keystroke.modifiers.control {
             modifiers = modifiers | Modifiers::CONTROL;
@@ -179,6 +201,16 @@ impl Launcher {
                         self.state.launch_options.clone(),
                     ));
                 }
+                Effect::FetchJavaList => {
+                    self.java_rx = Some(java::spawn_list());
+                }
+                Effect::InstallJava { runtime, urls } => {
+                    self.java_rx = Some(java::spawn_install(
+                        self.state.runtimes.clone(),
+                        runtime,
+                        urls,
+                    ));
+                }
                 Effect::Sweep(installed) => {
                     // Walking the shared library tree stats thousands of files.
                     self.sweep_rx = Some(cleanup::spawn(
@@ -204,7 +236,6 @@ impl Launcher {
                     Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
                     Err(error) => self.state.log(format!("打开浏览器失败：{error}")),
                 },
-                _ => self.state.log("这个操作还没有接到 GUI"),
             }
         }
 
@@ -266,6 +297,25 @@ impl Launcher {
             // The progress bar smooths its speed from samples; ask it to age them.
             if self.state.tick() {
                 changed = true;
+            }
+        }
+
+        if let Some(rx) = self.java_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_java_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.java_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
             }
         }
 
@@ -358,6 +408,81 @@ impl Launcher {
             }
         })
         .detach();
+    }
+
+    /// The download search box, created once.
+    fn ensure_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(state) = &self.search {
+            return state.clone();
+        }
+        let state = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索版本 id，例如 1.21 / snapshot")
+        });
+        self.search_sub = Some(cx.subscribe(
+            &state,
+            |this: &mut Launcher, state, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::Change => {
+                        let text = state.read(cx).value().to_string();
+                        this.state.set_download_query(&text);
+                    }
+                    InputEvent::PressEnter { .. } => this.state.start_install(),
+                    _ => return,
+                }
+                cx.notify();
+            },
+        ));
+        self.search = Some(state.clone());
+        state
+    }
+
+    /// The custom-client-id field on the login screen, created once.
+    fn ensure_app_id(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(state) = &self.app_id_input {
+            return state.clone();
+        }
+        let state = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Azure 应用（客户端）id，形如 00000000-0000-…")
+        });
+        self.app_id_sub = Some(cx.subscribe(
+            &state,
+            |this: &mut Launcher, state, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::Change => {
+                        let text = state.read(cx).value().to_string();
+                        this.state.set_login_app_id(&text);
+                    }
+                    InputEvent::PressEnter { .. } => this.state.confirm_login_app_id(),
+                    _ => return,
+                }
+                cx.notify();
+            },
+        ));
+        self.app_id_input = Some(state.clone());
+        state
+    }
+
+    /// The GitHub proxy field on the Java screen, created once.
+    fn ensure_proxy(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(state) = &self.proxy_input {
+            return state.clone();
+        }
+        let state = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("GitHub Proxy，例如 gh-proxy.com（可留空）")
+        });
+        self.proxy_sub = Some(cx.subscribe(
+            &state,
+            |this: &mut Launcher, state, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = state.read(cx).value().to_string();
+                    this.state.java.proxy = text.clone();
+                    this.state.settings.github_proxy = text;
+                    cx.notify();
+                }
+            },
+        ));
+        self.proxy_input = Some(state.clone());
+        state
     }
 
     fn kind_color(kind: &str) -> u32 {
@@ -569,8 +694,16 @@ impl Launcher {
                         this.state.open_download();
                         cx.notify();
                     }))
+                    .child(button("卸载", cx, |this: &mut Launcher, cx| {
+                        this.state.request_uninstall();
+                        cx.notify();
+                    }))
                     .child(button("账户", cx, |this: &mut Launcher, cx| {
                         this.state.open_accounts();
+                        cx.notify();
+                    }))
+                    .child(button("Java", cx, |this: &mut Launcher, cx| {
+                        this.state.open_java();
                         cx.notify();
                     }))
                     .child(button("刷新", cx, |this: &mut Launcher, cx| {
@@ -666,25 +799,31 @@ impl Launcher {
 
     // ---- login ----
 
-    fn login_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn login_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut body = div().v_flex().gap_2().p_3();
         let hint: String;
 
         match self.state.login.step.clone() {
             LoginStep::Choose => {
-                body = body
-                    .child(choice_row("官方启动器".into(), "用 Minecraft 官方启动器的应用身份登录".into(), true, cx, |this: &mut Launcher, cx| {
-                        this.state.start_login(Identity::Official);
-                        cx.notify();
-                    }))
-                    .child(choice_row("自定义 app id".into(), "其他启动器的 Azure 客户端 id（GUI 还没接输入框）".into(), false, cx, |this: &mut Launcher, cx| {
-                        this.state.log("自定义 app id 还没有接到 GUI：先写进 data/凭据/启动器/azure_app_ids.toml，再用现有凭据登录");
-                        cx.notify();
-                    }))
-                    .child(choice_row("现有凭据…".into(), "读 azure_app_ids.toml 里的 app id".into(), true, cx, |this: &mut Launcher, cx| {
-                        this.state.open_app_ids();
-                        cx.notify();
-                    }));
+                let chosen = self.state.login.choice;
+                for (index, title, subtitle) in [
+                    (0usize, "官方启动器", "用 Minecraft 官方启动器的应用身份登录"),
+                    (1, "自定义 app id", "其他启动器的 Azure 客户端 id"),
+                    (2, "现有凭据…", "读 azure_app_ids.toml 里的 app id"),
+                ] {
+                    body = body.child(choice_row(
+                        title.into(),
+                        subtitle.into(),
+                        chosen == index,
+                        cx,
+                        move |this: &mut Launcher, cx| {
+                            this.state.login.choice = index;
+                            this.state.handle_login_key(Key::Enter, Modifiers::NONE);
+                            this.step(cx);
+                            cx.notify();
+                        },
+                    ));
+                }
                 hint = "选择用哪个身份登录".to_string();
             }
             LoginStep::ChooseAppIds => {
@@ -717,14 +856,27 @@ impl Launcher {
                 hint = "点一个身份开始登录".to_string();
             }
             LoginStep::EnterAppId => {
-                body = body.child(
-                    div()
-                        .p_2()
-                        .text_sm()
-                        .text_color(rgb(DIM))
-                        .child("自定义 app id 的输入框还没接到 GUI。先写进 data/凭据/启动器/azure_app_ids.toml，再用「现有凭据」登录。"),
-                );
-                hint = "需要文本输入".to_string();
+                let input = self.ensure_app_id(window, cx);
+                body = body
+                    .child(
+                        div()
+                            .p_2()
+                            .text_sm()
+                            .text_color(rgb(DIM))
+                            .child("填一个 Azure 应用的 client id（Graph 权限只用于拿皮肤）。"),
+                    )
+                    .child(Input::new(&input).appearance(false).text_sm())
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(primary_button("开始登录", cx, |this: &mut Launcher, cx| {
+                                this.state.confirm_login_app_id();
+                                this.step(cx);
+                                cx.notify();
+                            })),
+                    );
+                hint = "Enter 或「开始登录」提交".to_string();
             }
             LoginStep::Waiting { user_code, url } => {
                 body = body
@@ -798,16 +950,57 @@ impl Launcher {
 
     // ---- download ----
 
-    fn download_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn download_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.state.download.stage {
             DownloadStage::Picking | DownloadStage::LoadingVersions => {
-                self.download_picker(cx).into_any_element()
+                self.download_picker(window, cx).into_any_element()
             }
             _ => self.download_progress(cx).into_any_element(),
         }
     }
 
-    fn download_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut bar = div().h_flex().items_center().gap_1();
+        for filter in [
+            VersionFilter::All,
+            VersionFilter::Release,
+            VersionFilter::Snapshot,
+            VersionFilter::Old,
+        ] {
+            let picked = self.state.download.filter == filter;
+            bar = bar.child(
+                div()
+                    .id(format!("filter-{}", filter.label()))
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if picked { ACCENT } else { ROW }))
+                    .text_color(rgb(if picked { 0x0b_0d_10 } else { DIM }))
+                    .text_xs()
+                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                        this.state.set_download_filter(filter);
+                        cx.notify();
+                    }))
+                    .child(filter.label()),
+            );
+        }
+        bar
+    }
+
+    fn download_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let search = self.ensure_search(window, cx);
+        let toolbar = div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .mb_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(Input::new(&search).appearance(false).text_sm()),
+            )
+            .child(self.filter_bar(cx));
         let download = &self.state.download;
         let mut versions = div()
             .id("download-versions")
@@ -961,7 +1154,7 @@ impl Launcher {
                     .gap_2()
                     .child(panel(
                         &format!("版本 ({})", self.state.download.matched()),
-                        versions,
+                        div().v_flex().p_2().child(toolbar).child(versions),
                         true,
                     ))
                     .child(
@@ -1080,21 +1273,280 @@ impl Launcher {
             })))
     }
 
-    fn placeholder_screen(&self, title: &str) -> impl IntoElement {
-        div()
+    // ---- java ----
+
+    fn java_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let proxy = if self.state.java.source == java::Source::Github {
+            Some(self.ensure_proxy(window, cx))
+        } else {
+            None
+        };
+
+        let java = &self.state.java;
+        let mut runtimes = div()
+            .id("java-runtimes")
             .v_flex()
-            .flex_1()
-            .gap_2()
-            .child(screen_title(title))
-            .child(panel(
-                "还没接",
+            .gap_1()
+            .p_2()
+            .overflow_y_scroll();
+        if java.runtimes.is_empty() {
+            runtimes = runtimes.child(
                 div()
                     .p_3()
                     .text_sm()
                     .text_color(rgb(DIM))
-                    .child("这个界面还在 TUI 里"),
-                true,
-            ))
+                    .child(match java.stage {
+                        JavaStage::Loading => "正在查询 Adoptium…",
+                        _ => "没有可下载的运行时",
+                    }),
+            );
+        }
+        for (index, runtime) in java.runtimes.iter().enumerate() {
+            let selected = index == java.selected;
+            let installed = java.is_installed(runtime.major);
+            let update = java.update_for(runtime).is_some();
+            let major = runtime.major;
+            let version = runtime.version();
+            let size = discover::human_size(runtime.size);
+            let ea = runtime.ea;
+            runtimes = runtimes.child(
+                div()
+                    .id(format!("java-{index}"))
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
+                    .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
+                        this.state.java.selected = index;
+                        // Double click installs, like the TUI's Enter.
+                        if event.click_count() > 1 {
+                            this.state.handle_java_key(Key::Enter, Modifiers::NONE);
+                            this.step(cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .w(px(8.0))
+                            .h(px(8.0))
+                            .rounded_full()
+                            .bg(rgb(if installed { ACCENT } else { DIM })),
+                    )
+                    .child(
+                        div()
+                            .w(px(64.0))
+                            .text_sm()
+                            .text_color(rgb(if selected { ACCENT } else { TEXT }))
+                            .child(format!("Java {major}")),
+                    )
+                    .child(div().flex_1().text_xs().text_color(rgb(DIM)).child(version))
+                    .child(div().w(px(64.0)).text_xs().text_color(rgb(DIM)).child(size))
+                    .children(update.then(|| chip("可更新", SNAPSHOT)))
+                    .children(installed.then(|| chip("已装", ACCENT)))
+                    .children(ea.then(|| chip("EA", LEGACY))),
+            );
+        }
+
+        let mut installed = div().v_flex().gap_1().p_2();
+        if java.installed.is_empty() {
+            installed = installed.child(
+                div()
+                    .p_2()
+                    .text_sm()
+                    .text_color(rgb(DIM))
+                    .child("运行时目录还是空的"),
+            );
+        }
+        for runtime in &java.installed {
+            installed = installed.child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(PANEL))
+                    .child(
+                        div()
+                            .w(px(64.0))
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .child(format!("Java {}", runtime.major)),
+                    )
+                    .child(div().flex_1().text_xs().text_color(rgb(DIM)).child(runtime.version.clone()))
+                    .children((!runtime.managed).then(|| chip("手装", DIM))),
+            );
+        }
+
+        let mut progress = div().v_flex().gap_1().p_2();
+        let text = java.progress_text();
+        if text.is_empty() {
+            progress = progress.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(DIM))
+                    .child(format!("源：{}", java.source.label())),
+            );
+        } else {
+            let fraction = if java.progress.1 > 0 {
+                java.progress.0 as f32 / java.progress.1 as f32
+            } else {
+                0.0
+            };
+            progress = progress
+                .child(div().text_xs().text_color(rgb(TEXT)).child(text))
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(8.0))
+                        .rounded_sm()
+                        .bg(rgb(ROW))
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_sm()
+                                .bg(rgb(ACCENT))
+                                .w(relative(fraction.max(0.001))),
+                        ),
+                );
+        }
+        if let Some(message) = &java.message {
+            progress = progress.child(div().text_xs().text_color(rgb(DIM)).child(message.clone()));
+        }
+
+        let source = java.source.label();
+        let updates = java.update_count();
+        let busy = java.stage == JavaStage::Downloading;
+        let proxy = proxy.map(|proxy| {
+            div()
+                .v_flex()
+                .gap_1()
+                .p_2()
+                .child(div().text_xs().text_color(rgb(DIM)).child("GitHub Proxy"))
+                .child(Input::new(&proxy).appearance(false).text_sm())
+        });
+
+        div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .child(screen_title("Java 运行时"))
+            .child(
+                div()
+                    .h_flex()
+                    .flex_1()
+                    .items_stretch()
+                    .min_h(px(0.0))
+                    .gap_2()
+                    .child(panel(
+                        &format!("运行时 ({})", self.state.java.runtimes.len()),
+                        runtimes,
+                        true,
+                    ))
+                    .child(
+                        div()
+                            .v_flex()
+                            .w(px(300.0))
+                            .h_full()
+                            .gap_2()
+                            .min_h(px(0.0))
+                            .child(panel("已装", installed, true))
+                            .child(panel("进度", progress, false))
+                            .children(proxy),
+                    ),
+            )
+            .child(
+                footer_bar(&self.state.status)
+                    .child(primary_button("下载", cx, |this: &mut Launcher, cx| {
+                        this.state.handle_java_key(Key::Enter, Modifiers::NONE);
+                        this.step(cx);
+                        cx.notify();
+                    }))
+                    .child(button(&format!("全部更新 ({updates})"), cx, |this: &mut Launcher, cx| {
+                        this.state.handle_java_key(Key::Char('u'), Modifiers::NONE);
+                        this.step(cx);
+                        cx.notify();
+                    }))
+                    .child(button(&format!("换源（{source}）"), cx, |this: &mut Launcher, cx| {
+                        this.state.handle_java_key(Key::Char('s'), Modifiers::NONE);
+                        cx.notify();
+                    }))
+                    .child(button("关闭", cx, |this: &mut Launcher, cx| {
+                        this.state.close_java();
+                        cx.notify();
+                    }))
+                    .children(busy.then(|| chip("下载中", SNAPSHOT))),
+            )
+    }
+
+    // ---- uninstall confirmation ----
+
+    fn uninstall_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Only over the list the confirmation is about; switching screens drops
+        // the question instead of leaving it floating on top of unrelated ones.
+        if self.state.screen != Screen::Main {
+            return None;
+        }
+        let (dir, dependents, size) = self.state.uninstall_plan()?;
+        let mut body = div()
+            .v_flex()
+            .gap_2()
+            .p_4()
+            .rounded_md()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .w(px(460.0))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .child(format!("卸载 {dir}？")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(DIM))
+                    .child(format!("会删除 versions/{dir}（{}）", discover::human_size(size))),
+            );
+        if !dependents.is_empty() {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(SNAPSHOT))
+                    .child(format!("依赖它的版本会一起删除：{}", dependents.join("、"))),
+            );
+        }
+        body = body.child(
+            div()
+                .h_flex()
+                .gap_2()
+                .child(primary_button("确认卸载", cx, |this: &mut Launcher, cx| {
+                    this.state.request_uninstall();
+                    this.step(cx);
+                    cx.notify();
+                }))
+                .child(button("取消", cx, |this: &mut Launcher, cx| {
+                    this.state.cancel_uninstall();
+                    cx.notify();
+                })),
+        );
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_b8))
+                .child(body)
+                .into_any_element(),
+        )
     }
 }
 
@@ -1124,6 +1576,16 @@ fn panel(title: &str, body: impl IntoElement, grow: bool) -> impl IntoElement {
                 .child(title.to_string()),
         )
         .child(div().flex_1().min_h(px(0.0)).child(body))
+}
+
+fn chip(label: &str, color: u32) -> impl IntoElement {
+    div()
+        .px_1()
+        .rounded_sm()
+        .bg(rgb(ROW))
+        .text_xs()
+        .text_color(rgb(color))
+        .child(label.to_string())
 }
 
 fn screen_title(text: &str) -> impl IntoElement {
@@ -1339,15 +1801,17 @@ impl Render for Launcher {
         let body = match self.state.screen {
             Screen::Main => self.main_screen(cx).into_any_element(),
             Screen::Accounts => self.accounts_screen(cx).into_any_element(),
-            Screen::Login => self.login_screen(cx).into_any_element(),
+            Screen::Login => self.login_screen(window, cx).into_any_element(),
             Screen::Download | Screen::Installing => {
-                self.download_screen(cx).into_any_element()
+                self.download_screen(window, cx).into_any_element()
             }
-            Screen::Java => self.placeholder_screen("Java").into_any_element(),
+            Screen::Java => self.java_screen(window, cx).into_any_element(),
         };
 
+        let overlay = self.uninstall_overlay(cx);
         div()
             .v_flex()
+            .relative()
             .size_full()
             .p_2()
             .bg(rgb(BG))
@@ -1357,6 +1821,7 @@ impl Render for Launcher {
                 this.on_key(event, window, cx);
             }))
             .child(body)
+            .children(overlay)
     }
 }
 

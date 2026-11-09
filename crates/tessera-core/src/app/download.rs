@@ -597,6 +597,43 @@ impl App {
         }
     }
 
+    /// A text field changed the search box; re-filter in place.
+    ///
+    /// The keyboard path (`/` then typing) and a GUI input box both end up here,
+    /// so the two front-ends cannot disagree about when the list is rebuilt.
+    pub fn set_download_query(&mut self, query: &str) {
+        if self.download.query == query {
+            return;
+        }
+        self.download.query = query.to_string();
+        self.download.apply_filter();
+    }
+
+    /// Pick a kind filter directly, for a front-end with a row of buttons.
+    pub fn set_download_filter(&mut self, filter: VersionFilter) {
+        if self.download.filter == filter {
+            return;
+        }
+        self.download.filter = filter;
+        self.download.apply_filter();
+        self.status = format!("下载：{} 版本", filter.label());
+    }
+
+    /// `f`: the next kind filter.
+    pub fn cycle_download_filter(&mut self) {
+        self.set_download_filter(self.download.filter.next());
+    }
+
+    /// A text field changed the custom client id on the login screen.
+    pub fn set_login_app_id(&mut self, app_id: &str) {
+        self.login.app_id = app_id.to_string();
+    }
+
+    /// Enter on the custom-app-id step, or the OK button.
+    pub fn confirm_login_app_id(&mut self) {
+        self.handle_login_key(crate::input::Key::Enter, crate::input::Modifiers::NONE);
+    }
+
     /// Open or close the group drawn at `drawn`, for a front-end that has the
     /// row index rather than a keyboard cursor.
     pub fn toggle_row(&mut self, drawn: usize) {

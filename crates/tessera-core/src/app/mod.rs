@@ -571,6 +571,25 @@ impl App {
         self.uninstall_confirm.as_deref()
     }
 
+    /// What a confirmation dialog needs: the version, what depends on it, and
+    /// how much disk it occupies.
+    pub fn uninstall_plan(&mut self) -> Option<(String, Vec<String>, u64)> {
+        let version = self.selected_version()?.clone();
+        // Measured on demand: the dialog is the only reader, and the details pane
+        // may not have run yet.
+        let size = self.selected_size();
+        let dependents = self.dependents_of(&version);
+        Some((version.dir, dependents, size))
+    }
+
+    /// Drop a pending `x` without deleting anything.
+    pub fn cancel_uninstall(&mut self) {
+        if self.uninstall_confirm.take().is_some() {
+            self.status = "已取消卸载".to_string();
+            self.log("已取消卸载");
+        }
+    }
+
     /// `x`: ask, then delete on the second press.
     ///
     /// Only `versions/<dir>` goes away. Assets, libraries and the JVM are shared
