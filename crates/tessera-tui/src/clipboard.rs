@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn a_missing_tool_is_an_error_not_a_panic() {
         let tool = Tool {
-            program: "yaml-definitely-not-a-clipboard-tool",
+            program: "tessera-definitely-not-a-clipboard-tool",
             args: &[],
         };
         let error = tool.run("x").unwrap_err();

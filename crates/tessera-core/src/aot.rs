@@ -201,7 +201,7 @@ fn train(
         format!("-Xlog:class+load=info:file={}", class_log.display()),
     );
     args.insert(2, format!("-javaagent:{}", agent.display()));
-    args.insert(3, "-Dyaml.aot.preload=1".to_string());
+    args.insert(3, "-Dtessera.aot.preload=1".to_string());
     let mut child = Command::new(&prepared.command.exe)
         .args(&args)
         .current_dir(&prepared.command.cwd)

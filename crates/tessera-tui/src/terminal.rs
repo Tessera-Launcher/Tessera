@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 ///
 /// `true` means the command line now lives in a terminal window and the caller
 /// should exit. Anything that already has a terminal (a shell, tmux, an IDE)
-/// gets `false` and is left alone, so `yaml < file` still reads that file.
+/// gets `false` and is left alone, so `tessera < file` still reads that file.
 pub fn reopen() -> io::Result<bool> {
     if io::stdin().is_terminal() {
         return Ok(false);
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_reported_not_swallowed() {
-        let error = run_detached("yaml-no-such-terminal", &[]).unwrap_err();
+        let error = run_detached("tessera-no-such-terminal", &[]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 

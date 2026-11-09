@@ -1,7 +1,7 @@
 //! Portable layout: everything lives under `data/` next to the binary.
 //!
 //! Nothing is written to the user's home directory, so the launcher can be
-//! unzipped anywhere, copied to a USB stick, or deleted cleanly. `YAML_DATA`
+//! unzipped anywhere, copied to a USB stick, or deleted cleanly. `TESSERA_DATA`
 //! overrides the root for tests and for running out of a checkout.
 
 use std::path::{Path, PathBuf};
@@ -28,9 +28,9 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `$YAML_DATA`, else `<directory of the binary>/data`.
+    /// `$TESSERA_DATA`, else `<directory of the binary>/data`.
     pub fn discover() -> Self {
-        let root = std::env::var_os("YAML_DATA")
+        let root = std::env::var_os("TESSERA_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| exe_dir().join(DATA));
         Paths { root }
@@ -76,7 +76,7 @@ impl Paths {
         self.root.join(LOGS)
     }
 
-    /// `data/日志/yaml.log` — the log pane's copy that survives a restart.
+    /// `data/日志/tessera.log` — the log pane's copy that survives a restart.
     pub fn log_file(&self) -> PathBuf {
         crate::logfile::path(&self.logs())
     }
@@ -131,7 +131,7 @@ impl Paths {
 
 /// `data/运行时` for an account directory at `<data>/凭据/账户`.
 ///
-/// [`App`](crate::app::App) keeps its own copy of the data root but is built from
+/// The terminal app keeps its own copy of the data root but is built from
 /// directory paths, so this single derivation keeps the runtime directory next to
 /// the credentials the app already knows about.
 pub fn runtime_dir_beside(accounts_dir: &Path) -> PathBuf {
@@ -155,17 +155,17 @@ mod tests {
 
     #[test]
     fn layout_is_classified_under_data() {
-        let paths = Paths::at("/opt/yaml/data");
-        assert_eq!(paths.game(), Path::new("/opt/yaml/data/游戏"));
-        assert_eq!(paths.accounts(), Path::new("/opt/yaml/data/凭据/账户"));
-        assert_eq!(paths.launchers(), Path::new("/opt/yaml/data/凭据/启动器"));
+        let paths = Paths::at("/opt/tessera/data");
+        assert_eq!(paths.game(), Path::new("/opt/tessera/data/游戏"));
+        assert_eq!(paths.accounts(), Path::new("/opt/tessera/data/凭据/账户"));
+        assert_eq!(paths.launchers(), Path::new("/opt/tessera/data/凭据/启动器"));
         assert_eq!(
             paths.app_ids(),
-            Path::new("/opt/yaml/data/凭据/启动器/azure_app_ids.toml")
+            Path::new("/opt/tessera/data/凭据/启动器/azure_app_ids.toml")
         );
-        assert_eq!(paths.logs(), Path::new("/opt/yaml/data/日志"));
-        assert_eq!(paths.runtimes(), Path::new("/opt/yaml/data/运行时"));
-        assert_eq!(paths.cache(), Path::new("/opt/yaml/data/缓存"));
+        assert_eq!(paths.logs(), Path::new("/opt/tessera/data/日志"));
+        assert_eq!(paths.runtimes(), Path::new("/opt/tessera/data/运行时"));
+        assert_eq!(paths.cache(), Path::new("/opt/tessera/data/缓存"));
     }
 
     #[test]

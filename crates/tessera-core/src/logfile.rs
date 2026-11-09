@@ -1,7 +1,7 @@
 //! Append-only log file for the launcher itself.
 //!
 //! The log pane keeps the last 500 lines in memory and loses them when the
-//! launcher exits; `data/日志/yaml.log` is the copy that survives, so a launch
+//! launcher exits; `data/日志/tessera.log` is the copy that survives, so a launch
 //! that failed yesterday can still be read today. It is intentionally dumb:
 //! append text, never rewrite.
 //!
@@ -30,7 +30,7 @@ impl LogFile {
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let _ = writeln!(
             file,
-            "===== yaml {} · {} =====",
+            "===== tessera {} · {} =====",
             env!("CARGO_PKG_VERSION"),
             path.display()
         );
@@ -54,9 +54,9 @@ impl LogFile {
     }
 }
 
-/// `<data>/日志/yaml.log`.
+/// `<data>/日志/tessera.log`.
 pub fn path(logs_dir: &Path) -> PathBuf {
-    logs_dir.join("yaml.log")
+    logs_dir.join("tessera.log")
 }
 
 #[cfg(test)]
@@ -82,7 +82,7 @@ mod tests {
         assert!(text.contains("one\ntwo\n"), "{text}");
         assert!(text.contains("three\n"), "{text}");
         assert_eq!(
-            text.matches("===== yaml").count(),
+            text.matches("===== tessera").count(),
             2,
             "one header per session: {text}"
         );

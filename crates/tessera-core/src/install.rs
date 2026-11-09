@@ -465,7 +465,7 @@ mod tests {
     #[test]
     #[ignore = "network"]
     fn live_version_list_arrives_from_the_mirror() {
-        let dir = std::env::temp_dir().join("yaml-live-versions");
+        let dir = std::env::temp_dir().join("tessera-live-versions");
         let receiver = spawn_versions(dir, Source::Mojang, 8);
         let mut versions = Vec::new();
         while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(60)) {
@@ -491,11 +491,11 @@ mod tests {
     #[test]
     #[ignore = "network + ~110 MB"]
     fn live_install_1_8_9_reports_progress_and_lands_on_disk() {
-        let root = std::env::temp_dir().join("yaml-live-install");
+        let root = std::env::temp_dir().join("tessera-live-install");
         let _ = std::fs::remove_dir_all(&root);
         // A fresh global registry, otherwise every asset is already cached and the
         // thousands-of-small-files path is never exercised.
-        let registry = std::env::temp_dir().join("yaml-live-registry");
+        let registry = std::env::temp_dir().join("tessera-live-registry");
         let _ = std::fs::remove_dir_all(&registry);
         std::env::set_var("MDT_HOME", &registry);
         let receiver = spawn_install(

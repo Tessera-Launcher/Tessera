@@ -1,37 +1,28 @@
 [workspace]
-# The vendored crates are their own workspace roots (each has a [workspace]
-# table of its own), so they are excluded here and consumed as path deps later.
+members = ["crates/tessera-core", "crates/tessera-tui"]
 exclude = ["vendor"]
+resolver = "2"
 
 [package]
-name = "yaml-launcher"
+name = "tessera"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 description = "A terminal Minecraft: Java Edition launcher"
 license = "GPL-3.0-or-later"
-default-run = "yaml"
+default-run = "tessera"
 
 [[bin]]
-name = "yaml"
+name = "tessera"
 path = "src/main.rs"
 
 [dependencies]
+tessera-core = { path = "crates/tessera-core" }
+tessera-tui = { path = "crates/tessera-tui" }
 ratatui = "0.30"
 crossterm = "0.29"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "1"
-sha1 = "0.11"
-hex = "0.4"
-sha2 = "0.11"
-flate2 = "1"
-tar = "0.4"
-zip = { version = "9", default-features = false, features = ["deflate"] }
-minecraft-auth = { path = "vendor/minecraft-auth" }
-mdt-minecraft = { path = "vendor/mdt-minecraft" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
-tokio = { version = "1", features = ["rt", "time", "sync"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

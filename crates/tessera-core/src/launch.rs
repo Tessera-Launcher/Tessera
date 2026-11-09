@@ -273,7 +273,7 @@ fn prepare_inner(
     vars.insert("user_properties", "{}".to_string());
     vars.insert("clientid", String::new());
     vars.insert("auth_xuid", creds.xuid.clone().unwrap_or_default());
-    vars.insert("launcher_name", "yaml".to_string());
+    vars.insert("launcher_name", "tessera".to_string());
     vars.insert("launcher_version", env!("CARGO_PKG_VERSION").to_string());
     vars.insert("classpath", classpath_string.clone());
     vars.insert("classpath_separator", separator.to_string());
@@ -305,7 +305,7 @@ fn prepare_inner(
     {
         args.push(format!("-Djava.library.path={natives_string}"));
     }
-    args.push("-Dminecraft.launcher.brand=yaml".to_string());
+    args.push("-Dminecraft.launcher.brand=tessera".to_string());
     args.push(format!(
         "-Dminecraft.launcher.version={}",
         env!("CARGO_PKG_VERSION")

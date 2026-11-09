@@ -18,13 +18,13 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::accounts::{self, Account as SavedAccount};
-use crate::cleanup;
-use crate::discover::{self, LocalVersion};
-use crate::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
-use crate::launch;
-use crate::login::{Identity, LoginEvent};
-use crate::session::SessionEvent;
+use tessera_core::accounts::{self, Account as SavedAccount};
+use tessera_core::cleanup;
+use tessera_core::discover::{self, LocalVersion};
+use tessera_core::install::{InstallEvent, Loader, RemoteVersion, LOADERS};
+use tessera_core::launch;
+use tessera_core::login::{Identity, LoginEvent};
+use tessera_core::session::SessionEvent;
 
 /// How many log lines to keep before dropping the oldest.
 const LOG_CAPACITY: usize = 500;
@@ -76,7 +76,7 @@ pub enum Effect {
     FetchJavaList,
     /// Download one Java runtime from the first URL that works.
     InstallJava {
-        runtime: crate::java::Runtime,
+        runtime: tessera_core::java::Runtime,
         urls: Vec<String>,
     },
     /// Put `text` on the clipboard (tool first, then OSC 52).
@@ -112,7 +112,7 @@ pub enum Account {
 }
 
 impl Account {
-    /// `Steve (1) · 官方启动器` — the number is [`crate::accounts::suffix`].
+    /// `Steve (1) · 官方启动器` — the number is [`tessera_core::accounts::suffix`].
     pub fn label(&self) -> String {
         match self {
             Account::SignedOut => "未登录".to_string(),
@@ -231,7 +231,7 @@ pub struct App {
     pub root: PathBuf,
     pub accounts_dir: PathBuf,
     /// `data/运行时`: the Java runtimes this launcher downloaded, one directory
-    /// per version. Set by `main` from [`crate::paths::Paths`]; the default is
+    /// per version. Set by `main` from [`tessera_core::paths::Paths`]; the default is
     /// derived from `accounts_dir` so tests and `--dir` runs stay self-contained.
     pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
@@ -247,7 +247,7 @@ pub struct App {
     /// Rolling log pane contents, oldest first.
     pub log: VecDeque<String>,
     /// Lines the pane has seen but the log file has not yet. The main loop drains
-    /// it into `data/日志/yaml.log`; the state machine never touches the disk for
+    /// it into `data/日志/tessera.log`; the state machine never touches the disk for
     /// its own log.
     pub pending_log: Vec<String>,
     pub should_quit: bool,
@@ -265,12 +265,12 @@ pub struct App {
     /// can fall back to the token already on disk.
     refreshing: Option<PathBuf>,
     /// Where files come from; shown in the picker title.
-    pub source: crate::install::Source,
+    pub source: tessera_core::install::Source,
     /// Launch tuning, applied to the next launch.
     pub launch_options: launch::Options,
     /// The persisted defaults (`data/配置.toml`): heap, window size, proxy. The
     /// main loop writes this back when it changed.
-    pub settings: crate::settings::Settings,
+    pub settings: tessera_core::settings::Settings,
     /// The Java picker's state.
     pub java: JavaUi,
     /// Where the last frame put things. The renderer returns this instead of
@@ -305,7 +305,7 @@ impl App {
         let root = root.into();
         let accounts_dir = accounts_dir.into();
         // `<data>/凭据/账户` → `<data>/运行时`.
-        let runtimes = crate::paths::runtime_dir_beside(&accounts_dir);
+        let runtimes = tessera_core::paths::runtime_dir_beside(&accounts_dir);
         let mut app = App {
             status: format!("扫描 {}", root.display()),
             root,
@@ -327,9 +327,9 @@ impl App {
             download: DownloadUi::default(),
             effects: Vec::new(),
             refreshing: None,
-            source: crate::install::Source::default(),
+            source: tessera_core::install::Source::default(),
             launch_options: launch::Options::default(),
-            settings: crate::settings::Settings::default(),
+            settings: tessera_core::settings::Settings::default(),
             java: JavaUi::default(),
             layout: Layout::default(),
             list_offset: 0,
@@ -867,7 +867,7 @@ impl App {
     ///
     /// A signed-in account with a saved file is refreshed first — the refreshed
     /// access token is what the game needs, and the rotated refresh token has to
-    /// be written back (see [`crate::session`]). Everything else goes straight to
+    /// be written back (see [`tessera_core::session`]). Everything else goes straight to
     /// [`App::start_game`] with offline credentials.
     pub fn request_launch(&mut self) {
         let Some(version) = self.selected_version().cloned() else {
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     /// The one Java download the app queued, if any.
-    fn java_effect(app: &App) -> Option<(crate::java::Runtime, Vec<String>)> {
+    fn java_effect(app: &App) -> Option<(tessera_core::java::Runtime, Vec<String>)> {
         app.effects().iter().rev().find_map(|effect| match effect {
             Effect::InstallJava { runtime, urls } => Some((runtime.clone(), urls.clone())),
             _ => None,
@@ -1494,7 +1494,7 @@ mod tests {
 
         // A runtime that exits as soon as it is started, so the test never waits.
         let runtimes = tmp.path().join("运行时");
-        let bin = crate::java::install_dir(&runtimes, "17.0.1+1").join("bin");
+        let bin = tessera_core::java::install_dir(&runtimes, "17.0.1+1").join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let java = bin.join("java");
         std::fs::write(
@@ -1667,7 +1667,7 @@ mod tests {
 
     /// Builds the app-id file where `App::app_ids_path` looks for it.
     fn write_app_ids(accounts_dir: &std::path::Path, body: &str) {
-        let path = crate::app_ids::path_under(accounts_dir.parent().unwrap());
+        let path = tessera_core::app_ids::path_under(accounts_dir.parent().unwrap());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     }
@@ -2203,7 +2203,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         );
         std::fs::write(root.join("versions/1.21.9/1.21.9.jar"), b"jar").unwrap();
 
-        let scanned = crate::discover::scan(&root);
+        let scanned = tessera_core::discover::scan(&root);
         let mut app = App::new(&root, "/acc", scanned, vec![]);
         app.set_runtimes(tmp.path().join("运行时"));
         app.start_game(launch::Credentials::offline("Steve"));
@@ -2589,9 +2589,9 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
     // ---- java runtimes ----
 
-    fn java_runtime(major: u32) -> crate::java::Runtime {
-        let (os, arch) = crate::java::platform();
-        crate::java::Runtime {
+    fn java_runtime(major: u32) -> tessera_core::java::Runtime {
+        let (os, arch) = tessera_core::java::platform();
+        tessera_core::java::Runtime {
             major,
             release: format!("jdk-{major}.0.1+1"),
             name: format!("OpenJDK{major}U-jre_{arch}_{os}_hotspot_{major}.0.1_1.tar.gz"),
@@ -2615,7 +2615,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             "the loop fetches Adoptium's list"
         );
         assert!(app.java.runtimes.is_empty());
-        assert_eq!(app.java.source, crate::java::Source::Tuna, "清华源默认");
+        assert_eq!(app.java.source, tessera_core::java::Source::Tuna, "清华源默认");
         assert!(app.java.installed.is_empty(), "nothing downloaded yet");
     }
 
@@ -2637,7 +2637,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![
             java_runtime(8),
             java_runtime(17),
             java_runtime(21),
@@ -2673,7 +2673,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let tmp = tempfile::tempdir().unwrap();
         let runtimes = tmp.path().join("运行时");
         for version in ["8u502-b07", "17.0.10+1"] {
-            let dir = crate::java::install_dir(&runtimes, version);
+            let dir = tessera_core::java::install_dir(&runtimes, version);
             std::fs::create_dir_all(dir.join("bin")).unwrap();
             std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
         }
@@ -2685,7 +2685,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         eight.release = "jdk8u512-b09".to_string();
         let mut seventeen = java_runtime(17);
         seventeen.release = "jdk-17.0.21+9".to_string();
-        app.handle_java_event(crate::java::Event::Listed(vec![eight, seventeen]));
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![eight, seventeen]));
         assert_eq!(app.java.update_count(), 2);
         assert!(app.status.contains("2 个可更新"), "{}", app.status);
 
@@ -2694,10 +2694,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(first.major, 8);
 
         // Pretend the first install landed; the queue must move to 17.
-        let installed = crate::java::install_dir(&runtimes, "8u512-b09");
+        let installed = tessera_core::java::install_dir(&runtimes, "8u512-b09");
         std::fs::create_dir_all(installed.join("bin")).unwrap();
         std::fs::write(installed.join("bin/java"), b"#!/bin/sh\n").unwrap();
-        app.handle_java_event(crate::java::Event::Installed {
+        app.handle_java_event(tessera_core::java::Event::Installed {
             major: 8,
             version: "8u512-b09".to_string(),
             java: installed.join("bin/java"),
@@ -2705,10 +2705,10 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let (second, _) = java_effect(&app).expect("the next update started after the first");
         assert_eq!(second.major, 17);
 
-        let installed = crate::java::install_dir(&runtimes, "17.0.21+9");
+        let installed = tessera_core::java::install_dir(&runtimes, "17.0.21+9");
         std::fs::create_dir_all(installed.join("bin")).unwrap();
         std::fs::write(installed.join("bin/java"), b"#!/bin/sh\n").unwrap();
-        app.handle_java_event(crate::java::Event::Installed {
+        app.handle_java_event(tessera_core::java::Event::Installed {
             major: 17,
             version: "17.0.21+9".to_string(),
             java: installed.join("bin/java"),
@@ -2727,7 +2727,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_java_source_and_the_proxy_decide_the_urls() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(21)]));
 
         // The proxy is only consulted by the GitHub source.
         app.handle_java_key(KeyCode::Char('p'), KeyModifiers::NONE);
@@ -2735,7 +2735,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(app.status.contains("官方源"), "{}", app.status);
 
         app.handle_java_key(KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!(app.java.source, crate::java::Source::Github);
+        assert_eq!(app.java.source, tessera_core::java::Source::Github);
 
         app.handle_java_key(KeyCode::Char('p'), KeyModifiers::NONE);
         assert!(app.java.editing_proxy);
@@ -2760,17 +2760,17 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_finished_java_download_is_recorded_and_shown() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let dir = crate::java::install_dir(&root.join("运行时"), "21.0.1+1");
+        let dir = tessera_core::java::install_dir(&root.join("运行时"), "21.0.1+1");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
         let mut app = App::new(&root, "/acc", vec![], vec![]);
         app.set_runtimes(root.join("运行时"));
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(21)]));
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
 
-        app.handle_java_event(crate::java::Event::Progress {
+        app.handle_java_event(tessera_core::java::Event::Progress {
             done: 10 * 1024 * 1024,
             total: 50 * 1024 * 1024,
             speed: 3.0 * 1024.0 * 1024.0,
@@ -2782,7 +2782,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             app.java.progress_text()
         );
 
-        app.handle_java_event(crate::java::Event::Installed {
+        app.handle_java_event(tessera_core::java::Event::Installed {
             major: 21,
             version: "21.0.1+1".to_string(),
             java: dir.join("bin/java"),
@@ -2800,9 +2800,9 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn a_failed_java_download_keeps_the_reason_on_screen() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(17)]));
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(17)]));
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_java_event(crate::java::Event::Failed("哈希不匹配".to_string()));
+        app.handle_java_event(tessera_core::java::Event::Failed("哈希不匹配".to_string()));
 
         assert_eq!(app.java.stage, JavaStage::Failed);
         assert_eq!(app.java.message.as_deref(), Some("哈希不匹配"));
@@ -2816,7 +2816,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     fn the_java_picker_takes_clicks_and_wheel() {
         let mut app = app();
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![
             java_runtime(8),
             java_runtime(17),
             java_runtime(21),
@@ -2842,7 +2842,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         app.take_effects();
         app.handle_mouse(click(60, 12));
-        assert_eq!(app.java.source, crate::java::Source::Github);
+        assert_eq!(app.java.source, tessera_core::java::Source::Github);
 
         app.handle_mouse(click(25, 13));
         assert!(app.java.editing_proxy, "clicking the field starts editing");
@@ -2914,7 +2914,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(rows.len(), 3, "five versions, one folded cycle: {rows:?}");
         assert!(matches!(
             rows[1].kind,
-            crate::version_tree::RowKind::Group {
+            tessera_core::version_tree::RowKind::Group {
                 first: 1,
                 last: 3,
                 expanded: false,
@@ -2922,7 +2922,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             }
         ));
         assert_eq!(
-            crate::version_tree::title(&app.download.all, app.download.visible(), 1, 3),
+            tessera_core::version_tree::title(&app.download.all, app.download.visible(), 1, 3),
             "1.21.9-pre3 ~ 1.21.9-pre1"
         );
         // The title's count is cached when the rows are laid out, not scanned on
@@ -3011,7 +3011,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             .download
             .rows
             .iter()
-            .all(|row| matches!(row.kind, crate::version_tree::RowKind::Version(_))));
+            .all(|row| matches!(row.kind, tessera_core::version_tree::RowKind::Version(_))));
 
         // Back to "全部", then search: a folded group would hide the match.
         app.handle_download_key(KeyCode::Char('f'), KeyModifiers::NONE);
@@ -3373,20 +3373,20 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         let mut app = downloader();
         assert_eq!(
             app.source,
-            crate::install::Source::Bmclapi,
+            tessera_core::install::Source::Bmclapi,
             "the default source"
         );
         assert_eq!(app.source_label(), "BMCLAPI");
 
         app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!(app.source, crate::install::Source::Mojang);
+        assert_eq!(app.source, tessera_core::install::Source::Mojang);
         assert_eq!(app.source_label(), "官方源");
         assert!(app.log.iter().any(|line| line.contains("下载源：官方源")));
 
         app.handle_download_key(KeyCode::Char('s'), KeyModifiers::NONE);
         assert_eq!(
             app.source,
-            crate::install::Source::Bmclapi,
+            tessera_core::install::Source::Bmclapi,
             "the switch is a two-way toggle"
         );
     }
@@ -3399,13 +3399,13 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app.handle_mouse(click(52, 14));
         assert_eq!(
             app.source,
-            crate::install::Source::Mojang,
+            tessera_core::install::Source::Mojang,
             "the first chip is 官方源"
         );
         assert_eq!(app.download.focus, PickerFocus::Loaders);
 
         app.handle_mouse(click(60, 14));
-        assert_eq!(app.source, crate::install::Source::Bmclapi);
+        assert_eq!(app.source, tessera_core::install::Source::Bmclapi);
 
         // The chips sit on the pane's last row, which is not a loader row.
         assert_eq!(app.download.loader_pick, 0, "no loader was picked");
@@ -3616,7 +3616,7 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             version: "26.3".to_string(),
             loader: None,
         });
-        app.handle_aot_event(crate::aot::Event::Progress {
+        app.handle_aot_event(tessera_core::aot::Event::Progress {
             version: "26.3".to_string(),
             loaded: 100,
             total: 200,
@@ -3625,12 +3625,12 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert_eq!(app.download.aot_loaded, 100);
         assert_eq!(app.download.aot_total, 200);
 
-        app.handle_aot_event(crate::aot::Event::Assembling {
+        app.handle_aot_event(tessera_core::aot::Event::Assembling {
             version: "26.3".to_string(),
         });
         assert!(app.download.aot_assembling);
 
-        app.handle_aot_event(crate::aot::Event::Finished {
+        app.handle_aot_event(tessera_core::aot::Event::Finished {
             version: "26.3".to_string(),
             loaded: 190,
             total: 200,

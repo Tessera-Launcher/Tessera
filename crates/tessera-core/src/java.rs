@@ -428,7 +428,7 @@ pub fn spawn_install(runtimes: PathBuf, runtime: Runtime, urls: Vec<String>) -> 
 /// like a script, so the agent is not optional.
 fn blocking_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        .user_agent(concat!("yaml-launcher/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("无法创建 HTTP 客户端：{error}"))
 }

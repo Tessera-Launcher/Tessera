@@ -64,7 +64,7 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
         .ok_or("凭据缺少 session 字段")?;
 
     let client = reqwest::Client::builder()
-        .user_agent(concat!("yaml-launcher/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("无法创建 HTTP 客户端: {error}"))?;
 
@@ -253,14 +253,14 @@ mod tests {
     /// Reads a real account file and refreshes it. Ignored: needs a live session.
     ///
     /// ```sh
-    /// YAML_ACCOUNT=~/.minecraft/data/凭据/账户/Steve.json \
+    /// TESSERA_ACCOUNT=~/.minecraft/data/凭据/账户/Steve.json \
     ///   cargo test -- --ignored live_refresh
     /// ```
     #[test]
     #[ignore = "network + a real account file"]
     fn live_refresh_of_an_account_file() {
-        let Ok(path) = std::env::var("YAML_ACCOUNT") else {
-            eprintln!("YAML_ACCOUNT not set, skipping");
+        let Ok(path) = std::env::var("TESSERA_ACCOUNT") else {
+            eprintln!("TESSERA_ACCOUNT not set, skipping");
             return;
         };
         let receiver = spawn_refresh(PathBuf::from(path));

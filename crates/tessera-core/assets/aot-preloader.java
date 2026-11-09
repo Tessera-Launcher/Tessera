@@ -1,4 +1,4 @@
-package yaml.aot;
+package tessera.aot;
 
 import java.io.File;
 import java.lang.instrument.Instrumentation;
@@ -11,7 +11,7 @@ import java.util.jar.JarFile;
  *
  * The JVM's AOT cache only contains classes that the training JVM actually
  * loads. A normal launch leaves large parts of the client and its libraries
- * untouched, so when {@code yaml.aot.preload=1} this agent walks the whole
+ * untouched, so when {@code tessera.aot.preload=1} this agent walks the whole
  * classpath and loads every class (without initializing it) before Minecraft's
  * main method runs. Production launches carry the same agent but do not set the
  * property, so they only pay for loading this tiny class.
@@ -20,7 +20,7 @@ public final class Preloader {
     private Preloader() {}
 
     public static void premain(String args, Instrumentation instrumentation) {
-        if (!"1".equals(System.getProperty("yaml.aot.preload"))) {
+        if (!"1".equals(System.getProperty("tessera.aot.preload"))) {
             return;
         }
         String classpath = System.getProperty("java.class.path", "");
@@ -52,6 +52,6 @@ public final class Preloader {
                 // will report what it actually needs.
             }
         }
-        System.out.println("[yaml-aot] preloaded=" + loaded + " failed=" + failed);
+        System.out.println("[tessera-aot] preloaded=" + loaded + " failed=" + failed);
     }
 }

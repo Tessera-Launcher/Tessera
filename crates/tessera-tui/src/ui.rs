@@ -14,8 +14,8 @@ use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, Area, Button, Layout as Areas, LoginStep, Screen};
-use crate::discover::{self, LocalVersion};
-use crate::install::Loader;
+use tessera_core::discover::{self, LocalVersion};
+use tessera_core::install::Loader;
 
 const ACCENT: Color = Color::Rgb(0x6c, 0xd6, 0x7a);
 const SNAPSHOT: Color = Color::Rgb(0xe8, 0xc9, 0x6a);
@@ -80,7 +80,7 @@ fn draw_main(frame: &mut Frame, app: &mut App, layout: &mut Areas) {
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     let title = Line::from(vec![
-        Span::styled(" yaml ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+        Span::styled(" Tessera ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
         Span::styled(" Minecraft Java 版启动器 ", Style::new().fg(Color::White)),
     ]);
     let block = Block::bordered()
@@ -104,7 +104,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas)
         } => Line::from(vec![
             Span::styled(format!(" {name}"), Style::new().fg(ACCENT)),
             // The `(1)` of a repeated session, dimmed: it is not part of the name.
-            Span::styled(crate::accounts::suffix(*copy), Style::new().fg(DIM)),
+            Span::styled(tessera_core::accounts::suffix(*copy), Style::new().fg(DIM)),
             Span::styled(format!(" · {application}"), Style::new().fg(ACCENT)),
         ]),
     };
@@ -683,7 +683,7 @@ fn draw_download(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
 fn draw_source_switch(frame: &mut Frame, inner: Rect, row: u16, app: &mut App, layout: &mut Areas) {
     layout.download_sources.clear();
     let prefix = "下载源 ";
-    let chips: Vec<(&str, bool)> = crate::install::Source::ALL
+    let chips: Vec<(&str, bool)> = tessera_core::install::Source::ALL
         .into_iter()
         .map(|source| (source.label(), app.source == source))
         .collect();
@@ -870,7 +870,7 @@ fn draw_version_rows(
             }
 
             let (name, kind, date) = match &drawn.kind {
-                crate::version_tree::RowKind::Version(index) => {
+                tessera_core::version_tree::RowKind::Version(index) => {
                     let version = version(*index);
                     (
                         version.id.clone(),
@@ -881,7 +881,7 @@ fn draw_version_rows(
                         version.released.chars().take(10).collect::<String>(),
                     )
                 }
-                crate::version_tree::RowKind::Group {
+                tessera_core::version_tree::RowKind::Group {
                     first,
                     last,
                     expanded,
@@ -893,7 +893,7 @@ fn draw_version_rows(
                     ));
                     let kind = version(*first).kind.as_str();
                     (
-                        crate::version_tree::title(
+                        tessera_core::version_tree::title(
                             &download.all,
                             download.visible(),
                             *first,
@@ -964,7 +964,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     ])
     .areas(inner);
 
-    let (os, arch) = crate::java::platform();
+    let (os, arch) = tessera_core::java::platform();
     let table_block = Block::bordered()
         .title(Line::from(format!(
             " Java 运行时 · {os}/{arch} → {} ",
@@ -980,7 +980,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     ));
     let mut lines = vec![header];
 
-    for (index, feature) in crate::java::FEATURES.iter().enumerate() {
+    for (index, feature) in tessera_core::java::FEATURES.iter().enumerate() {
         let selected = app.java.selected == index && !app.java.runtimes.is_empty();
         let runtime = app
             .java
@@ -989,7 +989,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
             .find(|runtime| runtime.major == feature.major);
         let version = runtime.map_or("—".to_string(), |runtime| runtime.version());
         let size = runtime.map_or("—".to_string(), |runtime| {
-            crate::discover::human_size(runtime.size)
+            tessera_core::discover::human_size(runtime.size)
         });
         let update = runtime.and_then(|runtime| app.java.update_for(runtime));
         let running = app.java.stage == crate::app::JavaStage::Downloading
@@ -1043,7 +1043,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
 
     // Row hit areas: the header takes the first line of the table, the rows follow.
     let rows_top = table_inner.y.saturating_add(1);
-    for index in 0..crate::java::FEATURES.len() {
+    for index in 0..tessera_core::java::FEATURES.len() {
         layout.java_rows.push(Area::new(
             table_inner.x,
             rows_top + index as u16,
@@ -1061,7 +1061,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
     frame.render_widget(Paragraph::new(lines), table_inner);
 
     // ---- source switch ----
-    let chips: Vec<(&str, bool)> = crate::java::Source::ALL
+    let chips: Vec<(&str, bool)> = tessera_core::java::Source::ALL
         .into_iter()
         .map(|source| (source.label(), app.java.source == source))
         .collect();
@@ -1069,7 +1069,7 @@ fn draw_java(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Areas) {
         draw_source_chips(frame, switch_area.x, switch_area.y, " 下载源 ", &chips);
 
     // ---- proxy field ----
-    let active = app.java.source == crate::java::Source::Github;
+    let active = app.java.source == tessera_core::java::Source::Github;
     let mut spans = vec![Span::styled(" GitHub Proxy ", Style::new().fg(DIM))];
     if app.java.proxy.is_empty() {
         spans.push(Span::styled(
@@ -1444,7 +1444,7 @@ fn draw_accounts(frame: &mut Frame, area: Rect, app: &mut App, layout: &mut Area
                         },
                     ),
                     // The number of a repeated session, always dimmed.
-                    Span::styled(crate::accounts::suffix(account.copy), Style::new().fg(DIM)),
+                    Span::styled(tessera_core::accounts::suffix(account.copy), Style::new().fg(DIM)),
                 ])),
                 Cell::from(Line::from(Span::styled(
                     account.application.clone(),
@@ -1978,13 +1978,13 @@ fn kind_color(kind: &str) -> Color {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::discover::LocalVersion;
-    use crate::install::InstallEvent;
+    use tessera_core::discover::LocalVersion;
+    use tessera_core::install::InstallEvent;
     use crossterm::event::KeyModifiers;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn login(app: &App) -> Option<crate::login::Identity> {
+    fn login(app: &App) -> Option<tessera_core::login::Identity> {
         app.effects().iter().rev().find_map(|effect| match effect {
             crate::app::Effect::Login(identity) => Some(identity.clone()),
             _ => None,
@@ -2048,7 +2048,7 @@ mod tests {
         let rows = render(&mut app, 100, 28);
         let screen = rows.join("\n");
 
-        assert!(screen.contains("yaml"), "title missing:\n{screen}");
+        assert!(screen.contains("Tessera"), "title missing:\n{screen}");
         assert!(screen.contains("未登录"), "account missing:\n{screen}");
         assert!(
             screen.contains("1.20.1+Fabric0.15.11"),
@@ -2080,7 +2080,7 @@ mod tests {
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("下载 Java"), "{screen}");
         assert!(
-            !screen.contains("详情") && !screen.contains(" yaml "),
+            !screen.contains("详情") && !screen.contains(" Tessera "),
             "the main screen is skipped, not painted over:\n{screen}"
         );
 
@@ -2134,8 +2134,8 @@ mod tests {
         );
     }
 
-    fn saved(name: &str, key: &str) -> crate::app_ids::AppId {
-        crate::app_ids::AppId {
+    fn saved(name: &str, key: &str) -> tessera_core::app_ids::AppId {
+        tessera_core::app_ids::AppId {
             name: name.to_string(),
             key: key.to_string(),
         }
@@ -2206,7 +2206,7 @@ mod tests {
     fn waiting_overlay_shows_the_code_and_the_link() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_login();
-        app.handle_login_event(crate::login::LoginEvent::DeviceCode {
+        app.handle_login_event(tessera_core::login::LoginEvent::DeviceCode {
             user_code: "ABCD-EFGH".to_string(),
             url: "https://microsoft.com/link".to_string(),
         });
@@ -2220,7 +2220,7 @@ mod tests {
     fn the_waiting_screen_offers_copy_and_open_buttons_under_what_they_copy() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_login();
-        app.handle_login_event(crate::login::LoginEvent::DeviceCode {
+        app.handle_login_event(tessera_core::login::LoginEvent::DeviceCode {
             user_code: "ABCD-EFGH".to_string(),
             url: "https://www.microsoft.com/link?otc=ABCDEFGH".to_string(),
         });
@@ -2298,7 +2298,7 @@ mod tests {
     fn the_account_manager_lists_accounts_and_marks_the_active_one() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["Alex", "Steve"] {
-            crate::accounts::save(
+            tessera_core::accounts::save(
                 tmp.path(),
                 "Minecraft Launcher",
                 "id",
@@ -2308,7 +2308,7 @@ mod tests {
             )
             .unwrap();
         }
-        let saved = crate::accounts::list(tmp.path());
+        let saved = tessera_core::accounts::list(tmp.path());
         let mut app = App::new("/mc", tmp.path(), vec![], saved);
         app.open_accounts();
         let screen = render(&mut app, 100, 28).join("\n");
@@ -2377,7 +2377,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for (app_id, application) in [("app-official", "Minecraft Launcher"), ("app-hmcl", "HMCL")]
         {
-            crate::accounts::save(
+            tessera_core::accounts::save(
                 tmp.path(),
                 application,
                 app_id,
@@ -2387,7 +2387,7 @@ mod tests {
             )
             .unwrap();
         }
-        let saved = crate::accounts::list(tmp.path());
+        let saved = tessera_core::accounts::list(tmp.path());
         let mut app = App::new("/mc", tmp.path(), vec![], saved);
         app.accounts_ui.selected = 1;
         app.activate_selected_account();
@@ -2441,7 +2441,7 @@ mod tests {
     #[test]
     fn the_pending_delete_is_announced_in_the_manager() {
         let tmp = tempfile::tempdir().unwrap();
-        crate::accounts::save(
+        tessera_core::accounts::save(
             tmp.path(),
             "Minecraft Launcher",
             "id",
@@ -2450,7 +2450,7 @@ mod tests {
             &serde_json::json!({}),
         )
         .unwrap();
-        let saved = crate::accounts::list(tmp.path());
+        let saved = tessera_core::accounts::list(tmp.path());
         let mut app = App::new("/mc", tmp.path(), vec![], saved);
         app.open_accounts();
         app.accounts_ui.confirm_delete = true;
@@ -2494,7 +2494,7 @@ mod tests {
     fn the_account_manager_hint_is_clickable() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["Alex", "Steve"] {
-            crate::accounts::save(
+            tessera_core::accounts::save(
                 tmp.path(),
                 "Minecraft Launcher",
                 "id",
@@ -2504,7 +2504,7 @@ mod tests {
             )
             .unwrap();
         }
-        let saved = crate::accounts::list(tmp.path());
+        let saved = tessera_core::accounts::list(tmp.path());
         let mut app = App::new("/mc", tmp.path(), vec![], saved);
         app.open_accounts();
         render(&mut app, 100, 28);
@@ -2567,7 +2567,7 @@ mod tests {
             "the whole phrase is clickable"
         );
         app.handle_mouse(click(area.x + area.width - 1, area.y));
-        assert_eq!(login(&app), Some(crate::login::Identity::Official));
+        assert_eq!(login(&app), Some(tessera_core::login::Identity::Official));
 
         // "Esc 取消" while waiting cancels it.
         assert!(matches!(
@@ -2582,7 +2582,7 @@ mod tests {
 
         // A failure screen keeps its only way out clickable.
         app.open_login();
-        app.handle_login_event(crate::login::LoginEvent::Failed("网络不可达".into()));
+        app.handle_login_event(tessera_core::login::LoginEvent::Failed("网络不可达".into()));
         render(&mut app, 100, 28);
         let area = popup_button(&app, KeyCode::Esc, app.layout.overlay);
         let (x, y) = middle(area);
@@ -2595,7 +2595,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let accounts = tmp.path().join("凭据").join("账户");
         std::fs::create_dir_all(&accounts).unwrap();
-        let file = crate::app_ids::path_under(accounts.parent().unwrap());
+        let file = tessera_core::app_ids::path_under(accounts.parent().unwrap());
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(
             &file,
@@ -2616,14 +2616,14 @@ mod tests {
         app.handle_mouse(click(area.x + area.width - 1, area.y));
         assert_eq!(
             login(&app),
-            Some(crate::login::Identity::Saved {
+            Some(tessera_core::login::Identity::Saved {
                 name: "HMCL".to_string(),
                 app_id: "6a3728d6-27a3-4180-99bb-479895b8f88e".to_string(),
             })
         );
 
         // And "Enter 返回" on the success panel closes the overlay.
-        let saved_file = crate::accounts::save(
+        let saved_file = tessera_core::accounts::save(
             &accounts,
             "HMCL",
             "6a3728d6-27a3-4180-99bb-479895b8f88e",
@@ -2632,7 +2632,7 @@ mod tests {
             &serde_json::json!({}),
         )
         .unwrap();
-        app.handle_login_event(crate::login::LoginEvent::Succeeded {
+        app.handle_login_event(tessera_core::login::LoginEvent::Succeeded {
             player_name: "Steve".into(),
             application: "HMCL".into(),
             file: saved_file,
@@ -2835,8 +2835,8 @@ mod tests {
         assert!(app.layout.account.x + app.layout.account.width <= 99);
     }
 
-    fn java_runtime(major: u32, version: &str) -> crate::java::Runtime {
-        crate::java::Runtime {
+    fn java_runtime(major: u32, version: &str) -> tessera_core::java::Runtime {
+        tessera_core::java::Runtime {
             major,
             release: format!("jdk-{version}"),
             name: format!("OpenJDK{major}U-jre_x64_linux_hotspot.tar.gz"),
@@ -2851,7 +2851,7 @@ mod tests {
     fn the_java_picker_lists_every_feature_and_the_source_switch() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![
             java_runtime(8, "8u512-b09"),
             java_runtime(17, "17.0.21+9"),
             java_runtime(21, "21.0.13+9"),
@@ -2903,21 +2903,21 @@ mod tests {
     fn the_java_picker_shows_progress_and_what_is_already_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let dir = crate::java::install_dir(&root.join("运行时"), "17.0.21+9");
+        let dir = tessera_core::java::install_dir(&root.join("运行时"), "17.0.21+9");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
         let mut app = App::new(&root, "/acc", vec![], vec![]);
         app.set_runtimes(root.join("运行时"));
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![
             java_runtime(17, "17.0.21+9"),
             java_runtime(21, "21.0.13+9"),
         ]));
         // Start the 21 download, then pretend a third of it arrived.
         app.java.selected = 1;
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_java_event(crate::java::Event::Progress {
+        app.handle_java_event(tessera_core::java::Event::Progress {
             done: 12 * 1024 * 1024,
             total: 50 * 1024 * 1024,
             speed: 3.5 * 1024.0 * 1024.0,
@@ -2932,14 +2932,14 @@ mod tests {
     fn an_older_installed_build_is_offered_as_an_update() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let dir = crate::java::install_dir(&root.join("运行时"), "8u502-b07");
+        let dir = tessera_core::java::install_dir(&root.join("运行时"), "8u502-b07");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
         let mut app = App::new(&root, "/acc", vec![], vec![]);
         app.set_runtimes(root.join("运行时"));
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(
             8,
             "8u512-b09",
         )]));
@@ -2953,12 +2953,12 @@ mod tests {
     fn a_java_failure_is_shown_in_its_row() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(
+        app.handle_java_event(tessera_core::java::Event::Listed(vec![java_runtime(
             21,
             "21.0.13+9",
         )]));
         app.handle_java_key(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_java_event(crate::java::Event::Failed("哈希不匹配".to_string()));
+        app.handle_java_event(tessera_core::java::Event::Failed("哈希不匹配".to_string()));
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("哈希不匹配"), "{screen}");
         assert!(screen.contains("Esc 返回"), "{screen}");
@@ -2968,13 +2968,13 @@ mod tests {
     fn the_picker_shows_versions_loaders_and_the_source() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
-        app.handle_install_event(crate::install::InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+        app.handle_install_event(tessera_core::install::InstallEvent::Versions(vec![
+            tessera_core::install::RemoteVersion {
                 id: "1.21.11".into(),
                 kind: "release".into(),
                 released: "2025-12-09T00:00:00+00:00".into(),
             },
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "1.8.9".into(),
                 kind: "release".into(),
                 released: "2015-12-03T00:00:00+00:00".into(),
@@ -3005,7 +3005,7 @@ mod tests {
         app.handle_install_event(InstallEvent::Versions(
             versions
                 .iter()
-                .map(|(id, kind)| crate::install::RemoteVersion {
+                .map(|(id, kind)| tessera_core::install::RemoteVersion {
                     id: id.to_string(),
                     kind: kind.to_string(),
                     released: "2025-01-01T00:00:00+00:00".to_string(),
@@ -3068,7 +3068,7 @@ mod tests {
         app.handle_install_event(InstallEvent::Versions(
             versions
                 .iter()
-                .map(|(id, kind)| crate::install::RemoteVersion {
+                .map(|(id, kind)| tessera_core::install::RemoteVersion {
                     id: id.to_string(),
                     kind: kind.to_string(),
                     released: "2011-01-01T00:00:00+00:00".to_string(),
@@ -3172,12 +3172,12 @@ mod tests {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
         app.handle_install_event(InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
             },
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "23w31a".into(),
                 kind: "snapshot".into(),
                 released: "2023-08-02T00:00:00+00:00".into(),
@@ -3210,7 +3210,7 @@ mod tests {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
         app.handle_install_event(InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
@@ -3248,7 +3248,7 @@ mod tests {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
         app.handle_install_event(InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
@@ -3273,12 +3273,12 @@ mod tests {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
         app.handle_install_event(InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
             },
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "23w31a".into(),
                 kind: "snapshot".into(),
                 released: "2023-08-02T00:00:00+00:00".into(),
@@ -3295,7 +3295,7 @@ mod tests {
         app.open_download();
         app.handle_install_event(InstallEvent::Versions(
             (0..60)
-                .map(|i| crate::install::RemoteVersion {
+                .map(|i| tessera_core::install::RemoteVersion {
                     id: format!("1.{i}"),
                     kind: "release".into(),
                     released: "2024-01-01T00:00:00+00:00".into(),
@@ -3332,8 +3332,8 @@ mod tests {
     fn the_install_screen_shows_a_gauge_percentage_speed_and_counts() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
-        app.handle_install_event(crate::install::InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+        app.handle_install_event(tessera_core::install::InstallEvent::Versions(vec![
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
@@ -3343,13 +3343,13 @@ mod tests {
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         );
-        app.handle_install_event(crate::install::InstallEvent::Progress {
+        app.handle_install_event(tessera_core::install::InstallEvent::Progress {
             done: 0,
             total: 40,
             remaining_bytes: 10 * 1024 * 1024,
             total_bytes: 10 * 1024 * 1024,
         });
-        app.handle_install_event(crate::install::InstallEvent::Progress {
+        app.handle_install_event(tessera_core::install::InstallEvent::Progress {
             done: 10,
             total: 40,
             remaining_bytes: 5 * 1024 * 1024,
@@ -3396,7 +3396,7 @@ mod tests {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
         app.handle_install_event(InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
@@ -3485,8 +3485,8 @@ mod tests {
     fn the_install_screen_reports_completion_and_failure() {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
-        app.handle_install_event(crate::install::InstallEvent::Versions(vec![
-            crate::install::RemoteVersion {
+        app.handle_install_event(tessera_core::install::InstallEvent::Versions(vec![
+            tessera_core::install::RemoteVersion {
                 id: "1.20.1".into(),
                 kind: "release".into(),
                 released: "2023-06-12T00:00:00+00:00".into(),
@@ -3497,12 +3497,12 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         );
 
-        app.handle_install_event(crate::install::InstallEvent::Failed("镜像超时".into()));
+        app.handle_install_event(tessera_core::install::InstallEvent::Failed("镜像超时".into()));
         let screen = render(&mut app, 100, 28).join("\n");
         assert!(screen.contains("安装失败"), "{screen}");
         assert!(screen.contains("镜像超时"), "{screen}");
 
-        app.handle_install_event(crate::install::InstallEvent::Finished {
+        app.handle_install_event(tessera_core::install::InstallEvent::Finished {
             version: "1.20.1".into(),
             loader: Some("Fabric 0.16.0".into()),
         });

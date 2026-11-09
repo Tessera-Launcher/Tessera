@@ -1,4 +1,4 @@
-package yaml.fastmenu;
+package tessera.fastmenu;
 
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Field;
@@ -22,10 +22,10 @@ public final class Agent {
     private Agent() {}
 
     public static void premain(String args, Instrumentation instrumentation) {
-        if (Boolean.getBoolean("yaml.fastmenu.debug")) {
-            System.out.println("[yaml-fastmenu] premain");
+        if (Boolean.getBoolean("tessera.fastmenu.debug")) {
+            System.out.println("[tessera-fastmenu] premain");
         }
-        Thread thread = new Thread(Agent::watch, "yaml-fastmenu");
+        Thread thread = new Thread(Agent::watch, "tessera-fastmenu");
         thread.setDaemon(true);
         thread.start();
     }
@@ -37,8 +37,8 @@ public final class Agent {
                 Class<?> type = Class.forName("net.minecraft.client.Minecraft", false, ClassLoader.getSystemClassLoader());
                 minecraft = type.getMethod("getInstance").invoke(null);
             } catch (Throwable failure) {
-                if (Boolean.getBoolean("yaml.fastmenu.debug") && attempt % 20 == 0) {
-                    System.out.println("[yaml-fastmenu] wait: " + failure);
+                if (Boolean.getBoolean("tessera.fastmenu.debug") && attempt % 20 == 0) {
+                    System.out.println("[tessera-fastmenu] wait: " + failure);
                 }
             }
             if (minecraft == null) {
@@ -46,8 +46,8 @@ public final class Agent {
             }
         }
         if (minecraft == null) {
-            if (Boolean.getBoolean("yaml.fastmenu.debug")) {
-                System.out.println("[yaml-fastmenu] Minecraft not found");
+            if (Boolean.getBoolean("tessera.fastmenu.debug")) {
+                System.out.println("[tessera-fastmenu] Minecraft not found");
             }
             return;
         }
@@ -80,8 +80,8 @@ public final class Agent {
                 boolean settled = true;
 
                 if (screen != null) {
-                    if (setBoolean(screen, "fading", false) && Boolean.getBoolean("yaml.fastmenu.debug")) {
-                        System.out.println("[yaml-fastmenu] cleared " + screen.getClass().getSimpleName() + ".fading");
+                    if (setBoolean(screen, "fading", false) && Boolean.getBoolean("tessera.fastmenu.debug")) {
+                        System.out.println("[tessera-fastmenu] cleared " + screen.getClass().getSimpleName() + ".fading");
                     }
                     settled &= !"AccessibilityOnboardingScreen".equals(screen.getClass().getSimpleName());
                 }
@@ -102,8 +102,8 @@ public final class Agent {
                         if (fadeOut > 0L && overlay != fadeOutFixed) {
                             if (removeOverlay(gui, minecraft, overlay)) {
                                 fadeOutFixed = overlay;
-                                if (Boolean.getBoolean("yaml.fastmenu.debug")) {
-                                    System.out.println("[yaml-fastmenu] removed LoadingOverlay");
+                                if (Boolean.getBoolean("tessera.fastmenu.debug")) {
+                                    System.out.println("[tessera-fastmenu] removed LoadingOverlay");
                                 }
                             }
                         }
@@ -112,8 +112,8 @@ public final class Agent {
                         if (now >= 0L && getLong(overlay, "fadeInStart", -1L) == -1L && overlay != fadeInFixed) {
                             setLong(overlay, "fadeInStart", now - 3000L);
                             fadeInFixed = overlay;
-                            if (Boolean.getBoolean("yaml.fastmenu.debug")) {
-                                System.out.println("[yaml-fastmenu] cleared LoadingOverlay.fadeInStart");
+                            if (Boolean.getBoolean("tessera.fastmenu.debug")) {
+                                System.out.println("[tessera-fastmenu] cleared LoadingOverlay.fadeInStart");
                             }
                         }
                     }

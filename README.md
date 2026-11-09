@@ -1,4 +1,4 @@
-# yaml
+# Tessera
 
 终端里的 Minecraft: Java Edition 启动器。TUI（`ratatui` + `crossterm`），
 无 WebView、无 GTK、无 GPU 依赖，可在 SSH 里跑。
@@ -23,7 +23,7 @@
 ├── 凭据/账户/     一个会话一个 json（玩家名.json / 玩家名 (1).json …）
 ├── 凭据/启动器/   azure_app_ids.toml：可选的启动器 app id 清单
 ├── 缓存/          下载缓存（见下）
-├── 日志/          yaml.log：每次启动追加（内存里的面板只留 500 行）
+├── 日志/          tessera.log：每次启动追加（内存里的面板只留 500 行）
 └── 配置.toml      堆大小 / 窗口尺寸 / GitHub Proxy（首次改动时才写）
 ```
 
@@ -33,7 +33,7 @@
 空间（也是卸载后资产清理释放不出空间的原因，见卸载一节）。环境里已有 `MDT_HOME`
 时不覆盖，方便临时改用别处。
 
-`YAML_DATA` 可覆盖 `data` 根目录（测试和源码运行时用）。
+`TESSERA_DATA` 可覆盖 `data` 根目录（测试和源码运行时用）。
 
 ```sh
 cargo run                                   # 默认 $HOME/.minecraft
@@ -50,7 +50,7 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 **从文件管理器双击**：文件管理器启动程序时不给终端，`enable_raw_mode` 会失败，
 错误写进没人看的 stderr，窗口一闪都没有。`terminal.rs` 因此在 `stdin` 不是 TTY 时
 把自己重新丢进一个终端模拟器再退出；终端里启动（shell、tmux、SSH）`stdin` 是 TTY，
-这条路径不会触发，`yaml < 文件` 也照旧读文件。
+这条路径不会触发，`tessera < 文件` 也照旧读文件。
 
 三个系统的情况不一样，所以只有 Linux/BSD 需要猜：
 
@@ -122,8 +122,8 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
 `Enter` 用选中版本启动游戏。命令由 `launch.rs` 纯函数拼装，`--print-launch` 可以只看不跑：
 
 ```sh
-yaml --dir /path/to/游戏 --print-launch 1.26.3
-yaml --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
+tessera --dir /path/to/游戏 --print-launch 1.26.3
+tessera --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
 ```
 
 做的事：
@@ -199,7 +199,7 @@ github_proxy = ""     # Java 下载界面里填的 GitHub Proxy，关掉界面�
 854×480，改分辨率用 `--resolution 宽x高` 或直接编辑这个文件；`--width/--height` 仍然
 只作用于 `--once` 的渲染尺寸。
 
-每次启动都会在 `data/日志/yaml.log` 追加一段日志（带一行 session 头），面板里的
+每次启动都会在 `data/日志/tessera.log` 追加一段日志（带一行 session 头），面板里的
 500 行是内存副本，退出就没了。日志文件写不进去（比如磁盘满）时只提示一次，不影响
 启动器的其余部分。
 
@@ -463,11 +463,15 @@ token 只存在于登录线程和那个文件里，**UI 永远拿不到 token**�
 ## 仓库结构
 
 ```
-src/                 启动器本体（纯逻辑 + 渲染，可无终端测试）
-vendor/mdt-minecraft 下载层（upstream + 本地修复，见其 VENDORED.md）
+crates/tessera-core/  纯逻辑：发现、启动参数、下载、Java、账户、清理（不依赖终端）
+crates/tessera-tui/   终端前端：屏幕、输入状态机、剪贴板（依赖 tessera-core）
+src/main.rs           组装：解析参数，把 core 与 tui 接起来
+crates/tessera-core/assets/  AOT 预加载与 fastmenu 两个 Java agent 的源码和 jar
+vendor/mdt-minecraft  下载层（upstream + 本地修复，见其 VENDORED.md）
 vendor/minecraft-auth 登录层（device code → 启动凭据）
 ```
 
+`tessera-core` 不含 `ratatui`/`crossterm`，所以未来的 GUI 只是另一个依赖 core 的前端；
 `vendor/` 下的两个 crate 各自是独立的 workspace 根，因此在本仓库的
 `[workspace] exclude` 里排除，作为 path 依赖引入。
 
@@ -491,7 +495,7 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 5. **令牌自动刷新** ✅（过期才联网，轮换后的 refresh token 写回凭据）
 6. **Java 运行时** ✅（Adoptium 最新 JRE × 8/17/21/25/28 EA，清华源/官方源+GitHub Proxy，sha256 校验，
    装到 `data/运行时/<版本号>/`，启动时优先使用；打开界面时检查各大版本的小版本更新，`u` 批量更新）
-7. 日志落盘 ✅（`data/日志/yaml.log`，面板仍只留 500 行）；设置持久化 ✅
+7. 日志落盘 ✅（`data/日志/tessera.log`，面板仍只留 500 行）；设置持久化 ✅
    （`data/配置.toml`：堆、窗口、GitHub Proxy）
 8. 设置页（目前只有命令行开关和手改 toml）
 

@@ -1,28 +1,9 @@
-//! `yaml` — a terminal Minecraft: Java Edition launcher.
+//! `tessera` — a terminal Minecraft: Java Edition launcher.
 //!
 //! Portable by design: the executable plus a `data/` directory next to it is the
 //! whole installation. Credentials live in `data/凭据/账户/<player>.json`, one
 //! file per account.
 
-mod accounts;
-mod aot;
-mod app;
-mod app_ids;
-mod cleanup;
-mod clipboard;
-mod discover;
-mod fastmenu;
-mod install;
-mod java;
-mod launch;
-mod logfile;
-mod login;
-mod paths;
-mod session;
-mod settings;
-mod terminal;
-mod ui;
-mod version_tree;
 
 use std::io;
 use std::path::PathBuf;
@@ -37,11 +18,15 @@ use crossterm::terminal::{
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 
-use crate::app::{App, Effect, Screen};
-use crate::install::{InstallEvent, Source, ASSET_CONCURRENCY};
-use crate::login::LoginEvent;
-use crate::paths::Paths;
-use crate::session::SessionEvent;
+use tessera_core::{
+    accounts, aot, cleanup, discover, install, java, launch, logfile, login, session, settings,
+};
+use tessera_core::install::{InstallEvent, Source, ASSET_CONCURRENCY};
+use tessera_core::login::LoginEvent;
+use tessera_core::paths::Paths;
+use tessera_core::session::SessionEvent;
+use tessera_tui::app::{App, Effect, Screen};
+use tessera_tui::{clipboard, terminal, ui};
 
 fn main() -> std::process::ExitCode {
     let options = match Options::parse() {
@@ -210,7 +195,7 @@ fn run(
 ) -> io::Result<()> {
     let mut terminal = enter()?;
     let client = match reqwest::Client::builder()
-        .user_agent(concat!("yaml-launcher/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(client) => client,
@@ -480,7 +465,7 @@ fn leave() -> io::Result<()> {
 }
 
 /// Render one frame headlessly and print it, so the screen can be inspected
-/// without a TTY (`yaml --once --dir /tmp/minecraft`) and in tests.
+/// without a TTY (`tessera --once --dir /tmp/minecraft`) and in tests.
 fn print_once(app: &mut App, width: u16, height: u16) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("headless terminal");
     terminal
@@ -650,10 +635,10 @@ impl Options {
 }
 
 const HELP: &str = "\
-yaml — 终端 Minecraft Java 版启动器（便携版）
+tessera — 终端 Minecraft Java 版启动器（便携版）
 
 用法:
-  yaml [选项]
+  tessera [选项]
 
 选项:
   --dir <路径>      .minecraft 目录（默认 <exe>/data/游戏）
@@ -672,12 +657,12 @@ yaml — 终端 Minecraft Java 版启动器（便携版）
   -h, --help        显示本帮助
 
 环境变量:
-  YAML_DATA         覆盖 data 目录（默认 <exe>/data）
+  TESSERA_DATA         覆盖 data 目录（默认 <exe>/data）
 
 目录:
   data/游戏/            游戏文件（versions/libraries/assets）
   data/凭据/账户/       每个账户一个 json
-  data/日志/           yaml.log（每次启动追加）
+  data/日志/           tessera.log（每次启动追加）
   data/配置.toml       堆大小 / 窗口尺寸 / GitHub Proxy
 
 按键（主界面）:

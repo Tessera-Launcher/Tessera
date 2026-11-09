@@ -22,25 +22,25 @@ pub enum JavaStage {
 #[derive(Debug, Clone)]
 pub struct JavaUi {
     pub stage: JavaStage,
-    /// Latest JRE of each offered feature, in [`crate::java::FEATURES`] order.
-    pub runtimes: Vec<crate::java::Runtime>,
+    /// Latest JRE of each offered feature, in [`tessera_core::java::FEATURES`] order.
+    pub runtimes: Vec<tessera_core::java::Runtime>,
     pub selected: usize,
-    pub source: crate::java::Source,
-    /// What the user typed as a GitHub proxy; only used by [`crate::java::Source::Github`].
+    pub source: tessera_core::java::Source,
+    /// What the user typed as a GitHub proxy; only used by [`tessera_core::java::Source::Github`].
     pub proxy: String,
     /// Whether keystrokes go into the proxy field instead of the list.
     pub editing_proxy: bool,
     /// Bytes done, bytes total, and a smoothed speed.
     pub progress: (u64, u64, f64),
     /// Runtimes already on disk, newest first.
-    pub installed: Vec<crate::java::Installed>,
+    pub installed: Vec<tessera_core::java::Installed>,
     /// The download that is running (or just finished).
     pub current: Option<u32>,
     pub message: Option<String>,
     /// A `u` batch is running (it may have an empty queue on its last item).
     pub updating: bool,
     /// Runtimes queued by `u` (update every outdated feature in turn).
-    pub update_queue: std::collections::VecDeque<crate::java::Runtime>,
+    pub update_queue: std::collections::VecDeque<tessera_core::java::Runtime>,
     /// Successfully updated by the current `u` run.
     pub update_done: usize,
     /// Failures from the current `u` run, one line each.
@@ -53,7 +53,7 @@ impl Default for JavaUi {
             stage: JavaStage::Loading,
             runtimes: Vec::new(),
             selected: 0,
-            source: crate::java::Source::default(),
+            source: tessera_core::java::Source::default(),
             proxy: String::new(),
             editing_proxy: false,
             progress: (0, 0, 0.0),
@@ -70,7 +70,7 @@ impl Default for JavaUi {
 
 impl JavaUi {
     /// The runtime under the cursor.
-    pub fn selected_runtime(&self) -> Option<&crate::java::Runtime> {
+    pub fn selected_runtime(&self) -> Option<&tessera_core::java::Runtime> {
         self.runtimes.get(self.selected)
     }
 
@@ -85,12 +85,12 @@ impl JavaUi {
     ///
     /// Only launcher-managed directory names are compared: a hand-made
     /// `运行时/21` is the user's copy, not something an update should replace.
-    pub fn update_for(&self, runtime: &crate::java::Runtime) -> Option<&crate::java::Installed> {
+    pub fn update_for(&self, runtime: &tessera_core::java::Runtime) -> Option<&tessera_core::java::Installed> {
         let installed = self
             .installed
             .iter()
             .find(|installed| installed.major == runtime.major && installed.managed)?;
-        crate::java::is_newer(&runtime.version(), &installed.version).then_some(installed)
+        tessera_core::java::is_newer(&runtime.version(), &installed.version).then_some(installed)
     }
 
     /// How many offered features have a newer build on disk than the API's.
@@ -109,9 +109,9 @@ impl JavaUi {
         }
         format!(
             "{} / {} · {}/s",
-            crate::discover::human_size(done),
-            crate::discover::human_size(total),
-            crate::discover::human_size(speed as u64)
+            tessera_core::discover::human_size(done),
+            tessera_core::discover::human_size(total),
+            tessera_core::discover::human_size(speed as u64)
         )
     }
 }
@@ -124,7 +124,7 @@ impl App {
         self.java = JavaUi::default();
         // The proxy is the one field of this screen that outlives it.
         self.java.proxy = self.settings.github_proxy.clone();
-        self.java.installed = crate::java::installed_runtimes(&self.runtimes);
+        self.java.installed = tessera_core::java::installed_runtimes(&self.runtimes);
         self.screen = Screen::Java;
         self.request(Effect::FetchJavaList);
         self.status = "Java：正在查询 Adoptium".to_string();
@@ -138,7 +138,7 @@ impl App {
     }
 
     /// `s`: the other source. Only meaningful for the artifact, so the list stays.
-    pub fn set_java_source(&mut self, source: crate::java::Source) {
+    pub fn set_java_source(&mut self, source: tessera_core::java::Source) {
         if self.java.source == source {
             return;
         }
@@ -195,7 +195,7 @@ impl App {
                 }
                 KeyCode::Char('s') => self.set_java_source(self.java.source.next()),
                 KeyCode::Char('p') => {
-                    if self.java.source == crate::java::Source::Github {
+                    if self.java.source == tessera_core::java::Source::Github {
                         self.java.editing_proxy = true;
                         self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
                     } else {
@@ -233,7 +233,7 @@ impl App {
         if self.java.stage == JavaStage::Downloading {
             return;
         }
-        let outdated: Vec<crate::java::Runtime> = self
+        let outdated: Vec<tessera_core::java::Runtime> = self
             .java
             .runtimes
             .iter()
@@ -289,13 +289,13 @@ impl App {
     }
 
     /// Download one specific runtime.
-    fn start_java_install(&mut self, runtime: crate::java::Runtime) {
+    fn start_java_install(&mut self, runtime: tessera_core::java::Runtime) {
         self.settings.github_proxy = self.java.proxy.trim().to_string();
-        let urls = crate::java::candidates(
+        let urls = tessera_core::java::candidates(
             &runtime,
             self.java.source,
             &self.java.proxy,
-            crate::java::platform(),
+            tessera_core::java::platform(),
         );
         self.java.stage = JavaStage::Downloading;
         self.java.current = Some(runtime.major);
@@ -303,7 +303,7 @@ impl App {
         self.java.message = None;
         self.status = format!("Java {}：开始下载", runtime.major);
         let source_label = if runtime.ea {
-            crate::java::Source::Github.label()
+            tessera_core::java::Source::Github.label()
         } else {
             self.java.source.label()
         };
@@ -320,8 +320,8 @@ impl App {
     }
 
     /// Apply an event from the Java worker.
-    pub fn handle_java_event(&mut self, event: crate::java::Event) {
-        use crate::java::Event;
+    pub fn handle_java_event(&mut self, event: tessera_core::java::Event) {
+        use tessera_core::java::Event;
         match event {
             Event::Listed(runtimes) => {
                 self.log(format!("Adoptium：{} 个 Java 版本", runtimes.len()));
@@ -354,7 +354,7 @@ impl App {
                 java,
             } => {
                 self.java.progress = (0, 0, 0.0);
-                self.java.installed = crate::java::installed_runtimes(&self.runtimes);
+                self.java.installed = tessera_core::java::installed_runtimes(&self.runtimes);
                 self.log(format!("Java {major} {version} → {}", java.display()));
                 if self.java.updating {
                     self.java.update_done += 1;
@@ -421,10 +421,10 @@ impl App {
                     .iter()
                     .position(|area| area.contains(column, row))
                 {
-                    let source = crate::java::Source::ALL[index];
+                    let source = tessera_core::java::Source::ALL[index];
                     self.set_java_source(source);
                 } else if layout.java_proxy.contains(column, row) {
-                    if self.java.source == crate::java::Source::Github {
+                    if self.java.source == tessera_core::java::Source::Github {
                         self.java.editing_proxy = true;
                     } else {
                         self.explain_proxy_needs_github();

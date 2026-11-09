@@ -30,7 +30,7 @@ pub struct LoginUi {
     /// Typed client id, only used by the custom identity.
     pub app_id: String,
     /// The list read from `azure_app_ids.toml`, in file order.
-    pub app_ids: Vec<crate::app_ids::AppId>,
+    pub app_ids: Vec<tessera_core::app_ids::AppId>,
     /// Why the list could not be read, if it could not. Shown instead of rows.
     pub app_ids_error: Option<String>,
     /// Selected row in [`LoginUi::app_ids`].
@@ -98,7 +98,7 @@ impl App {
     /// so tests and `--dir` runs keep everything inside the same tree.
     pub fn app_ids_path(&self) -> PathBuf {
         match self.accounts_dir.parent() {
-            Some(credentials) => crate::app_ids::path_under(credentials),
+            Some(credentials) => tessera_core::app_ids::path_under(credentials),
             None => PathBuf::new(),
         }
     }
@@ -109,7 +109,7 @@ impl App {
         let path = self.app_ids_path();
         self.login.app_id_choice = 0;
         self.login.app_id_offset = 0;
-        match crate::app_ids::load(&path) {
+        match tessera_core::app_ids::load(&path) {
             Ok(ids) if !ids.is_empty() => {
                 self.login.app_ids = ids;
                 self.login.app_ids_error = None;

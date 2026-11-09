@@ -98,8 +98,8 @@ pub struct DownloadUi {
     visible: Vec<usize>,
     /// Folded snapshot families, by key, that are currently opened.
     pub expanded: Vec<String>,
-    /// The filtered list laid out as drawn lines (see [`crate::version_tree`]).
-    pub rows: Vec<crate::version_tree::Row>,
+    /// The filtered list laid out as drawn lines (see [`tessera_core::version_tree`]).
+    pub rows: Vec<tessera_core::version_tree::Row>,
     /// Folded groups in [`DownloadUi::rows`], cached so the pane title does not
     /// walk every row on every frame.
     folded: usize,
@@ -230,7 +230,7 @@ impl DownloadUi {
     pub fn cursor(&self) -> usize {
         self.rows
             .iter()
-            .position(|row| matches!(row.kind, crate::version_tree::RowKind::Version(index) if index == self.picked))
+            .position(|row| matches!(row.kind, tessera_core::version_tree::RowKind::Version(index) if index == self.picked))
             .or_else(|| self.rows.iter().position(|row| row.anchor() == self.picked))
             .unwrap_or(0)
     }
@@ -246,14 +246,14 @@ impl DownloadUi {
     /// no search: a search must never hide the version it matched.
     pub fn rebuild_rows(&mut self) {
         let tree = self.filter == VersionFilter::All && self.query.trim().is_empty();
-        self.rows = crate::version_tree::build(&self.all, &self.visible, &self.expanded, tree);
+        self.rows = tessera_core::version_tree::build(&self.all, &self.visible, &self.expanded, tree);
         self.folded = self
             .rows
             .iter()
             .filter(|row| {
                 matches!(
                     row.kind,
-                    crate::version_tree::RowKind::Group {
+                    tessera_core::version_tree::RowKind::Group {
                         expanded: false,
                         ..
                     }
@@ -269,13 +269,13 @@ impl DownloadUi {
         let rows = &self.rows;
         if matches!(
             rows.get(cursor)?.kind,
-            crate::version_tree::RowKind::Group { .. }
+            tessera_core::version_tree::RowKind::Group { .. }
         ) {
             return Some(cursor);
         }
         rows[..cursor]
             .iter()
-            .rposition(|row| matches!(row.kind, crate::version_tree::RowKind::Group { .. }))
+            .rposition(|row| matches!(row.kind, tessera_core::version_tree::RowKind::Group { .. }))
     }
 
     pub fn picked_loader(&self) -> Loader {
@@ -356,7 +356,7 @@ impl App {
     /// Switch where downloads come from. Deliberately not persisted: the next
     /// start falls back to the default (or `--mirror`), so a one-off switch does
     /// not quietly become the new normal.
-    pub fn set_source(&mut self, source: crate::install::Source) {
+    pub fn set_source(&mut self, source: tessera_core::install::Source) {
         if self.source == source {
             return;
         }
@@ -548,7 +548,7 @@ impl App {
                     // The switch lives in the loader pane, so clicking it focuses
                     // that pane like any other click there would.
                     self.download.focus = PickerFocus::Loaders;
-                    self.set_source(crate::install::Source::ALL[index]);
+                    self.set_source(tessera_core::install::Source::ALL[index]);
                 } else if over_versions_rows {
                     self.download.focus = PickerFocus::Versions;
                     let drawn =
@@ -587,20 +587,20 @@ impl App {
             return;
         };
         match row.kind {
-            crate::version_tree::RowKind::Version(index) => {
+            tessera_core::version_tree::RowKind::Version(index) => {
                 self.download.picked = index;
                 self.download.refresh_loaders();
             }
             // The row says "there is more behind me", so clicking it is what unfolds
             // it; clicking the opened header folds it back up.
-            crate::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
+            tessera_core::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
         }
     }
 
     /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
     /// `drawn` is `None`.
     fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
-        let Some(crate::version_tree::RowKind::Group {
+        let Some(tessera_core::version_tree::RowKind::Group {
             key,
             first,
             expanded,
@@ -707,7 +707,7 @@ impl App {
                 // 26.1+ vanilla installs pay for one training run as part of the
                 // install. Mod loaders are excluded: their classes go through a
                 // custom ClassLoader and cannot enter the AOT cache anyway.
-                if loader.is_none() && crate::aot::eligible(&version) {
+                if loader.is_none() && tessera_core::aot::eligible(&version) {
                     self.download.stage = DownloadStage::Training;
                     self.status = format!("安装完成，正在训练 {version} 的 AOT 缓存");
                     self.log("开始 AOT 训练（26.1+ 原版）");
@@ -727,8 +727,8 @@ impl App {
     }
 
     /// Apply a forced-AOT-training event.
-    pub fn handle_aot_event(&mut self, event: crate::aot::Event) {
-        use crate::aot::Event;
+    pub fn handle_aot_event(&mut self, event: tessera_core::aot::Event) {
+        use tessera_core::aot::Event;
         let (version, showing) = match &event {
             Event::Preparing { version, .. }
             | Event::Progress { version, .. }
