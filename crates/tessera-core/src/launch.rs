@@ -957,8 +957,14 @@ fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged, String> {
 /// The client jar for a profile: its own name, a parent's name, or any jar.
 fn client_jar(version_dir: &Path, version_id: &str, parents: &[String]) -> Option<PathBuf> {
     let mut candidates = vec![version_dir.join(format!("{version_id}.jar"))];
+    let versions = version_dir.parent();
     for parent in parents {
         candidates.push(version_dir.join(format!("{parent}.jar")));
+        // A loader profile may keep its own directory and leave the vanilla jar
+        // in the parent's: `<versions>/<parent>/<parent>.jar`.
+        if let Some(versions) = versions {
+            candidates.push(versions.join(parent).join(format!("{parent}.jar")));
+        }
     }
     if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
         return Some(found);
@@ -974,8 +980,12 @@ fn client_jar(version_dir: &Path, version_id: &str, parents: &[String]) -> Optio
 /// Where the natives were extracted, if this version needs them.
 fn find_natives(version_dir: &Path, version_id: &str, parents: &[String]) -> Option<PathBuf> {
     let mut candidates = vec![version_dir.join(format!("{version_id}-natives"))];
+    let versions = version_dir.parent();
     for parent in parents {
         candidates.push(version_dir.join(format!("{parent}-natives")));
+        if let Some(versions) = versions {
+            candidates.push(versions.join(parent).join(format!("{parent}-natives")));
+        }
     }
     candidates.into_iter().find(|path| path.is_dir())
 }
@@ -1891,5 +1901,27 @@ mod tests {
         let joined = launch.command.args.join(" ");
         assert!(joined.contains("1280"), "{joined}");
         assert!(joined.contains("720"), "{joined}");
+    }
+
+    #[test]
+    fn a_loader_profile_can_borrow_the_parents_jar_and_natives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let versions = tmp.path().join("versions");
+        let parent = versions.join("1.12.2");
+        std::fs::create_dir_all(parent.join("1.12.2-natives")).unwrap();
+        std::fs::write(parent.join("1.12.2.jar"), b"jar").unwrap();
+        // A legacy Forge install keeps its own directory and inherits 1.12.2.
+        let child = versions.join("1.12.2+Forge14.23.0.2486");
+        std::fs::create_dir_all(&child).unwrap();
+        let parents = ["1.12.2".to_string()];
+
+        assert_eq!(
+            client_jar(&child, "1.12.2+Forge14.23.0.2486", &parents),
+            Some(parent.join("1.12.2.jar"))
+        );
+        assert_eq!(
+            find_natives(&child, "1.12.2+Forge14.23.0.2486", &parents),
+            Some(parent.join("1.12.2-natives"))
+        );
     }
 }

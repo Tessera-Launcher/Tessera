@@ -16,7 +16,7 @@ use crate::security::is_safe_manifest_url;
 use crate::urls::ManifestUrls;
 
 use super::{
-    copy_dir_recursive_reported, copy_file, download_artifact_verified_reported,
+    copy_dir_recursive_reported, download_artifact_verified_reported,
     download_maven_fallback_reported, ensure_empty_dir, libraries_dir, library_path_from_name,
     loader_version_id, target_version_dir, unzip_jar, version_dir, InstallMethod, InstallRequest,
     InstalledVersion,
@@ -549,7 +549,14 @@ async fn deploy_legacy_profile(
     if let Some(parent) = dest.parent() {
         crate::io::create_dir_all(parent).await?;
     }
-    copy_file(&source, &dest).await?;
+    // A byte copy, not `copy_file`: that helper may hardlink/symlink (cheapest
+    // mount) and the unpack tree is deleted when this function returns, which
+    // would leave the deployed jar dangling. Remove first so a stale dangling
+    // symlink at the destination cannot make the copy fail.
+    let _ = crate::io::remove_file(&dest).await;
+    crate::io::copy(&source, &dest)
+        .await
+        .map_err(MdtError::IoError)?;
 
     // 2. Fetch every library the profile lists, unless it is already on disk.
     for library in &libraries {
@@ -559,9 +566,10 @@ async fn deploy_legacy_profile(
         if name.starts_with("net.minecraftforge:forge:") {
             continue; // the universal jar, deployed above
         }
-        if library.get("clientreq").and_then(serde_json::Value::as_bool) == Some(false) {
-            continue;
-        }
+        // `clientreq`/`serverreq` are hints for the official installer, not for
+        // the launcher: every library listed in the version JSON goes on the
+        // classpath and must exist, even when the installer itself skipped it
+        // (1.12.2's `jline` is marked `clientreq: false` but still listed).
         let rel = library_path_from_name(name)?;
         if libraries_dir(root).join(&rel).is_file() {
             continue;
@@ -1158,10 +1166,9 @@ mod tests {
         assert!(libs
             .join("net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar")
             .is_file());
-        // A client=false library is not part of a client install.
-        assert!(!libs
-            .join("jline/jline/2.13/jline-2.13.jar")
-            .exists());
+        // `clientreq: false` is an installer hint only; the launcher still needs
+        // the jar because it stays in the version JSON's library list.
+        assert!(libs.join("jline/jline/2.13/jline-2.13.jar").is_file());
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&unpack).ok();

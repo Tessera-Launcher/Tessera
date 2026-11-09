@@ -194,10 +194,13 @@ required both removed entries and failed with
 
 - falls back to `install_profile.json` when `maven/` is absent;
 - copies `install.filePath` (the root universal jar) to the Maven path named by
-  `install.path`, which is where the version JSON and the launcher expect it;
+  `install.path`, which is where the version JSON and the launcher expect it
+  (a byte copy: the unpack tree is deleted right after, so a hardlink/symlink
+  would dangle);
 - downloads `versionInfo.libraries` into `libraries/` when missing, using each
-  entry's `url` and defaulting to `https://libraries.minecraft.net/`, skipping
-  `clientreq: false` entries;
+  entry's `url` and defaulting to `https://libraries.minecraft.net/` (all of
+  them: `clientreq: false` only tells the official installer to skip a jar, but
+  it stays in the version JSON and the launcher still needs it);
 - synthesizes the version JSON from `install_profile.versionInfo` when
   `version.json` is absent, keeping the existing mirror/id rewrite.
 

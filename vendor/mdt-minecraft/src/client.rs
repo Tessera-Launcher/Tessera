@@ -289,7 +289,16 @@ impl MdtClient {
         // installing, so vanilla is never mutated. Otherwise install in place.
         let mut isolated = None;
         let target_dir = if copy_vanilla {
-            let isolated_id = installer::installer_version_id(&mc_version, loader, loader_version);
+            // Method B (legacy Forge) writes `<mc>+Forge<ver>`; copy-on-write must
+            // target that same directory, otherwise the vanilla jar/natives are
+            // left in a directory the installed version never reads.
+            let isolated_id = if loader == ModLoader::Forge
+                && !installer::uses_official_installer(&mc_version)
+            {
+                installer::loader_version_id(&mc_version, loader, loader_version)
+            } else {
+                installer::installer_version_id(&mc_version, loader, loader_version)
+            };
             let isolated_dir = installer::version_dir(&self.root, &isolated_id);
             debug_line(
                 self.reporter.as_ref(),

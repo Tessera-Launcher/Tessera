@@ -20,6 +20,17 @@ use super::{
 /// The version at which Forge introduced the modern installer (`--installClient`).
 const MODERN_FORGE_MIN: McVersion = McVersion::new(1, 13, 0);
 
+/// Whether this Minecraft version's Forge install uses the official installer
+/// (Method A). Older versions are unpacked by hand (Method B) and land in the
+/// `<mc>+Forge<ver>` isolation directory rather than the installer's own id.
+pub(crate) fn uses_official_installer(mc_version: &str) -> bool {
+    // Unparseable versions (e.g. snapshots) are treated as modern.
+    match McVersion::parse(mc_version) {
+        Some(v) => v >= MODERN_FORGE_MIN,
+        None => true,
+    }
+}
+
 /// Normalize a Forge version: manifest versions carry the MC prefix (e.g. `1.20.1-47.2.0`),
 /// whereas install logic expects a bare Forge version (e.g. `47.2.0`). Strip the prefix if
 /// present, otherwise return the input unchanged.
@@ -37,13 +48,7 @@ pub async fn install(
 ) -> Result<InstalledVersion, MdtError> {
     let urls = ManifestUrls::try_new(&req.mirror)?;
 
-    // Unparseable versions (e.g. snapshots) are treated as modern.
-    let use_method_a = match McVersion::parse(&req.mc_version) {
-        Some(v) => v >= MODERN_FORGE_MIN,
-        None => true,
-    };
-
-    if use_method_a {
+    if uses_official_installer(&req.mc_version) {
         install_modern(downloader, req, &urls).await
     } else {
         install_legacy(downloader, req, &urls).await
