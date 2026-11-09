@@ -1042,9 +1042,13 @@ impl Launcher {
                     .py_1()
                     .rounded_sm()
                     .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
-                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                    .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                         this.state.accounts_ui.selected = index;
                         this.state.accounts_ui.confirm_delete = false;
+                        // Double click switches to the account, like Enter.
+                        if event.click_count() > 1 {
+                            this.state.activate_selected_account();
+                        }
                         cx.notify();
                     }))
                     .child(
@@ -1068,7 +1072,7 @@ impl Launcher {
         let confirm = if self.state.accounts_ui.confirm_delete {
             "再点一次「移除」确认删除"
         } else {
-            "Enter 切换 · 移除需要点两次"
+            "Enter 切换 · 双击账户也可切换 · 移除需要点两次"
         };
 
         div()
