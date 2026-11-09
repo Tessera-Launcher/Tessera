@@ -39,6 +39,12 @@ pub struct LocalVersion {
     /// `inheritsFrom`, so the vanilla version must stay on disk — but showing it
     /// next to the loader as if it were a second, independent install is noise.
     pub is_base_only: bool,
+    /// Whether an AOT training run left a cache (and its metadata) here.
+    ///
+    /// Training always forces Java 28, and launching a cached version uses the
+    /// JVM recorded in that metadata, so the UI reports Java 28 for these
+    /// regardless of the profile's own `javaVersion`.
+    pub aot: bool,
 }
 
 impl LocalVersion {
@@ -87,7 +93,7 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
             Some(profile) => profile,
             None => LocalVersion {
                 dir: id.clone(),
-                id,
+                id: id.clone(),
                 kind: "-".to_string(),
                 java: None,
                 inherits: None,
@@ -95,6 +101,7 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
                 has_jar,
                 release_time: None,
                 is_base_only: false,
+                aot: has_aot_cache(&dir, &id),
             },
         });
     }
@@ -143,7 +150,13 @@ fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
         release_time: string("releaseTime"),
         // Filled in by `scan` once every profile is known.
         is_base_only: false,
+        aot: has_aot_cache(dir, id),
     })
+}
+
+/// A trained version has both the cache and the metadata naming its JVM.
+fn has_aot_cache(dir: &Path, id: &str) -> bool {
+    dir.join(format!("{id}.aot")).is_file() && dir.join(format!("{id}.aot.json")).is_file()
 }
 
 /// Pretty-print a byte count for the details pane.
@@ -294,6 +307,25 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KiB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MiB");
+    }
+
+    #[test]
+    fn a_trained_aot_cache_marks_the_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "26.1", r#"{"id":"26.1","type":"release"}"#);
+        write(tmp.path(), "26.2", r#"{"id":"26.2","type":"release"}"#);
+        let trained = tmp.path().join("versions").join("26.1");
+        std::fs::write(trained.join("26.1.aot"), b"cache").unwrap();
+        std::fs::write(
+            trained.join("26.1.aot.json"),
+            r#"{"java_major":28,"java_version":"28","unsigned_jar":"26.1.jar","agent":"26.1.aot-agent.jar"}"#,
+        )
+        .unwrap();
+
+        let versions = scan(tmp.path());
+        let find = |id: &str| versions.iter().find(|v| v.id == id).unwrap();
+        assert!(find("26.1").aot);
+        assert!(!find("26.2").aot, "a profile without a cache is not AOT");
     }
 
     #[cfg(unix)]

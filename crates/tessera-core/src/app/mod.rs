@@ -904,6 +904,7 @@ mod tests {
             has_jar: true,
             release_time: None,
             is_base_only: false,
+            aot: false,
         }
     }
 

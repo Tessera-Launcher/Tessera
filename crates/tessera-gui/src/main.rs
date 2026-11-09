@@ -862,10 +862,16 @@ impl Launcher {
             {
                 let selected = index == self.state.selected;
                 let broken = !version.has_jar && version.inherits.is_none();
-                let java = version
-                    .java
-                    .map(|major| format!("Java {major}"))
-                    .unwrap_or_else(|| "Java —".to_string());
+                let java = if version.aot {
+                    // A trained cache is bound to the Java 28 JVM it was built
+                    // with; `launch` uses that JVM, not the profile's pin.
+                    "Java 28".to_string()
+                } else {
+                    version
+                        .java
+                        .map(|major| format!("Java {major}"))
+                        .unwrap_or_else(|| "Java —".to_string())
+                };
                 let dir = version.dir.clone();
                 list = list.child(
                     div()
@@ -931,10 +937,18 @@ impl Launcher {
                     .child(field("类型", version.kind.clone()))
                     .child(field(
                         "Java",
-                        version
-                            .java
-                            .map(|major| major.to_string())
-                            .unwrap_or_else(|| "—".to_string()),
+                        if version.aot {
+                            "28".to_string()
+                        } else {
+                            version
+                                .java
+                                .map(|major| major.to_string())
+                                .unwrap_or_else(|| "—".to_string())
+                        },
+                    ))
+                    .child(field(
+                        "AOT Cache",
+                        if version.aot { "是" } else { "否" }.to_string(),
                     ))
                     .child(field(
                         "主类",
