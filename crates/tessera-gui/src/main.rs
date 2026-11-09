@@ -1,18 +1,23 @@
 //! Tessera's desktop front-end.
 //!
-//! The screen state and every action live in `tessera_core::app`; this crate
-//! only draws that state and runs the effects it queues. A worker thread per
-//! effect (token refresh, game process) reports back through channels, and the
-//! state machine turns those reports into the next status line.
+//! All screen state and every action live in `tessera_core::app`; this crate
+//! draws that state and runs the effects it queues. Workers (token refresh,
+//! login, downloads, the game process) report through channels, and the state
+//! machine turns those reports into the next status line.
 
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::*;
 
-use tessera_core::app::{App as State, Effect};
-use tessera_core::{accounts, discover, launch, paths::Paths, session};
+use tessera_core::app::{App as State, DownloadStage, Effect, LoginStep, Screen};
+use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
+use tessera_core::launch;
+use tessera_core::login::{self, Identity, LoginEvent};
+use tessera_core::session;
+use tessera_core::{accounts, discover, paths::Paths, version_tree::RowKind};
 
 const ACCENT: u32 = 0x6c_d6_7a;
 const SNAPSHOT: u32 = 0xe8_c9_6a;
@@ -27,7 +32,10 @@ const ROW: u32 = 0x26_28_2e;
 
 struct Launcher {
     state: State,
+    client: reqwest::Client,
     session_rx: Option<Receiver<session::SessionEvent>>,
+    login_rx: Option<Receiver<LoginEvent>>,
+    install_rx: Option<Receiver<InstallEvent>>,
     launch_rx: Vec<Receiver<launch::GameEvent>>,
 }
 
@@ -44,16 +52,25 @@ impl Launcher {
         state.set_runtimes(data.runtimes());
         state.launch_options.fastmenu_agent =
             Some(data.root().join("缓存").join("fastmenu-agent.jar"));
-        state.settings = tessera_core::settings::load(&tessera_core::settings::Settings::path(
-            data.root(),
-        ))
-        .0;
+        let (settings, error) =
+            tessera_core::settings::load(&tessera_core::settings::Settings::path(data.root()));
+        state.settings = settings;
+        if let Some(error) = error {
+            state.log(format!("配置读取失败：{error}"));
+        }
         state.log(format!("数据目录 {}", data.root().display()));
         state.log(format!("游戏目录 {}", root.display()));
         state.log(format!("JRE 目录 {}", data.runtimes().display()));
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             state,
+            client,
             session_rx: None,
+            login_rx: None,
+            install_rx: None,
             launch_rx: Vec::new(),
         }
     }
@@ -73,6 +90,30 @@ impl Launcher {
                         self.session_rx = Some(session::spawn_refresh(file));
                     }
                 }
+                Effect::Login(identity) => {
+                    self.login_rx = Some(login::spawn(
+                        self.client.clone(),
+                        identity,
+                        self.state.accounts_dir.clone(),
+                    ));
+                }
+                Effect::FetchVersions => {
+                    self.install_rx = Some(install::spawn_versions(
+                        self.state.root.clone(),
+                        self.state.source,
+                        ASSET_CONCURRENCY,
+                    ));
+                }
+                Effect::Install { version, loader } => {
+                    self.install_rx = Some(install::spawn_install(
+                        self.state.root.clone(),
+                        self.state.runtimes.clone(),
+                        self.state.source,
+                        ASSET_CONCURRENCY,
+                        version,
+                        loader,
+                    ));
+                }
                 Effect::Launch { dir, credentials } => {
                     self.launch_rx.push(launch::spawn_game(
                         self.state.root.clone(),
@@ -81,8 +122,14 @@ impl Launcher {
                         self.state.launch_options.clone(),
                     ));
                 }
-                Effect::Copy(_) => self.state.log("剪贴板还没有接到 GUI"),
-                Effect::OpenBrowser(_) => self.state.log("打开浏览器还没有接到 GUI"),
+                Effect::Copy(text) => match copy_to_clipboard(&text) {
+                    Ok(tool) => self.state.log(format!("已复制（{tool}）")),
+                    Err(error) => self.state.log(error),
+                },
+                Effect::OpenBrowser(url) => match open_browser(&url) {
+                    Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
+                    Err(error) => self.state.log(format!("打开浏览器失败：{error}")),
+                },
                 _ => self.state.log("这个操作还没有接到 GUI"),
             }
         }
@@ -103,6 +150,48 @@ impl Launcher {
                         break;
                     }
                 }
+            }
+        }
+
+        if let Some(rx) = self.login_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_login_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.login_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(rx) = self.install_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_install_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.install_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            // The progress bar smooths its speed from samples; ask it to age them.
+            if self.state.tick() {
+                changed = true;
             }
         }
 
@@ -152,31 +241,7 @@ impl Launcher {
         }
     }
 
-    fn panel(title: &str, body: impl IntoElement, grow: bool) -> impl IntoElement {
-        let mut outer = div()
-            .v_flex()
-            .min_h(px(0.0))
-            .rounded_md()
-            .border_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(PANEL))
-            .overflow_hidden();
-        outer = if grow {
-            outer.flex_1().h_full()
-        } else {
-            outer.h(px(232.0))
-        };
-        outer
-            .child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(DIM))
-                    .child(title.to_string()),
-            )
-            .child(div().flex_1().min_h(px(0.0)).child(body))
-    }
+    // ---- main screen ----
 
     fn header(&self) -> impl IntoElement {
         div()
@@ -282,7 +347,7 @@ impl Launcher {
             }
         }
 
-        Self::panel(&title, list, true)
+        panel(&title, list, true)
     }
 
     fn details(&self) -> impl IntoElement {
@@ -316,10 +381,10 @@ impl Launcher {
                 body = body.child(div().p_2().text_sm().text_color(rgb(DIM)).child("未选择版本"));
             }
         }
-        Self::panel("详情", body, false)
+        panel("详情", body, false)
     }
 
-    fn log(&self) -> impl IntoElement {
+    fn log_panel(&self) -> impl IntoElement {
         let mut body = div().id("log").v_flex().gap_0p5().p_2().overflow_y_scroll();
         if self.state.log.is_empty() {
             body = body.child(div().text_sm().text_color(rgb(DIM)).child("（空）"));
@@ -327,29 +392,612 @@ impl Launcher {
         for line in self.state.log.iter().rev().take(200).rev() {
             body = body.child(div().text_xs().text_color(rgb(DIM)).child(line.clone()));
         }
-        Self::panel("日志", body, true)
+        panel("日志", body, true)
     }
 
-    fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn main_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h_flex()
-            .items_center()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
             .gap_2()
-            .px_3()
-            .py_1()
-            .text_xs()
-            .child(div().flex_1().text_color(rgb(ACCENT)).child(self.state.status.clone()))
-            .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
-                this.state.request_launch();
-                cx.notify();
-            }))
-            .child(button("刷新", cx, |this: &mut Launcher, cx| {
-                this.state.reload();
-                cx.notify();
-            }))
-            .child(div().text_color(rgb(DIM)).child("下载 · 卸载 · 账户 · Java 尚未接入"))
-            .child(button("退出", cx, |_, cx| cx.quit()))
+            .child(self.header())
+            .child(
+                div()
+                    .h_flex()
+                    .flex_1()
+                    .items_stretch()
+                    .min_h(px(0.0))
+                    .gap_2()
+                    .child(self.version_list(cx))
+                    .child(
+                        div()
+                            .v_flex()
+                            .w(px(420.0))
+                            .h_full()
+                            .gap_2()
+                            .min_h(px(0.0))
+                            .child(self.details())
+                            .child(self.log_panel()),
+                    ),
+            )
+            .child(
+                footer_bar(&self.state.status)
+                    .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
+                        this.state.request_launch();
+                        cx.notify();
+                    }))
+                    .child(button("下载", cx, |this: &mut Launcher, cx| {
+                        this.state.open_download();
+                        cx.notify();
+                    }))
+                    .child(button("账户", cx, |this: &mut Launcher, cx| {
+                        this.state.open_accounts();
+                        cx.notify();
+                    }))
+                    .child(button("刷新", cx, |this: &mut Launcher, cx| {
+                        this.state.reload();
+                        cx.notify();
+                    }))
+                    .child(button("退出", cx, |_, cx| cx.quit())),
+            )
     }
+
+    // ---- accounts ----
+
+    fn accounts_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.state.account.file().map(|path| path.to_path_buf());
+        let mut list = div().id("accounts").v_flex().gap_1().p_2().overflow_y_scroll();
+        if self.state.accounts.is_empty() {
+            list = list.child(
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(rgb(DIM))
+                    .child("还没有保存的账户"),
+            );
+        }
+        for (index, account) in self.state.accounts.iter().enumerate() {
+            let selected = index == self.state.accounts_ui.selected;
+            let active = current.as_deref() == Some(account.file.as_path());
+            list = list.child(
+                div()
+                    .id(format!("account-{index}"))
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
+                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                        this.state.accounts_ui.selected = index;
+                        this.state.accounts_ui.confirm_delete = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .w(px(8.0))
+                            .h(px(8.0))
+                            .rounded_full()
+                            .bg(rgb(if active { ACCENT } else { DIM })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(rgb(if active { ACCENT } else { TEXT }))
+                            .child(account.name()),
+                    )
+                    .child(div().text_xs().text_color(rgb(DIM)).child(account.application.clone())),
+            );
+        }
+
+        let confirm = if self.state.accounts_ui.confirm_delete {
+            "再点一次「移除」确认删除"
+        } else {
+            "Enter 切换 · 移除需要点两次"
+        };
+
+        div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .child(screen_title("账户"))
+            .child(panel("已保存的会话", list, true))
+            .child(footer_bar(confirm).child(
+                primary_button("切换", cx, |this: &mut Launcher, cx| {
+                    this.state.activate_selected_account();
+                    cx.notify();
+                }),
+            )
+            .child(button("移除", cx, |this: &mut Launcher, cx| {
+                this.state.remove_selected_account();
+                cx.notify();
+            }))
+            .child(button("登录新账户", cx, |this: &mut Launcher, cx| {
+                this.state.open_login();
+                cx.notify();
+            }))
+            .child(button("关闭", cx, |this: &mut Launcher, cx| {
+                this.state.close_accounts();
+                cx.notify();
+            })))
+    }
+
+    // ---- login ----
+
+    fn login_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut body = div().v_flex().gap_2().p_3();
+        let hint: String;
+
+        match self.state.login.step.clone() {
+            LoginStep::Choose => {
+                body = body
+                    .child(choice_row("官方启动器".into(), "用 Minecraft 官方启动器的应用身份登录".into(), true, cx, |this: &mut Launcher, cx| {
+                        this.state.start_login(Identity::Official);
+                        cx.notify();
+                    }))
+                    .child(choice_row("自定义 app id".into(), "其他启动器的 Azure 客户端 id（GUI 还没接输入框）".into(), false, cx, |this: &mut Launcher, cx| {
+                        this.state.log("自定义 app id 还没有接到 GUI：先写进 data/凭据/启动器/azure_app_ids.toml，再用现有凭据登录");
+                        cx.notify();
+                    }))
+                    .child(choice_row("现有凭据…".into(), "读 azure_app_ids.toml 里的 app id".into(), true, cx, |this: &mut Launcher, cx| {
+                        this.state.open_app_ids();
+                        cx.notify();
+                    }));
+                hint = "选择用哪个身份登录".to_string();
+            }
+            LoginStep::ChooseAppIds => {
+                if let Some(error) = &self.state.login.app_ids_error {
+                    body = body.child(
+                        div()
+                            .p_2()
+                            .text_sm()
+                            .text_color(rgb(BROKEN))
+                            .child(error.clone()),
+                    );
+                }
+                for (index, entry) in self.state.login.app_ids.iter().enumerate() {
+                    let name = entry.label().to_string();
+                    let app_id = entry.client_id().to_string();
+                    body = body.child(choice_row(
+                        name.clone(),
+                        app_id.clone(),
+                        index == self.state.login.app_id_choice,
+                        cx,
+                        move |this: &mut Launcher, cx| {
+                            this.state.start_login(Identity::Saved {
+                                name: name.clone(),
+                                app_id: app_id.clone(),
+                            });
+                            cx.notify();
+                        },
+                    ));
+                }
+                hint = "点一个身份开始登录".to_string();
+            }
+            LoginStep::EnterAppId => {
+                body = body.child(
+                    div()
+                        .p_2()
+                        .text_sm()
+                        .text_color(rgb(DIM))
+                        .child("自定义 app id 的输入框还没接到 GUI。先写进 data/凭据/启动器/azure_app_ids.toml，再用「现有凭据」登录。"),
+                );
+                hint = "需要文本输入".to_string();
+            }
+            LoginStep::Waiting { user_code, url } => {
+                body = body
+                    .child(field("链接", url.clone()))
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_2xl()
+                            .text_color(rgb(ACCENT))
+                            .font_weight(FontWeight::BOLD)
+                            .child(user_code.clone()),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(button("复制链接", cx, {
+                                let url = url.clone();
+                                move |this: &mut Launcher, _cx| {
+                                    this.state.request(Effect::Copy(url.clone()));
+                                }
+                            }))
+                            .child(button("打开链接", cx, {
+                                let url = url.clone();
+                                move |this: &mut Launcher, _cx| {
+                                    this.state.request(Effect::OpenBrowser(url.clone()));
+                                }
+                            }))
+                            .child(button("复制代码", cx, {
+                                let code = user_code.clone();
+                                move |this: &mut Launcher, _cx| {
+                                    this.state.request(Effect::Copy(code.clone()));
+                                }
+                            })),
+                    );
+                hint = "在浏览器里确认后，这里会自动完成".to_string();
+            }
+            LoginStep::Done { player, application } => {
+                body = body.child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(ACCENT))
+                        .child(format!("登录成功：{player} · {application}")),
+                );
+                hint = "点「关闭」返回".to_string();
+            }
+            LoginStep::Failed(reason) => {
+                body = body.child(
+                    div()
+                        .p_2()
+                        .text_sm()
+                        .text_color(rgb(BROKEN))
+                        .child(format!("登录失败：{reason}")),
+                );
+                hint = "可以关闭后重试".to_string();
+            }
+        }
+
+        div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .child(screen_title("登录"))
+            .child(panel("身份 / 等待授权", body, true))
+            .child(footer_bar(&hint).child(button("关闭", cx, |this: &mut Launcher, cx| {
+                this.state.close_login();
+                cx.notify();
+            })))
+    }
+
+    // ---- download ----
+
+    fn download_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.state.download.stage {
+            DownloadStage::Picking | DownloadStage::LoadingVersions => {
+                self.download_picker(cx).into_any_element()
+            }
+            _ => self.download_progress(cx).into_any_element(),
+        }
+    }
+
+    fn download_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let download = &self.state.download;
+        let mut versions = div()
+            .id("download-versions")
+            .v_flex()
+            .gap_0p5()
+            .p_2()
+            .overflow_y_scroll();
+
+        if download.rows.is_empty() {
+            versions = versions.child(
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(rgb(DIM))
+                    .child(match download.stage {
+                        DownloadStage::LoadingVersions => "正在取版本列表…",
+                        _ => "没有可安装的版本",
+                    }),
+            );
+        }
+
+        for (drawn, row) in download.rows.iter().enumerate().take(400) {
+            let indent = f32::from(row.depth) * 14.0;
+            match row.kind.clone() {
+                RowKind::Version(index) => {
+                    let version = download.version(index);
+                    let picked = index == download.picked;
+                    let id = version.id.clone();
+                    let kind = version.kind.clone();
+                    versions = versions.child(
+                        div()
+                            .id(format!("dl-{drawn}"))
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .ml(px(indent))
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
+                            .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                                this.state.download.picked = index;
+                                this.state.download.refresh_loaders();
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .w(px(8.0))
+                                    .h(px(8.0))
+                                    .rounded_full()
+                                    .bg(rgb(Launcher::kind_color(&kind))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_sm()
+                                    .text_color(rgb(if picked { ACCENT } else { TEXT }))
+                                    .child(id),
+                            ),
+                    );
+                }
+                RowKind::Group {
+                    key,
+                    first,
+                    expanded,
+                    ..
+                } => {
+                    let count = download.rows.len();
+                    let _ = count;
+                    let label = if expanded {
+                        format!("▾ {key}")
+                    } else {
+                        format!("▸ {key}")
+                    };
+                    versions = versions.child(
+                        div()
+                            .id(format!("dl-{drawn}"))
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .ml(px(indent))
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(rgb(PANEL))
+                            .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                                this.state.download.picked = first;
+                                this.state.toggle_row(drawn);
+                                cx.notify();
+                            }))
+                            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(SNAPSHOT)))
+                            .child(div().flex_1().text_sm().text_color(rgb(DIM)).child(label)),
+                    );
+                }
+            }
+        }
+
+        let mut loaders = div().v_flex().gap_1().p_2();
+        for (index, loader) in download.loaders.iter().enumerate() {
+            let picked = index == download.loader_pick;
+            let label = loader.label();
+            loaders = loaders.child(
+                div()
+                    .id(format!("loader-{index}"))
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
+                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                        this.state.download.loader_pick = index;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(rgb(if picked { ACCENT } else { DIM })),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(if picked { ACCENT } else { TEXT }))
+                            .child(label),
+                    ),
+            );
+        }
+
+        let picked = self
+            .state
+            .download
+            .picked_version()
+            .map(|version| version.id.clone())
+            .unwrap_or_else(|| "—".to_string());
+
+        div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .child(screen_title("下载"))
+            .child(
+                div()
+                    .h_flex()
+                    .flex_1()
+                    .items_stretch()
+                    .min_h(px(0.0))
+                    .gap_2()
+                    .child(panel(
+                        &format!("版本 ({})", self.state.download.matched()),
+                        versions,
+                        true,
+                    ))
+                    .child(
+                        div()
+                            .v_flex()
+                            .w(px(260.0))
+                            .gap_2()
+                            .child(panel("安装内容", loaders, true)),
+                    ),
+            )
+            .child(
+                footer_bar(&format!("选中：{picked} · 下载源 {}", self.state.source_label()))
+                    .child(primary_button("安装", cx, |this: &mut Launcher, cx| {
+                        this.state.start_install();
+                        cx.notify();
+                    }))
+                    .child(button("换源", cx, |this: &mut Launcher, cx| {
+                        this.state.toggle_source();
+                        cx.notify();
+                    }))
+                    .child(button("关闭", cx, |this: &mut Launcher, cx| {
+                        this.state.close_download();
+                        cx.notify();
+                    })),
+            )
+    }
+
+    fn download_progress(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let download = &self.state.download;
+        let fraction = download.fraction() as f32;
+        let mut body = div().v_flex().gap_2().p_3();
+
+        body = body
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .child(format!("{}%   {} / {} 个文件", download.percent(), download.done, download.total)),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(10.0))
+                    .rounded_sm()
+                    .bg(rgb(ROW))
+                    .child(
+                        div()
+                            .h_full()
+                            .rounded_sm()
+                            .bg(rgb(ACCENT))
+                            .w(relative(fraction.max(0.001))),
+                    ),
+            );
+
+        if download.speed > 0.0 {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(DIM))
+                    .child(format!("{:.1} MiB/s · 剩余 {:.1} MiB", download.speed / 1_048_576.0, download.remaining_bytes as f64 / 1_048_576.0)),
+            );
+        }
+        if let Some(error) = &download.error {
+            body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
+        }
+        if let Some((version, loader)) = &download.installed {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(ACCENT))
+                    .child(match loader {
+                        Some(loader) => format!("安装完成：{version} · {loader}"),
+                        None => format!("安装完成：{version}"),
+                    }),
+            );
+        }
+
+        div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .child(screen_title("安装"))
+            .child(panel("进度", body, true))
+            .child(footer_bar(&self.state.status).child(button("返回", cx, |this: &mut Launcher, cx| {
+                this.state.close_download();
+                cx.notify();
+            })))
+    }
+
+    fn placeholder_screen(&self, title: &str) -> impl IntoElement {
+        div()
+            .v_flex()
+            .flex_1()
+            .gap_2()
+            .child(screen_title(title))
+            .child(panel(
+                "还没接",
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(rgb(DIM))
+                    .child("这个界面还在 TUI 里"),
+                true,
+            ))
+    }
+}
+
+// ---- shared widgets ----
+
+fn panel(title: &str, body: impl IntoElement, grow: bool) -> impl IntoElement {
+    let mut outer = div()
+        .v_flex()
+        .min_h(px(0.0))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .bg(rgb(PANEL))
+        .overflow_hidden();
+    outer = if grow {
+        outer.flex_1().h_full()
+    } else {
+        outer.h(px(232.0))
+    };
+    outer
+        .child(
+            div()
+                .px_3()
+                .py_1()
+                .text_xs()
+                .text_color(rgb(DIM))
+                .child(title.to_string()),
+        )
+        .child(div().flex_1().min_h(px(0.0)).child(body))
+}
+
+fn screen_title(text: &str) -> impl IntoElement {
+    div()
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(rgb(PANEL))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .child(
+            div()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .bg(rgb(ACCENT))
+                .text_color(rgb(0x0b_0d_10))
+                .font_weight(FontWeight::BOLD)
+                .child("Tessera"),
+        )
+        .child(div().text_sm().text_color(rgb(TEXT)).child(text.to_string()))
+}
+
+fn footer_bar(status: &str) -> Div {
+    div()
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1()
+        .text_xs()
+        .child(
+            div()
+                .flex_1()
+                .text_color(rgb(ACCENT))
+                .child(status.to_string()),
+        )
 }
 
 fn field(label: &str, value: String) -> impl IntoElement {
@@ -364,6 +1012,35 @@ fn field(label: &str, value: String) -> impl IntoElement {
                 .child(label.to_string()),
         )
         .child(div().flex_1().text_xs().text_color(rgb(TEXT)).child(value))
+}
+
+fn choice_row(
+    title: String,
+    subtitle: String,
+    enabled: bool,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(format!("choice-{title}"))
+        .v_flex()
+        .gap_0p5()
+        .px_2()
+        .py_1()
+        .rounded_sm()
+        .bg(rgb(ROW))
+        .on_click(cx.listener(
+            move |this: &mut Launcher, _event, _window, cx| {
+                action(this, cx);
+            },
+        ))
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(if enabled { TEXT } else { DIM }))
+                .child(title),
+        )
+        .child(div().text_xs().text_color(rgb(DIM)).child(subtitle))
 }
 
 fn button(
@@ -407,36 +1084,78 @@ fn primary_button(
         .child(label.to_string())
 }
 
+// ---- platform bits ----
+
+fn copy_to_clipboard(text: &str) -> Result<String, String> {
+    use std::io::Write;
+    let tools: [(&str, &[&str]); 5] = [
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+        ("pbcopy", &[]),
+        ("clip.exe", &[]),
+    ];
+    for (program, args) in tools {
+        let Ok(mut child) = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        if child.wait().map(|status| status.success()).unwrap_or(false) {
+            return Ok(program.to_string());
+        }
+    }
+    Err("没有可用的剪贴板工具（wl-copy / xclip / xsel / pbcopy）".to_string())
+}
+
+fn open_browser(url: &str) -> Result<(), String> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "cmd"
+    } else {
+        "xdg-open"
+    };
+    let mut command = Command::new(program);
+    if cfg!(windows) {
+        command.args(["/C", "start", ""]);
+    }
+    command
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 impl Render for Launcher {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match self.state.screen {
+            Screen::Main => self.main_screen(cx).into_any_element(),
+            Screen::Accounts => self.accounts_screen(cx).into_any_element(),
+            Screen::Login => self.login_screen(cx).into_any_element(),
+            Screen::Download | Screen::Installing => {
+                self.download_screen(cx).into_any_element()
+            }
+            Screen::Java => self.placeholder_screen("Java").into_any_element(),
+        };
+
         div()
             .v_flex()
             .size_full()
-            .gap_2()
             .p_2()
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
-            .child(self.header())
-            .child(
-                div()
-                    .h_flex()
-                    .flex_1()
-                    .items_stretch()
-                    .min_h(px(0.0))
-                    .gap_2()
-                    .child(self.version_list(cx))
-                    .child(
-                        div()
-                            .v_flex()
-                            .w(px(420.0))
-                            .h_full()
-                            .gap_2()
-                            .min_h(px(0.0))
-                            .child(self.details())
-                            .child(self.log()),
-                    ),
-            )
-            .child(self.footer(cx))
+            .child(body)
     }
 }
 

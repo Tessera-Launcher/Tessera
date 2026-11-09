@@ -7492,6 +7492,7 @@ name = "tessera-gui"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "reqwest",
  "tessera-core",
 ]
 

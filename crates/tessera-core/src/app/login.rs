@@ -105,7 +105,7 @@ impl App {
 
     /// Read the app-id list, then show it. The file is re-read every time so an
     /// edit in another window is picked up without restarting the launcher.
-    fn open_app_ids(&mut self) {
+    pub fn open_app_ids(&mut self) {
         let path = self.app_ids_path();
         self.login.app_id_choice = 0;
         self.login.app_id_offset = 0;
@@ -317,7 +317,7 @@ impl App {
     }
 
     /// Freeze the overlay and ask the main loop for a login thread.
-    fn start_login(&mut self, identity: Identity) {
+    pub fn start_login(&mut self, identity: Identity) {
         let label = identity.label();
         self.login.step = LoginStep::Waiting {
             user_code: "……".to_string(),

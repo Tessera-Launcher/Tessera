@@ -320,7 +320,7 @@ impl DownloadUi {
 
     /// Rebuild the loader list for the newly picked version, keeping the choice
     /// when that loader still exists.
-    fn refresh_loaders(&mut self) {
+    pub fn refresh_loaders(&mut self) {
         let Some(version) = self.picked_version() else {
             self.loaders = vec![Loader::None];
             self.loader_pick = 0;
@@ -597,6 +597,12 @@ impl App {
         }
     }
 
+    /// Open or close the group drawn at `drawn`, for a front-end that has the
+    /// row index rather than a keyboard cursor.
+    pub fn toggle_row(&mut self, drawn: usize) {
+        self.toggle_group(drawn, None);
+    }
+
     /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
     /// `drawn` is `None`.
     fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
@@ -627,7 +633,7 @@ impl App {
         self.toggle_group(drawn, expand);
     }
 
-    fn start_install(&mut self) {
+    pub fn start_install(&mut self) {
         let Some(version) = self.download.picked_version() else {
             return;
         };
