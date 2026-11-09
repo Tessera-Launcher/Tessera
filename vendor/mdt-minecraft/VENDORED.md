@@ -203,11 +203,14 @@ required both removed entries and failed with
   it stays in the version JSON and the launcher still needs it);
 - synthesizes the version JSON from `install_profile.versionInfo` when
   `version.json` is absent, keeping the existing mirror rewrite;
-- names the install `<mc>-forge-<ver>` (the installer's own id), not the
-  `<mc>+Forge<ver>` isolation convention: Forge 1.8.9's FML URL-decodes the
-  version name, which turns `+` into a space, then looks for
+- names **every** loader install `<mc>-<loader>-<ver>` (e.g.
+  `<mc>-forge-<ver>`, `<mc>-fabric-<ver>`), dropping upstream's
+  `<mc>+<Loader><ver>` convention. Forge 1.8.9's FML URL-decodes the version
+  name, which turns `+` into a space, then looks for
   `versions/<mc> Forge<ver>/<mc>.jar` and refuses to start ("CRITICAL
-  TAMPERING WITH MINECRAFT").
+  TAMPERING WITH MINECRAFT"). Hyphenated ids are also what Forge/NeoForge's
+  official installers write. `installer_version_id` is now an alias of
+  `loader_version_id`.
 
 Installers that still ship `maven/` and `version.json` take the original path
 unchanged.

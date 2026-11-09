@@ -71,23 +71,23 @@ fn test_mc_version_parse() {
 fn test_loader_version_id() {
     assert_eq!(
         loader_version_id("1.16.5", ModLoader::Fabric, "0.20.0"),
-        "1.16.5+Fabric0.20.0"
+        "1.16.5-fabric-0.20.0"
     );
     assert_eq!(
         loader_version_id("1.20.1", ModLoader::Forge, "47.2.0"),
-        "1.20.1+Forge47.2.0"
+        "1.20.1-forge-47.2.0"
     );
     assert_eq!(
         loader_version_id("1.20.1", ModLoader::Neoforge, "47.1.106"),
-        "1.20.1+NeoForge47.1.106"
+        "1.20.1-neoforge-47.1.106"
     );
     assert_eq!(
         loader_version_id("1.20.1", ModLoader::Quilt, "0.24.0"),
-        "1.20.1+Quilt0.24.0"
+        "1.20.1-quilt-0.24.0"
     );
     assert_eq!(
         loader_version_id("1.12.2", ModLoader::Liteloader, "1.12.2"),
-        "1.12.2+LiteLoader1.12.2"
+        "1.12.2-liteloader-1.12.2"
     );
 }
 

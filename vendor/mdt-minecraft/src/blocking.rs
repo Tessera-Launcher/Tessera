@@ -427,15 +427,15 @@ mod tests {
         let installed = client
             .install_modloader(&vanilla_dir, ModLoader::Fabric, "0.20.0", true)
             .unwrap();
-        assert_eq!(installed.id, "1.20.1+Fabric0.20.0");
+        assert_eq!(installed.id, "1.20.1-fabric-0.20.0");
 
         let json = dir
             .join("versions")
-            .join("1.20.1+Fabric0.20.0")
-            .join("1.20.1+Fabric0.20.0.json");
+            .join("1.20.1-fabric-0.20.0")
+            .join("1.20.1-fabric-0.20.0.json");
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
-        assert_eq!(value["id"], "1.20.1+Fabric0.20.0");
+        assert_eq!(value["id"], "1.20.1-fabric-0.20.0");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

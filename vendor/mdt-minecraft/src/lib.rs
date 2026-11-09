@@ -30,7 +30,7 @@
 //! # Isolation guarantee
 //!
 //! Every loader install lands in `versions/<mc_version>+<Loader><loader_version>` (for example
-//! `versions/1.16.5+Fabric0.20.0`). The vanilla `versions/<mc_version>` folder is never touched,
+//! `versions/1.16.5-fabric-0.20.0`). The vanilla `versions/<mc_version>` folder is never touched,
 //! so a broken loader can't wreck your vanilla game.
 //!
 //! # Errors

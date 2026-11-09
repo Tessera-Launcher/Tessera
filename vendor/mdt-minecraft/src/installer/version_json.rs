@@ -18,8 +18,7 @@ use crate::urls::ManifestUrls;
 use super::{
     copy_dir_recursive_reported, download_artifact_verified_reported,
     download_maven_fallback_reported, ensure_empty_dir, libraries_dir, library_path_from_name,
-    installer_version_id, loader_version_id, target_version_dir, unzip_jar, version_dir,
-    InstallMethod, InstallRequest,
+    loader_version_id, target_version_dir, unzip_jar, version_dir, InstallMethod, InstallRequest,
     InstalledVersion,
 };
 
@@ -448,11 +447,7 @@ pub async fn install_legacy_forge(
             })?
     };
 
-    // Use the installer's naming (`<mc>-forge-<ver>`), not the `<mc>+Forge<ver>`
-    // isolation convention. Forge 1.8.9's FML derives the Minecraft jar path from
-    // the version name with a `URLDecoder`, which turns `+` into a space and then
-    // looks for `versions/<mc> Forge<ver>/<mc>.jar`; the game refuses to start.
-    let id = installer_version_id(mc_version, ModLoader::Forge, loader_version);
+    let id = loader_version_id(mc_version, ModLoader::Forge, loader_version);
     raw["id"] = serde_json::Value::String(id.clone());
     let mirrored = apply_mirror_to_json(raw, mirror, urls);
 

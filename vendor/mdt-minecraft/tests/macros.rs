@@ -15,11 +15,11 @@ fn version_dir_macro_produces_isolated_path() {
         .unwrap();
 
     let path = version_dir!(client, "1.16.5", Fabric, "0.20.0");
-    assert!(path.ends_with("versions/1.16.5+Fabric0.20.0"));
+    assert!(path.ends_with("versions/1.16.5-fabric-0.20.0"));
 
     // The bare loader identifier maps to the corresponding `ModLoader` variant.
     let path = version_dir!(client, "1.20.1", Neoforge, "47.1.106");
-    assert!(path.ends_with("versions/1.20.1+NeoForge47.1.106"));
+    assert!(path.ends_with("versions/1.20.1-neoforge-47.1.106"));
 }
 
 #[test]

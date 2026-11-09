@@ -151,28 +151,33 @@ pub async fn install_modloader(
 // ===== shared helpers =====
 
 #[cfg(not(feature = "minimal"))]
-/// Compute the isolated version ID for Method B: `[mc_version]+[Loader][LoaderVersion]`.
+/// Compute the isolated version ID: `[mc_version]-[loader]-[LoaderVersion]`.
 ///
-/// For example `1.16.5+Fabric0.20.0` or `1.20.1+Forge47.2.0`. This ID is used as the
-/// `versions/<id>` directory name, the version JSON filename, and the JSON's internal `id`
-/// field — keeping the loader completely isolated from the vanilla `versions/<mc_version>`.
+/// For example `1.16.5-fabric-0.20.0`, `1.20.1-forge-47.2.0` or
+/// `1.12.2-liteloader-1.12.2`. This ID is used as the `versions/<id>` directory
+/// name, the version JSON filename, and the JSON's internal `id` field — keeping
+/// the loader isolated from the vanilla `versions/<mc_version>`.
+///
+/// No `+`: Forge 1.8.9's FML URL-decodes the version name, where `+` means a
+/// space, and then looks for the vanilla jar in a directory that does not exist.
+/// The hyphenated form is also what Forge's and NeoForge's official installers
+/// write, so it keeps every loader uniform.
 #[must_use]
 pub fn loader_version_id(mc_version: &str, loader: ModLoader, loader_version: &str) -> String {
-    format!("{mc_version}+{}{}", loader.display_name(), loader_version)
+    format!(
+        "{mc_version}-{}-{loader_version}",
+        loader.display_name().to_lowercase()
+    )
 }
 
 #[cfg(not(feature = "minimal"))]
-/// Compute the version ID produced by the official installer (Method A: Forge / NeoForge).
+/// The version ID produced by the official installer (Method A: Forge / NeoForge).
 ///
-/// These IDs must match what the official installer writes on disk (e.g.
-/// `1.20.1-forge-47.2.0`, `1.20.1-neoforge-47.1.106`) so the result can be verified.
+/// This is the same hyphenated form as [`loader_version_id`]; the function is
+/// kept so callers can say which install method they mean.
 #[must_use]
 pub fn installer_version_id(mc_version: &str, loader: ModLoader, loader_version: &str) -> String {
-    match loader {
-        ModLoader::Forge => format!("{mc_version}-forge-{loader_version}"),
-        ModLoader::Neoforge => format!("{mc_version}-neoforge-{loader_version}"),
-        _ => loader_version_id(mc_version, loader, loader_version),
-    }
+    loader_version_id(mc_version, loader, loader_version)
 }
 
 #[cfg(not(feature = "minimal"))]

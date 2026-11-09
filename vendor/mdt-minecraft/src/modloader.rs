@@ -20,7 +20,7 @@ pub enum ModLoader {
 
 impl ModLoader {
     /// The canonical display name, used in isolated version IDs and directory names
-    /// (e.g. `1.20.1+Fabric0.15.11`).
+    /// (e.g. `1.20.1-fabric-0.15.11`).
     #[must_use]
     pub fn display_name(self) -> &'static str {
         match self {
