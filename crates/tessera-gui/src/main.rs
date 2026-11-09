@@ -14,9 +14,10 @@ use gpui_kit::*;
 
 use tessera_core::app::{App as State, DownloadStage, Effect, LoginStep, Screen};
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
+use tessera_core::input::{Key, Modifiers};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};
-use tessera_core::{accounts, aot, discover, logfile, paths::Paths, session, version_tree::RowKind};
+use tessera_core::{accounts, aot, cleanup, discover, logfile, paths::Paths, session, version_tree::RowKind};
 
 const ACCENT: u32 = 0x6c_d6_7a;
 const SNAPSHOT: u32 = 0xe8_c9_6a;
@@ -36,14 +37,23 @@ struct Launcher {
     login_rx: Option<Receiver<LoginEvent>>,
     install_rx: Option<Receiver<InstallEvent>>,
     aot_rx: Option<Receiver<aot::Event>>,
+    sweep_rx: Option<Receiver<cleanup::Sweep>>,
     launch_rx: Vec<Receiver<launch::GameEvent>>,
     /// `data/日志/tessera.log`; `None` once a write failed, so a full disk does
     /// not fail again on every frame.
     log_file: Option<logfile::LogFile>,
+    /// Who receives key events. Focused unless a text field takes it, which is
+    /// what keeps typing into the search box from triggering shortcuts.
+    focus_handle: FocusHandle,
+    /// Focusing in `open_window`'s callback is too early: the div does not exist
+    /// yet and the first draw drops the focus again, so it is retried once the
+    /// view has rendered.
+    focus_scheduled: bool,
 }
 
 impl Launcher {
-    fn new() -> Self {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
         let data = Paths::discover();
         let root = data.game();
         let mut state = State::new(
@@ -82,13 +92,48 @@ impl Launcher {
             login_rx: None,
             install_rx: None,
             aot_rx: None,
+            sweep_rx: None,
             launch_rx: Vec::new(),
             log_file,
+            focus_handle,
+            focus_scheduled: false,
         }
+    }
+
+    /// Hand one keystroke to the state machine, then run whatever it queued.
+    ///
+    /// Everything the keyboard can do already lives in `App::handle_key`, so the
+    /// front-end only translates: a second key map here would drift from the TUI.
+    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_handle.is_focused(window) {
+            return;
+        }
+        let Some(code) = gui_key(&event.keystroke) else {
+            return;
+        };
+        let mut modifiers = Modifiers::NONE;
+        if event.keystroke.modifiers.control {
+            modifiers = modifiers | Modifiers::CONTROL;
+        }
+        if event.keystroke.modifiers.shift {
+            modifiers = modifiers | Modifiers::SHIFT;
+        }
+        if event.keystroke.modifiers.alt {
+            modifiers = modifiers | Modifiers::ALT;
+        }
+        self.state.handle_key(code, modifiers);
+        self.step(cx);
+        // A key that only moves the selection or writes a status line queues no
+        // effect, so `step` has nothing to notify about; the repaint is ours.
+        cx.notify();
     }
 
     /// Run the effects the state machine queued, and feed worker reports back.
     fn step(&mut self, cx: &mut Context<Self>) {
+        if self.state.should_quit {
+            cx.quit();
+            return;
+        }
         let mut changed = false;
 
         for effect in self.state.take_effects() {
@@ -132,6 +177,14 @@ impl Launcher {
                         dir,
                         credentials,
                         self.state.launch_options.clone(),
+                    ));
+                }
+                Effect::Sweep(installed) => {
+                    // Walking the shared library tree stats thousands of files.
+                    self.sweep_rx = Some(cleanup::spawn(
+                        self.state.root.clone(),
+                        self.state.cache.clone(),
+                        installed,
                     ));
                 }
                 Effect::TrainAot(version) => {
@@ -213,6 +266,25 @@ impl Launcher {
             // The progress bar smooths its speed from samples; ask it to age them.
             if self.state.tick() {
                 changed = true;
+            }
+        }
+
+        if let Some(rx) = self.sweep_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(sweep) => {
+                        self.state.handle_sweep(sweep);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.sweep_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
             }
         }
 
@@ -1178,6 +1250,31 @@ fn primary_button(
         .child(label.to_string())
 }
 
+/// Translate one GPUI keystroke into the state machine's vocabulary.
+fn gui_key(keystroke: &Keystroke) -> Option<Key> {
+    Some(match keystroke.key.as_str() {
+        "enter" => Key::Enter,
+        "escape" => Key::Esc,
+        "tab" => Key::Tab,
+        "backtab" | "shift-tab" => Key::BackTab,
+        "backspace" => Key::Backspace,
+        "delete" => Key::Delete,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "pageup" | "page_up" => Key::PageUp,
+        "pagedown" | "page_down" => Key::PageDown,
+        "space" => Key::Char(' '),
+        _ => {
+            let text = keystroke.key_char.as_deref().unwrap_or(&keystroke.key);
+            Key::Char(text.chars().next()?)
+        }
+    })
+}
+
 // ---- platform bits ----
 
 fn copy_to_clipboard(text: &str) -> Result<String, String> {
@@ -1232,7 +1329,13 @@ fn open_browser(url: &str) -> Result<(), String> {
 }
 
 impl Render for Launcher {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.focus_scheduled {
+            self.focus_scheduled = true;
+            cx.on_next_frame(window, |this, window, cx| {
+                window.focus(&this.focus_handle, cx);
+            });
+        }
         let body = match self.state.screen {
             Screen::Main => self.main_screen(cx).into_any_element(),
             Screen::Accounts => self.accounts_screen(cx).into_any_element(),
@@ -1249,6 +1352,10 @@ impl Render for Launcher {
             .p_2()
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_key(event, window, cx);
+            }))
             .child(body)
     }
 }
@@ -1257,7 +1364,7 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let launcher = cx.new(|cx| {
-            let mut launcher = Launcher::new();
+            let mut launcher = Launcher::new(cx);
             launcher.start(cx);
             launcher
         });
@@ -1271,8 +1378,11 @@ fn main() {
                 ..WindowOptions::default()
             },
             cx,
-            move |window, _cx| {
+            move |window, cx| {
                 window.set_window_title("Tessera");
+                // Without this, keys go nowhere until something is clicked.
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
                 view.clone()
             },
         )
