@@ -181,6 +181,29 @@ Forge at all.
   `detect_java()`. `None` keeps upstream's detection, so the crate still works standalone.
 - Forge and NeoForge pass `req.java`; Fabric, Quilt and LiteLoader never start a JVM and ignore it.
 
+### 10. Rebuilt legacy Forge installers (no `maven/`, no `version.json`)
+
+Forge re-cut its pre-1.13 installers in 2021. Those archives carry neither the
+old top-level `maven/` directory nor `version.json`; they hold the universal jar
+at the root plus `install_profile.json`, whose `versionInfo` is the version JSON
+and whose `libraries` list names every dependency. The legacy unpack path
+required both removed entries and failed with
+"legacy Forge installer is missing `maven/`".
+
+`installer::version_json::install_legacy_forge` now:
+
+- falls back to `install_profile.json` when `maven/` is absent;
+- copies `install.filePath` (the root universal jar) to the Maven path named by
+  `install.path`, which is where the version JSON and the launcher expect it;
+- downloads `versionInfo.libraries` into `libraries/` when missing, using each
+  entry's `url` and defaulting to `https://libraries.minecraft.net/`, skipping
+  `clientreq: false` entries;
+- synthesizes the version JSON from `install_profile.versionInfo` when
+  `version.json` is absent, keeping the existing mirror/id rewrite.
+
+Installers that still ship `maven/` and `version.json` take the original path
+unchanged.
+
 ## Tests added
 
 `src/asset.rs`: `legacy_index_flags_are_parsed`,
@@ -191,6 +214,8 @@ Forge at all.
 `src/virtual_dir.rs`: `copy_into_target_accepts_the_link_it_was_trying_to_make`.
 
 `src/asset.rs`: `missing_locally_reports_one_entry_per_hash_not_per_name`.
+
+`src/installer/version_json.rs`: `rebuilt_legacy_installer_is_deployed_from_install_profile`.
 
 `src/downloader.rs`: `asset_tasks_are_built_once_per_hash`,
 `progress_reports_on_a_time_cadence_not_a_file_count`,

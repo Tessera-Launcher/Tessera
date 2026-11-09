@@ -16,7 +16,7 @@ use crate::security::is_safe_manifest_url;
 use crate::urls::ManifestUrls;
 
 use super::{
-    copy_dir_recursive_reported, download_artifact_verified_reported,
+    copy_dir_recursive_reported, copy_file, download_artifact_verified_reported,
     download_maven_fallback_reported, ensure_empty_dir, libraries_dir, library_path_from_name,
     loader_version_id, target_version_dir, unzip_jar, version_dir, InstallMethod, InstallRequest,
     InstalledVersion,
@@ -390,26 +390,62 @@ pub async fn install_legacy_forge(
     let unpack = temp.join("unpack");
     unzip_jar(&installer_jar, &unpack).await?;
 
-    // 1. Flatten the installer's `maven/` into `libraries/`.
+    // 1. Flatten the installer's `maven/` into `libraries/`, when it still ships one.
+    //
+    // Forge rebuilt its old installers in 2021: from then on they carry only
+    // `install_profile.json` plus the universal jar at the archive root, and expect
+    // the installer (i.e. us) to fetch the library list from `versionInfo`.
+    let profile_path = unpack.join("install_profile.json");
+    let profile = if profile_path.is_file() {
+        let text = crate::io::read_to_string(&profile_path).await.map_err(|e| {
+            MdtError::IoError(e).context(format!(
+                "installer is missing install_profile.json at {}",
+                profile_path.display()
+            ))
+        })?;
+        Some(
+            serde_json::from_str::<serde_json::Value>(&text)
+                .map_err(|e| MdtError::JsonParseError(e).context("parsing install_profile.json"))?,
+        )
+    } else {
+        None
+    };
+
     let maven_src = unpack.join("maven");
-    if !maven_src.exists() {
+    if maven_src.exists() {
+        copy_dir_recursive_reported(&maven_src, &libraries_dir(root), reporter).await?;
+    } else if let Some(profile) = &profile {
+        deploy_legacy_profile(downloader, profile, &unpack, root, mirror, urls, reporter).await?;
+    } else {
         let _ = crate::io::remove_dir_all(&temp).await;
         return Err(MdtError::LoaderInstallFailed(
-            "legacy Forge installer is missing `maven/`".to_string(),
+            "legacy Forge installer has neither `maven/` nor `install_profile.json`".to_string(),
         ));
     }
-    copy_dir_recursive_reported(&maven_src, &libraries_dir(root), reporter).await?;
 
-    // 2. Read and mirror `version.json`.
+    // 2. Read and mirror `version.json`, or synthesize it from `versionInfo`.
     let vjson_path = unpack.join("version.json");
-    let raw_text = crate::io::read_to_string(&vjson_path).await.map_err(|e| {
-        MdtError::IoError(e).context(format!(
-            "installer is missing version.json at {}",
-            vjson_path.display()
-        ))
-    })?;
-    let mut raw: serde_json::Value = serde_json::from_str(&raw_text)
-        .map_err(|e| MdtError::JsonParseError(e).context("parsing legacy Forge version.json"))?;
+    let mut raw: serde_json::Value = if vjson_path.is_file() {
+        let raw_text = crate::io::read_to_string(&vjson_path).await.map_err(|e| {
+            MdtError::IoError(e).context(format!(
+                "installer is missing version.json at {}",
+                vjson_path.display()
+            ))
+        })?;
+        serde_json::from_str(&raw_text)
+            .map_err(|e| MdtError::JsonParseError(e).context("parsing legacy Forge version.json"))?
+    } else {
+        profile
+            .as_ref()
+            .and_then(|profile| profile.get("versionInfo"))
+            .cloned()
+            .ok_or_else(|| {
+                MdtError::LoaderInstallFailed(
+                    "legacy Forge installer has no version.json and no install_profile.versionInfo"
+                        .to_string(),
+                )
+            })?
+    };
 
     // Override the installer's own ID with the isolation convention.
     let id = loader_version_id(mc_version, ModLoader::Forge, loader_version);
@@ -440,6 +476,114 @@ pub async fn install_legacy_forge(
         version_json,
         jar: None,
     })
+}
+
+/// Deploy the pieces a rebuilt legacy Forge installer carries instead of `maven/`.
+///
+/// The archive root holds `forge-<mc>-<forge>-universal.jar`; `install_profile.json`
+/// names it in `install.filePath` and the Maven coordinate it belongs to in
+/// `install.path`. Everything else comes from `versionInfo.libraries`, where `url`
+/// is optional (Forge's own installer defaults to Mojang's library host).
+#[allow(clippy::too_many_arguments)]
+async fn deploy_legacy_profile(
+    downloader: &dyn Downloader,
+    profile: &serde_json::Value,
+    unpack: &Path,
+    root: &Path,
+    mirror: &Mirror,
+    urls: &ManifestUrls,
+    reporter: &dyn ProgressReporter,
+) -> Result<(), MdtError> {
+    let install = profile.get("install");
+    let version_info = profile.get("versionInfo").ok_or_else(|| {
+        MdtError::LoaderInstallFailed("install_profile.json has no versionInfo".to_string())
+    })?;
+    let libraries = version_info
+        .get("libraries")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    // 1. Put the universal jar where the Maven coordinate says it lives.
+    let forge_name = install
+        .and_then(|install| install.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            libraries.iter().find_map(|library| {
+                let name = library.get("name")?.as_str()?;
+                name.starts_with("net.minecraftforge:forge:").then(|| name.to_string())
+            })
+        });
+    let forge_name = forge_name.ok_or_else(|| {
+        MdtError::LoaderInstallFailed(
+            "install_profile.json names no Forge artifact to deploy".to_string(),
+        )
+    })?;
+    let file_name = install
+        .and_then(|install| install.get("filePath"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let source = if file_name.is_empty() {
+        // Older profiles omit `filePath`; the archive root still names the jar.
+        std::fs::read_dir(unpack)
+            .ok()
+            .and_then(|entries| {
+                entries.flatten().map(|entry| entry.path()).find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with("-universal.jar"))
+                })
+            })
+            .unwrap_or_default()
+    } else {
+        unpack.join(file_name)
+    };
+    if !source.is_file() {
+        return Err(MdtError::LoaderInstallFailed(format!(
+            "legacy Forge installer is missing the universal jar at {}",
+            source.display()
+        )));
+    }
+    let dest = libraries_dir(root).join(library_path_from_name(&forge_name)?);
+    if let Some(parent) = dest.parent() {
+        crate::io::create_dir_all(parent).await?;
+    }
+    copy_file(&source, &dest).await?;
+
+    // 2. Fetch every library the profile lists, unless it is already on disk.
+    for library in &libraries {
+        let Some(name) = library.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if name.starts_with("net.minecraftforge:forge:") {
+            continue; // the universal jar, deployed above
+        }
+        if library.get("clientreq").and_then(serde_json::Value::as_bool) == Some(false) {
+            continue;
+        }
+        let rel = library_path_from_name(name)?;
+        if libraries_dir(root).join(&rel).is_file() {
+            continue;
+        }
+        let base = library
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("https://libraries.minecraft.net/");
+        download_library(
+            downloader,
+            name,
+            base,
+            root,
+            mirror,
+            urls,
+            reporter,
+            Some(version_info.get("id").and_then(serde_json::Value::as_str).unwrap_or("Forge")),
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Read `minecraftArguments` and `mainClass` from an installed vanilla version JSON.
@@ -925,5 +1069,101 @@ mod tests {
         assert_eq!(main.as_deref(), Some("net.minecraft.client.main.Main"));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn rebuilt_legacy_installer_is_deployed_from_install_profile() {
+        // 2021+ Forge rebuilds ship no `maven/` and no `version.json`: only
+        // `install_profile.json` and the universal jar at the archive root.
+        use std::future::Future;
+        use std::pin::Pin;
+
+        struct Fake;
+        impl Downloader for Fake {
+            fn download<'a>(
+                &'a self,
+                _url: &'a str,
+                dest: &'a Path,
+            ) -> Pin<Box<dyn Future<Output = Result<(), MdtError>> + Send + 'a>> {
+                Box::pin(async move {
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(dest, b"lib-bytes")?;
+                    Ok(())
+                })
+            }
+
+            fn fetch<'a>(
+                &'a self,
+                _url: &'a str,
+            ) -> Pin<Box<dyn Future<Output = Result<String, MdtError>> + Send + 'a>> {
+                // No .sha1 sidecar: the plain download path is used.
+                Box::pin(async { Err(MdtError::InvalidManifest("no checksum".to_string())) })
+            }
+        }
+
+        let root = unique_dir("legacy-profile-root");
+        let unpack = unique_dir("legacy-profile-unpack");
+        std::fs::create_dir_all(&unpack).unwrap();
+        std::fs::write(
+            unpack.join("forge-1.12.2-14.23.0.2486-universal.jar"),
+            b"universal",
+        )
+        .unwrap();
+        let profile: serde_json::Value = serde_json::from_str(
+            r#"{
+                "install": {
+                    "path": "net.minecraftforge:forge:1.12.2-14.23.0.2486",
+                    "filePath": "forge-1.12.2-14.23.0.2486-universal.jar"
+                },
+                "versionInfo": {
+                    "id": "1.12.2-forge-14.23.0.2486",
+                    "libraries": [
+                        {"name": "net.minecraftforge:forge:1.12.2-14.23.0.2486",
+                         "url": "https://maven.minecraftforge.net/"},
+                        {"name": "net.minecraft:launchwrapper:1.12"},
+                        {"name": "jline:jline:2.13",
+                         "url": "https://maven.minecraftforge.net/", "clientreq": false}
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mirror = Mirror::Mojang;
+        let urls = ManifestUrls::try_new(&mirror).unwrap();
+        deploy_legacy_profile(
+            &Fake,
+            &profile,
+            &unpack,
+            &root,
+            &mirror,
+            &urls,
+            &StderrReporter::default(),
+        )
+        .await
+        .unwrap();
+
+        let libs = libraries_dir(&root);
+        assert_eq!(
+            std::fs::read(
+                libs.join("net/minecraftforge/forge/1.12.2-14.23.0.2486/forge-1.12.2-14.23.0.2486.jar")
+            )
+            .unwrap(),
+            b"universal"
+        );
+        // A library without `url` defaults to Mojang's library host.
+        assert!(libs
+            .join("net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar")
+            .is_file());
+        // A client=false library is not part of a client install.
+        assert!(!libs
+            .join("jline/jline/2.13/jline-2.13.jar")
+            .exists());
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&unpack).ok();
     }
 }
