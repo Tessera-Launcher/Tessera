@@ -58,12 +58,27 @@ struct Launcher {
     app_id_sub: Option<Subscription>,
     proxy_input: Option<Entity<InputState>>,
     proxy_sub: Option<Subscription>,
+    /// `data/配置.toml`; edits to the persisted fields are written back here.
+    settings_path: std::path::PathBuf,
 }
 
 impl Launcher {
     fn new(cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let data = Paths::discover();
+        // A fresh install has no `data/` tree at all. Create it before scanning,
+        // and point MDT at its portable cache before any worker starts.
+        let mut startup_notes = Vec::new();
+        if let Err(error) = data.ensure() {
+            startup_notes.push(format!("无法创建数据目录 {}：{error}", data.root().display()));
+        }
+        let cache = match data.adopt_vendor_cache() {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                startup_notes.push(format!("无法创建缓存目录 {}：{error}", data.cache().display()));
+                None
+            }
+        };
         let root = data.game();
         let mut state = State::new(
             root.clone(),
@@ -74,11 +89,28 @@ impl Launcher {
         state.set_runtimes(data.runtimes());
         state.launch_options.fastmenu_agent =
             Some(data.root().join("缓存").join("fastmenu-agent.jar"));
-        let (settings, error) =
-            tessera_core::settings::load(&tessera_core::settings::Settings::path(data.root()));
+        let settings_path = tessera_core::settings::Settings::path(data.root());
+        let (settings, error) = tessera_core::settings::load(&settings_path);
+        // The state machine starts from the built-in launch defaults; the file
+        // is what the user keeps their heap and window size in, so apply it here.
+        state.launch_options.memory_mb = settings.memory_mb;
+        state.launch_options.width = settings.window_width;
+        state.launch_options.height = settings.window_height;
         state.settings = settings;
+        for note in startup_notes {
+            state.log(note);
+        }
         if let Some(error) = error {
             state.log(format!("配置读取失败：{error}"));
+        }
+        if let Some(cache) = cache {
+            // Only a cache inside our own tree is ours to prune: an `MDT_HOME`
+            // pointing elsewhere may be shared with another launcher.
+            if cache.starts_with(data.root()) {
+                state.cache = Some(cache);
+            } else {
+                state.log("缓存不在数据目录内，卸载时不清理它");
+            }
         }
         state.log(format!("数据目录 {}", data.root().display()));
         state.log(format!("游戏目录 {}", root.display()));
@@ -113,6 +145,7 @@ impl Launcher {
             app_id_sub: None,
             proxy_input: None,
             proxy_sub: None,
+            settings_path,
         }
     }
 
@@ -367,14 +400,11 @@ impl Launcher {
         // window. A burst goes out as one write.
         if !self.state.pending_log.is_empty() {
             let lines = std::mem::take(&mut self.state.pending_log);
-            match self.log_file.as_mut() {
-                Some(file) => {
-                    if let Err(error) = file.write_lines(&lines) {
-                        self.log_file = None;
-                        eprintln!("日志文件写入失败：{error}");
-                    }
+            if let Some(file) = self.log_file.as_mut() {
+                if let Err(error) = file.write_lines(&lines) {
+                    self.log_file = None;
+                    eprintln!("日志文件写入失败：{error}");
                 }
-                None => {}
             }
         }
 
@@ -483,6 +513,11 @@ impl Launcher {
                     let text = state.read(cx).value().to_string();
                     this.state.java.proxy = text.clone();
                     this.state.settings.github_proxy = text;
+                    if let Err(error) =
+                        tessera_core::settings::save(&this.settings_path, &this.state.settings)
+                    {
+                        this.state.log(format!("配置写入失败：{error}"));
+                    }
                     cx.notify();
                 }
             },
@@ -884,39 +919,52 @@ impl Launcher {
                 hint = "Enter 或「开始登录」提交".to_string();
             }
             LoginStep::Waiting { user_code, url } => {
-                body = body
-                    .child(field("链接", url.clone()))
-                    .child(
-                        div()
-                            .mt_2()
-                            .text_2xl()
-                            .text_color(rgb(ACCENT))
-                            .font_weight(FontWeight::BOLD)
-                            .child(user_code.clone()),
-                    )
-                    .child(
-                        div()
-                            .h_flex()
-                            .gap_2()
-                            .child(button("复制链接", cx, {
-                                let url = url.clone();
-                                move |this: &mut Launcher, _cx| {
-                                    this.state.request(Effect::Copy(url.clone()));
-                                }
-                            }))
-                            .child(button("打开链接", cx, {
-                                let url = url.clone();
-                                move |this: &mut Launcher, _cx| {
-                                    this.state.request(Effect::OpenBrowser(url.clone()));
-                                }
-                            }))
-                            .child(button("复制代码", cx, {
-                                let code = user_code.clone();
-                                move |this: &mut Launcher, _cx| {
-                                    this.state.request(Effect::Copy(code.clone()));
-                                }
-                            })),
-                    );
+                let ready = !user_code.is_empty() && !url.is_empty();
+                body = body.child(if ready {
+                    div()
+                        .v_flex()
+                        .gap_2()
+                        .child(field("链接", url.clone()))
+                        .child(
+                            div()
+                                .mt_2()
+                                .text_2xl()
+                                .text_color(rgb(ACCENT))
+                                .font_weight(FontWeight::BOLD)
+                                .child(user_code.clone()),
+                        )
+                        .child(
+                            div()
+                                .h_flex()
+                                .gap_2()
+                                .child(button("复制链接", cx, {
+                                    let url = url.clone();
+                                    move |this: &mut Launcher, _cx| {
+                                        this.state.request(Effect::Copy(url.clone()));
+                                    }
+                                }))
+                                .child(button("打开链接", cx, {
+                                    let url = url.clone();
+                                    move |this: &mut Launcher, _cx| {
+                                        this.state.request(Effect::OpenBrowser(url.clone()));
+                                    }
+                                }))
+                                .child(button("复制代码", cx, {
+                                    let code = user_code.clone();
+                                    move |this: &mut Launcher, _cx| {
+                                        this.state.request(Effect::Copy(code.clone()));
+                                    }
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .p_2()
+                        .text_sm()
+                        .text_color(rgb(DIM))
+                        .child("正在向 Microsoft 申请设备代码…")
+                        .into_any_element()
+                });
                 hint = "在浏览器里确认后，这里会自动完成".to_string();
             }
             LoginStep::Done { player, application } => {

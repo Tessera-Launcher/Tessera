@@ -95,7 +95,7 @@ impl App {
     }
 
     /// `data/凭据/启动器/azure_app_ids.toml`, derived from the account directory
-    /// so tests and `--dir` runs keep everything inside the same tree.
+    /// so tests and `TESSERA_DATA` runs keep everything inside the same tree.
     pub fn app_ids_path(&self) -> PathBuf {
         match self.accounts_dir.parent() {
             Some(credentials) => crate::app_ids::path_under(credentials),
@@ -318,9 +318,11 @@ impl App {
     /// Freeze the overlay and ask the main loop for a login thread.
     pub fn start_login(&mut self, identity: Identity) {
         let label = identity.label();
+        // Empty fields are the "asking Microsoft" placeholder: the Waiting
+        // screen must not offer to copy or open a string that is not a code.
         self.login.step = LoginStep::Waiting {
-            user_code: "……".to_string(),
-            url: "正在向 Microsoft 申请设备代码".to_string(),
+            user_code: String::new(),
+            url: String::new(),
         };
         self.status = format!("登录：{label}");
         self.log(format!("开始登录：{label}"));

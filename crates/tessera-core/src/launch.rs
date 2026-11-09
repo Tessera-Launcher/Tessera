@@ -298,7 +298,6 @@ fn prepare_inner(
     args.push(format!("-Xmx{}M", options.memory_mb));
     // Only if the profile did not ask for a natives directory itself: ours is the
     // same path, but a duplicate `-D` reads like a conflict when debugging
-    // `--print-launch`.
     if !args
         .iter()
         .any(|arg| arg.starts_with("-Djava.library.path="))
@@ -316,7 +315,7 @@ fn prepare_inner(
     }
     // Only if the profile did not put the classpath in its own jvm arguments:
     // every 1.13+ profile already ends with `-cp ${classpath}`, and appending a
-    // second one only makes `--print-launch` look broken. The comparison is
+    // second one only makes the command look broken. The comparison is
     // against the resolved string, so a profile that passes something else to
     // `-cp` still gets ours (the last one wins).
     if !args.iter().any(|arg| arg == &classpath_string) {

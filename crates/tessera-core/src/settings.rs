@@ -3,12 +3,12 @@
 //! Only things the launcher genuinely owns live here: the heap size and the
 //! window size, plus the GitHub proxy the user typed for the Java screen. The
 //! download source is deliberately *not* persisted (a one-off switch should not
-//! become the new normal; `--mirror` decides the start value), and nothing about
+//! become the new normal), and nothing about
 //! credentials or accounts is written here.
 //!
 //! The file is optional: a missing or broken one falls back to the built-in
-//! defaults and says why in the log. `--memory` / `--resolution` update it, so a
-//! flag given once does not have to be repeated every start.
+//! defaults and says why in the log. The GUI applies the values at startup; a
+//! hand edit takes effect on the next start.
 
 use std::path::Path;
 

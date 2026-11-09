@@ -169,11 +169,18 @@ pub fn dir_size(path: &Path) -> u64 {
             return;
         };
         for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
+            // `entry.metadata()` follows symlinks: a self-referential link would
+            // recurse forever, and a link to another tree would report bytes this
+            // version does not own. `file_type` does not follow.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
                 walk(&entry.path(), total);
-            } else {
-                *total += meta.len();
+            } else if file_type.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    *total += meta.len();
+                }
             }
         }
     }
@@ -287,5 +294,17 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KiB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MiB");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_size_does_not_follow_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("real.bin"), vec![b'x'; 7]).unwrap();
+        // A link back to the directory itself must not be walked forever, and a
+        // link outside the tree must not make us count somebody else's bytes.
+        std::os::unix::fs::symlink(".", tmp.path().join("loop")).unwrap();
+        std::os::unix::fs::symlink("/", tmp.path().join("outside")).unwrap();
+        assert_eq!(dir_size(tmp.path()), 7);
     }
 }

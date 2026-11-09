@@ -65,7 +65,7 @@ pub enum Effect {
         runtime: crate::java::Runtime,
         urls: Vec<String>,
     },
-    /// Put `text` on the clipboard (tool first, then OSC 52).
+    /// Put `text` on the clipboard through the desktop clipboard tool.
     Copy(String),
     /// Hand `url` to the desktop's browser.
     OpenBrowser(String),
@@ -137,7 +137,7 @@ pub struct App {
     pub accounts_dir: PathBuf,
     /// `data/运行时`: the Java runtimes this launcher downloaded, one directory
     /// per version. Set by `main` from [`crate::paths::Paths`]; the default is
-    /// derived from `accounts_dir` so tests and `--dir` runs stay self-contained.
+    /// derived from `accounts_dir` so tests and `TESSERA_DATA` runs stay self-contained.
     pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
     pub all_versions: Vec<LocalVersion>,
@@ -630,6 +630,12 @@ impl App {
     /// be written back (see [`crate::session`]). Everything else goes straight to
     /// [`App::start_game`] with offline credentials.
     pub fn request_launch(&mut self) {
+        // A second Enter while the first launch is still refreshing must not
+        // queue another refresh and later start a second game.
+        if self.refreshing.is_some() {
+            self.status = "正在刷新登录令牌，请稍候".to_string();
+            return;
+        }
         let Some(version) = self.selected_version().cloned() else {
             self.log("没有选中的版本");
             return;
@@ -1745,6 +1751,26 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     }
 
     #[test]
+    fn starting_a_login_shows_no_copyable_placeholder() {
+        let mut app = app();
+        app.open_login();
+        app.start_login(Identity::Official);
+        match &app.login.step {
+            LoginStep::Waiting { user_code, url } => {
+                assert!(user_code.is_empty(), "no code before Microsoft answers");
+                assert!(url.is_empty(), "no link before Microsoft answers");
+            }
+            other => panic!("unexpected step: {other:?}"),
+        }
+        // The same guards the screen uses: nothing to copy or open yet.
+        app.handle_login_key(Key::Char('c'), Modifiers::NONE);
+        app.handle_login_key(Key::Char('y'), Modifiers::NONE);
+        app.handle_login_key(Key::Char('o'), Modifiers::NONE);
+        assert!(copy_effect(&app).is_none());
+        assert!(browser_effect(&app).is_none());
+    }
+
+    #[test]
     fn the_placeholder_code_cannot_be_copied() {
         // The screen shows "……" before Microsoft answers; that is not a code.
         let mut app = app();
@@ -2754,6 +2780,20 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             "nothing is built before the refresh: {:?}",
             app.log
         );
+    }
+
+    #[test]
+    fn a_second_enter_while_refreshing_does_not_queue_another_launch() {
+        let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
+        app.request_launch();
+        app.request_launch();
+        let refreshes = app
+            .effects()
+            .iter()
+            .filter(|effect| matches!(effect, Effect::RefreshSession(_)))
+            .count();
+        assert_eq!(refreshes, 1, "one refresh for one launch, got {:?}", app.effects());
+        assert!(app.status.contains("刷新"), "{}", app.status);
     }
 
     #[test]

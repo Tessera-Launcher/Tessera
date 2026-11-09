@@ -56,7 +56,7 @@
   | `Esc` `q` | 返回上一屏；主界面上是退出 |
   | `Ctrl-C` | 退出 |
 
-未接的：`配置.toml` 的写回（内存/窗口大小仍需手改文件）、主题与 Unifont。
+未接的：内存/窗口大小的界面编辑（仍手改 `配置.toml`，启动时读取；GitHub Proxy 会回写）、主题与 Unifont。
 数据目录由 `TESSERA_DATA` 或 `<exe>/data` 决定。
 
 ```sh

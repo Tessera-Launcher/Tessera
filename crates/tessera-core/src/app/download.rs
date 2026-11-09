@@ -354,7 +354,7 @@ impl App {
     }
 
     /// Switch where downloads come from. Deliberately not persisted: the next
-    /// start falls back to the default (or `--mirror`), so a one-off switch does
+    /// start falls back to the default, so a one-off switch does
     /// not quietly become the new normal.
     pub fn set_source(&mut self, source: crate::install::Source) {
         if self.source == source {
