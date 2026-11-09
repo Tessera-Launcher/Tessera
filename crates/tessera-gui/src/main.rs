@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::*;
 
 use tessera_core::app::{App as State, DownloadStage, Effect, JavaStage, LoginStep, Screen, VersionFilter};
@@ -50,6 +51,13 @@ struct Launcher {
     /// Clipboard writes run off the UI thread: a stuck `xclip`/`wl-copy` must
     /// not freeze the window.
     clipboard_rx: Vec<Receiver<Result<String, String>>>,
+    /// Explicit handles so the scrollbars can track the same offset the plain
+    /// `overflow_y_scroll` path uses, without the extra `ScrollBounce` layer.
+    log_scroll: ScrollHandle,
+    download_scroll: ScrollHandle,
+    /// The download cursor last seen, so keyboard movement can scroll it into
+    /// view without fighting the user's own wheel/drag scrolling.
+    download_cursor_seen: usize,
     /// `data/日志/tessera.log`; `None` once a write failed, so a full disk does
     /// not fail again on every frame.
     log_file: Option<logfile::LogFile>,
@@ -151,6 +159,9 @@ impl Launcher {
             java_install_rx: None,
             launch_rx: Vec::new(),
             clipboard_rx: Vec::new(),
+            log_scroll: ScrollHandle::default(),
+            download_scroll: ScrollHandle::default(),
+            download_cursor_seen: 0,
             log_file,
             focus_handle,
             focus_scheduled: false,
@@ -685,8 +696,8 @@ impl Launcher {
             // page around the selection instead of building every row per frame.
             let total = self.state.versions.len();
             let cursor = self.state.selected.min(total.saturating_sub(1));
-            let start = cursor.saturating_sub(150);
-            let end = (start + 300).min(total);
+            let start = cursor.saturating_sub(60);
+            let end = (start + 120).min(total);
             for (index, version) in self
                 .state
                 .versions
@@ -792,14 +803,38 @@ impl Launcher {
     }
 
     fn log_panel(&self) -> impl IntoElement {
-        let mut body = div().id("log").v_flex().gap_0p5().p_2().overflow_y_scroll();
+        let mut body = div()
+            .id("log")
+            .v_flex()
+            .gap_0p5()
+            .p_2()
+            .size_full()
+            .min_h(px(0.0))
+            .track_scroll(&self.log_scroll)
+            .overflow_y_scroll();
         if self.state.log.is_empty() {
             body = body.child(div().text_sm().text_color(rgb(DIM)).child("（空）"));
         }
         for line in self.state.log.iter().rev().take(200).rev() {
             body = body.child(div().text_xs().text_color(rgb(DIM)).child(line.clone()));
         }
-        panel("日志", body, true)
+        // The scrollbar belongs to a non-scrolling shell around the list: as a
+        // child of the scrolling element it would scroll away with the content.
+        let shell = div()
+            .relative()
+            .size_full()
+            .child(body)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(
+                        Scrollbar::vertical(&self.log_scroll)
+                            .mode(ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
+            );
+        panel("日志", shell, true)
     }
 
     fn main_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1151,11 +1186,18 @@ impl Launcher {
             )
             .child(self.filter_bar(cx));
         let download = &self.state.download;
+        // Rows are fixed-height so the list can keep a full-height scrollbar
+        // while only building the page around the current viewport.
+        const ROW_HEIGHT: f32 = 30.0;
+        const VISIBLE_ROWS: usize = 18;
+        const OVERSCAN: usize = 10;
         let mut versions = div()
             .id("download-versions")
             .v_flex()
-            .gap_0p5()
+            .size_full()
+            .min_h(px(0.0))
             .p_2()
+            .track_scroll(&self.download_scroll)
             .overflow_y_scroll();
 
         if download.rows.is_empty() {
@@ -1171,12 +1213,36 @@ impl Launcher {
             );
         }
 
-        // Render the page around the cursor: `.take(400)` used to make versions
-        // past row 400 invisible even while the keyboard could still select them.
         let total_rows = download.rows.len();
         let cursor = download.cursor().min(total_rows.saturating_sub(1));
-        let start = cursor.saturating_sub(200);
-        let end = (start + 400).min(total_rows);
+        let mut first = if total_rows == 0 {
+            0
+        } else {
+            ((-self.download_scroll.offset().y).as_f32().max(0.0) / ROW_HEIGHT).floor() as usize
+        }
+        .min(total_rows.saturating_sub(1));
+        // A changed keyboard/click selection scrolls into view; wheel and
+        // scrollbar drag leave the cursor alone and only move the viewport.
+        if cursor != self.download_cursor_seen {
+            self.download_cursor_seen = cursor;
+            if total_rows > 0 && (cursor < first || cursor >= first + VISIBLE_ROWS) {
+                let target = cursor
+                    .saturating_sub(VISIBLE_ROWS / 2)
+                    .min(total_rows.saturating_sub(VISIBLE_ROWS));
+                self.download_scroll
+                    .set_offset(point(px(0.), px(-(target as f32 * ROW_HEIGHT))));
+                first = target;
+            }
+        }
+        let start = first.saturating_sub(OVERSCAN);
+        let end = (first + VISIBLE_ROWS + OVERSCAN).min(total_rows);
+        if start > 0 {
+            versions = versions.child(
+                div()
+                    .h(px(start as f32 * ROW_HEIGHT))
+                    .flex_shrink_0(),
+            );
+        }
         for drawn in start..end {
             let row = &download.rows[drawn];
             let indent = f32::from(row.depth) * 14.0;
@@ -1194,7 +1260,8 @@ impl Launcher {
                             .gap_2()
                             .ml(px(indent))
                             .px_2()
-                            .py_1()
+                            .h(px(ROW_HEIGHT))
+                            .flex_shrink_0()
                             .rounded_sm()
                             .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
                             .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
@@ -1239,7 +1306,8 @@ impl Launcher {
                             .gap_2()
                             .ml(px(indent))
                             .px_2()
-                            .py_1()
+                            .h(px(ROW_HEIGHT))
+                            .flex_shrink_0()
                             .rounded_sm()
                             .bg(rgb(PANEL))
                             .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
@@ -1253,6 +1321,30 @@ impl Launcher {
                 }
             }
         }
+
+        if end < total_rows {
+            versions = versions.child(
+                div()
+                    .h(px((total_rows - end) as f32 * ROW_HEIGHT))
+                    .flex_shrink_0(),
+            );
+        }
+        let versions_shell = div()
+            .relative()
+            .flex_1()
+            .w_full()
+            .min_h(px(0.0))
+            .child(versions)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(
+                        Scrollbar::vertical(&self.download_scroll)
+                            .mode(ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
+            );
 
         let mut loaders = div().v_flex().gap_1().p_2();
         for (index, loader) in download.loaders.iter().enumerate() {
@@ -1310,7 +1402,13 @@ impl Launcher {
                     .gap_2()
                     .child(panel(
                         &format!("版本 ({})", self.state.download.matched()),
-                        div().v_flex().p_2().child(toolbar).child(versions),
+                        div()
+                            .v_flex()
+                            .size_full()
+                            .min_h(px(0.0))
+                            .p_2()
+                            .child(toolbar)
+                            .child(versions_shell),
                         true,
                     ))
                     .child(

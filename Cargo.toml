@@ -8,6 +8,9 @@ resolver = "2"
 # 默认 debug = 2 会内嵌完整 DWARF 调试信息，单个二进制就 130MB+。
 # 开发时只需要可读的 panic 回溯，所以整体关闭（依赖也一并关掉）。
 debug = false
+# 启动器界面是大量 GPUI 元素 + 滚动重绘；opt-level=0 的布局在鼠标拖动
+# 滚动条时会明显掉帧。1 能保持编译够快，同时让滚动跟手。
+opt-level = 1
 
 [profile.release]
 lto = "fat"
