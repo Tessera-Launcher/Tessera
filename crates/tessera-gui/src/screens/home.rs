@@ -216,60 +216,14 @@ impl Launcher {
     }
 
     fn log_panel(&mut self) -> impl IntoElement {
-        // Stick to the tail while the pane grows, but stop following as soon as
-        // the user moves it away from the bottom; coming back re-arms it.
-        // GPUI stores the offset as a negative distance from the top, so flip it
-        // before comparing with the (positive) maximum.
-        let offset = -self.log_scroll.offset().y;
-        let max = self.log_scroll.max_offset().y;
-        let at_bottom = offset >= max - px(2.0);
-        if at_bottom {
-            self.log_follow = true;
-        } else if offset < self.log_offset_seen {
-            // Only an upward move is the user's doing; our own scroll to the
-            // bottom must not switch following off again.
-            self.log_follow = false;
-        }
-        self.log_offset_seen = offset;
-        if self.log_follow {
-            // Re-assert every frame instead of waiting for "not at bottom": the
-            // new content height is only known after this frame's layout, so
-            // checking the previous frame's max_offset would scroll one frame
-            // late — the line appears first and only then slides into view.
-            self.log_scroll.scroll_to_bottom();
-        }
-        let mut body = div()
-            .id("log")
-            .v_flex()
-            .gap_0p5()
-            .p_2()
-            .size_full()
-            .min_h(px(0.0))
-            .track_scroll(&self.log_scroll)
-            .overflow_y_scroll();
-        if self.state.log.is_empty() {
-            body = body.child(div().text_sm().text_color(rgb(DIM)).child("（空）"));
-        }
-        for line in self.state.log.iter().rev().take(200).rev() {
-            body = body.child(div().text_xs().text_color(rgb(DIM)).child(line.clone()));
-        }
-        // The scrollbar belongs to a non-scrolling shell around the list: as a
-        // child of the scrolling element it would scroll away with the content.
-        let shell = div()
-            .relative()
-            .size_full()
-            .child(body)
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(
-                        Scrollbar::vertical(&self.log_scroll)
-                            .mode(ScrollbarMode::Always)
-                            .viewport_from_layout(),
-                    ),
-            );
-        panel("日志", shell, true)
+        log_pane(
+            "log",
+            "日志",
+            &self.state.log,
+            &self.log_scroll,
+            &mut self.log_follow,
+            &mut self.log_offset_seen,
+        )
     }
 
     pub(crate) fn main_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

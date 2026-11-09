@@ -63,6 +63,10 @@ struct Launcher {
     /// `overflow_y_scroll` path uses, without the extra `ScrollBounce` layer.
     log_scroll: ScrollHandle,
     download_scroll: ScrollHandle,
+    /// The install screen's activity pane, with its own follow state.
+    install_scroll: ScrollHandle,
+    install_follow: bool,
+    install_offset_seen: Pixels,
     /// Whether the log pane sticks to the newest line. Cleared when the user
     /// scrolls up to read older lines, restored when they return to the bottom.
     log_follow: bool,
@@ -175,6 +179,9 @@ impl Launcher {
             clipboard_rx: Vec::new(),
             log_scroll: ScrollHandle::default(),
             download_scroll: ScrollHandle::default(),
+            install_scroll: ScrollHandle::default(),
+            install_follow: true,
+            install_offset_seen: px(0.0),
             log_follow: true,
             log_offset_seen: px(0.0),
             download_cursor_seen: 0,

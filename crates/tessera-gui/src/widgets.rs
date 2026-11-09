@@ -1,8 +1,96 @@
 //! Small shared widgets used by every screen.
 
+use std::collections::VecDeque;
+
 use super::*;
 
 // ---- shared widgets ----
+
+
+/// The scrolling log pane shared by the home screen and the install screen.
+///
+/// Follows the newest line while it is pinned to the bottom; scrolling up stops
+/// that, returning to the bottom re-arms it.
+pub(crate) fn log_pane(
+    id: &str,
+    title: &str,
+    lines: &VecDeque<String>,
+    scroll: &ScrollHandle,
+    follow: &mut bool,
+    seen: &mut Pixels,
+) -> impl IntoElement {
+    // GPUI stores the offset as a negative distance from the top, so flip it
+    // before comparing with the (positive) maximum.
+    let offset = -scroll.offset().y;
+    let max = scroll.max_offset().y;
+    let at_bottom = offset >= max - px(2.0);
+    if at_bottom {
+        *follow = true;
+    } else if offset < *seen {
+        // Only an upward move is the user's doing; our own scroll to the bottom
+        // must not switch following off again.
+        *follow = false;
+    }
+    *seen = offset;
+    if *follow {
+        // Re-assert every frame: the new content height is only known after this
+        // frame's layout, so checking the previous max would scroll one frame late.
+        scroll.scroll_to_bottom();
+    }
+
+    let mut body = div()
+        .id(id.to_string())
+        .v_flex()
+        .gap_0p5()
+        .p_2()
+        .size_full()
+        .min_h(px(0.0))
+        .track_scroll(scroll)
+        .overflow_y_scroll();
+    if lines.is_empty() {
+        body = body.child(div().text_sm().text_color(rgb(DIM)).child("（空）"));
+    }
+    for line in lines.iter().rev().take(200).rev() {
+        body = body.child(div().text_xs().text_color(rgb(DIM)).child(line.clone()));
+    }
+    // The scrollbar belongs to a non-scrolling shell around the list: as a child
+    // of the scrolling element it would scroll away with the content.
+    let shell = div()
+        .relative()
+        .size_full()
+        .child(body)
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    Scrollbar::vertical(scroll)
+                        .mode(ScrollbarMode::Always)
+                        .viewport_from_layout(),
+                ),
+        );
+    panel(title, shell, true)
+}
+
+/// A panel whose height follows its content (no fixed body height).
+pub(crate) fn panel_fit(title: &str, body: impl IntoElement) -> impl IntoElement {
+    div()
+        .v_flex()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .bg(rgb(PANEL))
+        .overflow_hidden()
+        .child(
+            div()
+                .px_3()
+                .py_1()
+                .text_xs()
+                .text_color(rgb(DIM))
+                .child(title.to_string()),
+        )
+        .child(body)
+}
 
 pub(crate) fn panel(title: &str, body: impl IntoElement, grow: bool) -> impl IntoElement {
     let mut outer = div()

@@ -302,10 +302,27 @@ impl Launcher {
             )
     }
 
-    fn download_progress(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn activity_log(&mut self) -> impl IntoElement {
+        log_pane(
+            "install-log",
+            "活动",
+            &self.state.log,
+            &self.install_scroll,
+            &mut self.install_follow,
+            &mut self.install_offset_seen,
+        )
+    }
+
+    fn download_progress(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let download = &self.state.download;
         let fraction = download.fraction() as f32;
-        let mut body = div().v_flex().gap_2().p_3();
+        let mut body = div()
+            .id("install-progress")
+            .v_flex()
+            .gap_2()
+            .p_3()
+            .max_h(px(280.0))
+            .overflow_y_scroll();
 
         body = body
             .child(
@@ -385,7 +402,8 @@ impl Launcher {
             .min_h(px(0.0))
             .gap_2()
             .child(screen_title(title))
-            .child(panel("进度", body, true))
+            .child(self.activity_log())
+            .child(panel_fit("进度", body))
             .child(footer_bar(&self.state.status).child(button("返回", cx, |this: &mut Launcher, cx| {
                 this.state.close_download();
                 this.state.reload();
