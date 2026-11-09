@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 description = "Desktop front-end for Tessera, built on gpui-kit"
 
 [[bin]]
-name = "tessera-gui"
+name = "tessera"
 path = "src/main.rs"
 
 [dependencies]
