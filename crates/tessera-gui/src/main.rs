@@ -16,8 +16,7 @@ use tessera_core::app::{App as State, DownloadStage, Effect, LoginStep, Screen};
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};
-use tessera_core::session;
-use tessera_core::{accounts, discover, paths::Paths, version_tree::RowKind};
+use tessera_core::{accounts, aot, discover, logfile, paths::Paths, session, version_tree::RowKind};
 
 const ACCENT: u32 = 0x6c_d6_7a;
 const SNAPSHOT: u32 = 0xe8_c9_6a;
@@ -36,7 +35,11 @@ struct Launcher {
     session_rx: Option<Receiver<session::SessionEvent>>,
     login_rx: Option<Receiver<LoginEvent>>,
     install_rx: Option<Receiver<InstallEvent>>,
+    aot_rx: Option<Receiver<aot::Event>>,
     launch_rx: Vec<Receiver<launch::GameEvent>>,
+    /// `data/日志/tessera.log`; `None` once a write failed, so a full disk does
+    /// not fail again on every frame.
+    log_file: Option<logfile::LogFile>,
 }
 
 impl Launcher {
@@ -61,6 +64,13 @@ impl Launcher {
         state.log(format!("数据目录 {}", data.root().display()));
         state.log(format!("游戏目录 {}", root.display()));
         state.log(format!("JRE 目录 {}", data.runtimes().display()));
+        let log_file = match logfile::LogFile::open(&data.log_file()) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                state.log(format!("日志文件打不开：{error}"));
+                None
+            }
+        };
         let client = reqwest::Client::builder()
             .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -71,7 +81,9 @@ impl Launcher {
             session_rx: None,
             login_rx: None,
             install_rx: None,
+            aot_rx: None,
             launch_rx: Vec::new(),
+            log_file,
         }
     }
 
@@ -120,6 +132,15 @@ impl Launcher {
                         dir,
                         credentials,
                         self.state.launch_options.clone(),
+                    ));
+                }
+                Effect::TrainAot(version) => {
+                    self.aot_rx = Some(aot::spawn(
+                        self.state.root.clone(),
+                        self.state.runtimes.clone(),
+                        self.state.launch_options.clone(),
+                        self.state.settings.github_proxy.clone(),
+                        version,
                     ));
                 }
                 Effect::Copy(text) => match copy_to_clipboard(&text) {
@@ -192,6 +213,40 @@ impl Launcher {
             // The progress bar smooths its speed from samples; ask it to age them.
             if self.state.tick() {
                 changed = true;
+            }
+        }
+
+        if let Some(rx) = self.aot_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_aot_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.aot_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // The log pane is the memory copy; this is the one that outlives the
+        // window. A burst goes out as one write.
+        if !self.state.pending_log.is_empty() {
+            let lines = std::mem::take(&mut self.state.pending_log);
+            match self.log_file.as_mut() {
+                Some(file) => {
+                    if let Err(error) = file.write_lines(&lines) {
+                        self.log_file = None;
+                        eprintln!("日志文件写入失败：{error}");
+                    }
+                }
+                None => {}
             }
         }
 
@@ -324,8 +379,13 @@ impl Launcher {
                         .py_1()
                         .rounded_sm()
                         .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
-                        .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                        .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                             this.state.selected = index;
+                            // Two clicks on one row launch, the way the TUI's
+                            // double click does; one click only selects.
+                            if event.click_count() > 1 {
+                                this.state.request_launch();
+                            }
                             cx.notify();
                         }))
                         .child(
@@ -350,8 +410,13 @@ impl Launcher {
         panel(&title, list, true)
     }
 
-    fn details(&self) -> impl IntoElement {
+    fn details(&mut self) -> impl IntoElement {
         let mut body = div().v_flex().gap_1().p_2();
+        let size = if self.state.selected_version().is_some() {
+            Some(discover::human_size(self.state.selected_size()))
+        } else {
+            None
+        };
         match self.state.selected_version() {
             Some(version) => {
                 body = body
@@ -375,7 +440,8 @@ impl Launcher {
                     .child(field(
                         "客户端 jar",
                         if version.has_jar { "有" } else { "无" }.into(),
-                    ));
+                    ))
+                    .child(field("大小", size.unwrap_or_else(|| "—".into())));
             }
             None => {
                 body = body.child(div().p_2().text_sm().text_color(rgb(DIM)).child("未选择版本"));
@@ -395,7 +461,7 @@ impl Launcher {
         panel("日志", body, true)
     }
 
-    fn main_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn main_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
             .flex_1()
@@ -879,12 +945,35 @@ impl Launcher {
             );
 
         if download.speed > 0.0 {
-            body = body.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(DIM))
-                    .child(format!("{:.1} MiB/s · 剩余 {:.1} MiB", download.speed / 1_048_576.0, download.remaining_bytes as f64 / 1_048_576.0)),
+            let mut line = format!(
+                "{:.1} MiB/s · 剩余 {:.1} MiB",
+                download.speed / 1_048_576.0,
+                download.remaining_bytes as f64 / 1_048_576.0
             );
+            if download.batch_total_bytes > 0 {
+                line.push_str(&format!(
+                    " · 本批 {:.1} MiB",
+                    download.batch_total_bytes as f64 / 1_048_576.0
+                ));
+            }
+            body = body.child(div().text_xs().text_color(rgb(DIM)).child(line));
+        }
+        if download.stage == DownloadStage::Training {
+            let step = if download.aot_assembling {
+                "正在组装缓存（可能要几分钟）".to_string()
+            } else if download.aot_preparing {
+                "正在准备 Java 28…".to_string()
+            } else if download.aot_total > 0 {
+                format!("AOT 训练：{} / {} 个类", download.aot_loaded, download.aot_total)
+            } else {
+                "AOT 训练：准备中…".to_string()
+            };
+            body = body
+                .child(div().mt_2().text_sm().text_color(rgb(ACCENT)).child("AOT 缓存训练"))
+                .child(div().text_xs().text_color(rgb(DIM)).child(step));
+        }
+        if let Some(note) = &download.aot_note {
+            body = body.child(div().text_xs().text_color(rgb(DIM)).child(note.clone()));
         }
         if let Some(error) = &download.error {
             body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
@@ -901,15 +990,20 @@ impl Launcher {
             );
         }
 
+        let title = match download.stage {
+            DownloadStage::Training => "安装 · AOT 训练",
+            _ => "安装",
+        };
         div()
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
             .gap_2()
-            .child(screen_title("安装"))
+            .child(screen_title(title))
             .child(panel("进度", body, true))
             .child(footer_bar(&self.state.status).child(button("返回", cx, |this: &mut Launcher, cx| {
                 this.state.close_download();
+                this.state.reload();
                 cx.notify();
             })))
     }

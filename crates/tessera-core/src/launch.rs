@@ -1007,7 +1007,7 @@ pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), Strin
     let installed = crate::java::installed(runtimes);
     if installed.is_empty() {
         return Err(format!(
-            "还没有下载 Java {required}：按 v 打开 Java 下载界面装一个（{}）",
+            "还没有下载 Java {required}：先去 Java 运行时界面装一个（{}）",
             runtimes.display()
         ));
     }
@@ -1029,9 +1029,9 @@ pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), Strin
             .collect::<Vec<_>>()
             .join("、");
         return Err(if required <= 8 {
-            format!("这个版本需要 Java 8，现在只有 {seen}（按 v 下载 Java 8）")
+            format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
         } else {
-            format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（按 v 下载）")
+            format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
         });
     };
 
@@ -1279,7 +1279,7 @@ mod tests {
         let runtimes = tmp.path().join("运行时");
         // Nothing installed: the error says what to do, not "install Java on PATH".
         let error = find_java(&runtimes, 21).unwrap_err();
-        assert!(error.contains("按 v"), "{error}");
+        assert!(error.contains("Java 运行时界面"), "{error}");
         assert!(!error.contains("JAVA_HOME"), "{error}");
 
         managed_runtime(tmp.path(), 8);
@@ -1803,7 +1803,7 @@ mod tests {
         .expect_err("Java 8 cannot run a 21 profile");
         assert!(error.contains("Java 21"), "{error}");
         assert!(error.contains("Java 8"), "{error}");
-        assert!(error.contains("按 v"), "{error}");
+        assert!(error.contains("Java 运行时界面"), "{error}");
     }
 
     #[test]

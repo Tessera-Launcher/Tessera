@@ -577,7 +577,7 @@ mod tests {
         let error = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
             .expect_err("no managed runtime, no Forge");
         assert!(error.contains("Java 17"), "{error}");
-        assert!(error.contains("按 v"), "{error}");
+        assert!(error.contains("Java 运行时界面"), "{error}");
 
         // Java 8 exists but 1.20.1 wants 17.
         managed_runtime(&runtimes, 8);
@@ -611,7 +611,7 @@ mod tests {
         {
             InstallEvent::Failed(message) => {
                 assert!(message.contains("Java 17"), "{message}");
-                assert!(message.contains("按 v"), "{message}");
+                assert!(message.contains("Java 运行时界面"), "{message}");
             }
             other => panic!("expected a failure, got {other:?}"),
         }

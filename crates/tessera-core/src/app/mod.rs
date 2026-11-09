@@ -2218,7 +2218,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         }
         assert_eq!(app.status, "启动失败");
         assert!(
-            app.log.iter().any(|line| line.contains("按 v")),
+            app.log.iter().any(|line| line.contains("Java 运行时界面")),
             "the log points at the Java screen: {:?}",
             app.log
         );
