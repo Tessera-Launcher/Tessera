@@ -12,6 +12,33 @@
 
 未做：mods/资源包管理、服务器列表、实例设置页、自动更新。
 
+### 图形界面（第一版）
+
+`crates/tessera-gui` 是基于 `gpui-kit` 的桌面前端，目前只**复刻 TUI 的主界面布局**，
+还没有接入操作：
+
+```
+┌ Tessera  Minecraft Java 版启动器 ─────────────────────────────── 目录 · N 个版本 · N 个账户 ┐
+├───────────────────────────────┬──────────────────────────────────────────────────────────┤
+│ 版本 (N)                      │ 详情                                                     │
+│  ● 1.21.11            Java 21 │ 目录 / 类型 / Java / 主类 / 继承 / 客户端 jar            │
+│  ● 26.3               Java 28 ├──────────────────────────────────────────────────────────┤
+│  …                            │ 日志                                                     │
+├───────────────────────────────┴──────────────────────────────────────────────────────────┤
+│ 状态                                  刷新 · 下载 · 卸载 · 账户 · Java 尚未接入      退出 │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+能用的：列出 `data/游戏/versions`、点行切换详情、`刷新` 重新扫描、`退出`。
+未接的：下载 / 卸载 / 账户 / Java / 启动（按钮位置先占住）。数据目录仍由
+`TESSERA_DATA` 或 `<exe>/data` 决定，和 TUI 一致。
+
+```sh
+cargo run -p tessera-gui
+```
+
+字体目前用系统字体；Unifont（MC 同款）与主题随 GUI 一起做，见后面的计划。
+
 ### 便携布局
 
 二进制所在目录 + `data/` 就是全部，**启动器不写用户主目录**：
@@ -465,13 +492,14 @@ token 只存在于登录线程和那个文件里，**UI 永远拿不到 token**�
 ```
 crates/tessera-core/  纯逻辑：发现、启动参数、下载、Java、账户、清理（不依赖终端）
 crates/tessera-tui/   终端前端：屏幕、输入状态机、剪贴板（依赖 tessera-core）
+crates/tessera-gui/   桌面前端：gpui-kit 的窗口，复刻 TUI 主界面布局
 src/main.rs           组装：解析参数，把 core 与 tui 接起来
 crates/tessera-core/assets/  AOT 预加载与 fastmenu 两个 Java agent 的源码和 jar
 vendor/mdt-minecraft  下载层（upstream + 本地修复，见其 VENDORED.md）
 vendor/minecraft-auth 登录层（device code → 启动凭据）
 ```
 
-`tessera-core` 不含 `ratatui`/`crossterm`，所以未来的 GUI 只是另一个依赖 core 的前端；
+`tessera-core` 不含 `ratatui`/`crossterm`/`gpui`，TUI 和 GUI 都只是依赖它的前端；
 `vendor/` 下的两个 crate 各自是独立的 workspace 根，因此在本仓库的
 `[workspace] exclude` 里排除，作为 path 依赖引入。
 

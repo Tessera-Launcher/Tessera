@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tessera-core", "crates/tessera-tui"]
+members = ["crates/tessera-core", "crates/tessera-tui", "crates/tessera-gui"]
 exclude = ["vendor"]
 resolver = "2"
 
