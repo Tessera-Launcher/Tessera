@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::*;
 
 use tessera_core::app::{App as State, DownloadStage, Effect, JavaStage, LoginStep, Screen, VersionFilter};
@@ -647,12 +648,19 @@ impl Launcher {
 
     fn version_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = format!("版本 ({})", self.state.versions.len());
+        let weak = cx.entity().downgrade();
         let mut list = div()
             .id("version-list")
             .v_flex()
             .gap_1()
             .p_2()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            // Right-clicking empty space in the list only refreshes; the row
+            // menus below add uninstall because they have a version to target.
+            .context_menu({
+                let weak = weak.clone();
+                move |menu, _, _| menu.item(refresh_menu_item(weak.clone()))
+            });
 
         if self.state.versions.is_empty() {
             list = list.child(
@@ -660,7 +668,7 @@ impl Launcher {
                     .p_4()
                     .text_sm()
                     .text_color(rgb(DIM))
-                    .child("没有找到任何版本 —— 按「刷新」重新扫描，或先下载一个版本"),
+                    .child("没有找到任何版本 —— 右键选择「刷新」重新扫描，或先下载一个版本"),
             );
         } else {
             // A large `.minecraft` can hold thousands of versions; only render a
@@ -683,6 +691,7 @@ impl Launcher {
                     .java
                     .map(|major| format!("Java {major}"))
                     .unwrap_or_else(|| "Java —".to_string());
+                let dir = version.dir.clone();
                 list = list.child(
                     div()
                         .id(format!("version-{index}"))
@@ -715,7 +724,16 @@ impl Launcher {
                                 .text_color(rgb(if selected { ACCENT } else { TEXT }))
                                 .child(version.id.clone()),
                         )
-                        .child(div().text_xs().text_color(rgb(DIM)).child(java)),
+                        .child(div().text_xs().text_color(rgb(DIM)).child(java))
+                        .context_menu({
+                            let weak = weak.clone();
+                            move |menu, _, _| {
+                                let dir = dir.clone();
+                                menu.item(refresh_menu_item(weak.clone()))
+                                    .separator()
+                                    .item(uninstall_menu_item(weak.clone(), dir))
+                            }
+                        }),
                 );
             }
         }
@@ -810,20 +828,12 @@ impl Launcher {
                         this.state.open_download();
                         cx.notify();
                     }))
-                    .child(button("卸载", cx, |this: &mut Launcher, cx| {
-                        this.state.request_uninstall();
-                        cx.notify();
-                    }))
                     .child(button("账户", cx, |this: &mut Launcher, cx| {
                         this.state.open_accounts();
                         cx.notify();
                     }))
                     .child(button("Java", cx, |this: &mut Launcher, cx| {
                         this.state.open_java();
-                        cx.notify();
-                    }))
-                    .child(button("刷新", cx, |this: &mut Launcher, cx| {
-                        this.state.reload();
                         cx.notify();
                     }))
                     .child(button("退出", cx, |_, cx| cx.quit())),
@@ -1691,6 +1701,43 @@ impl Launcher {
                 .into_any_element(),
         )
     }
+}
+
+// ---- context menu items ----
+
+fn refresh_menu_item(weak: WeakEntity<Launcher>) -> PopupMenuItem {
+    PopupMenuItem::new("刷新").on_click(move |_, _, app| {
+        let _ = weak.update(app, |this, cx| {
+            this.state.reload();
+            cx.notify();
+        });
+    })
+}
+
+fn uninstall_menu_item(weak: WeakEntity<Launcher>, dir: String) -> PopupMenuItem {
+    PopupMenuItem::new("卸载").on_click(move |_, _, app| {
+        let _ = weak.update(app, |this, cx| {
+            // The menu belongs to the row it was opened on, not to whatever row
+            // happened to be selected before the right-click. Look it up by
+            // directory because a refresh can reorder the list while the menu is
+            // open.
+            let Some(index) = this
+                .state
+                .versions
+                .iter()
+                .position(|version| version.dir == dir)
+            else {
+                this.state
+                    .log(format!("版本 {dir} 已不在列表中，无法卸载"));
+                cx.notify();
+                return;
+            };
+            this.state.selected = index;
+            this.state.request_uninstall();
+            this.step(cx);
+            cx.notify();
+        });
+    })
 }
 
 // ---- shared widgets ----
