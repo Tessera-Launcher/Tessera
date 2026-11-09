@@ -200,6 +200,8 @@ impl MdtClient {
     ) -> Result<VanillaInstall, MdtError> {
         self.reporter
             .status(&format!("Updating {} index", self.mirror.label()));
+        self.reporter
+            .status(&format!("读取 {version} 的版本清单…"));
         let (text, version_json) =
             manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, version).await?;
         let urls = ManifestUrls::try_new(&self.mirror)?;
@@ -211,6 +213,10 @@ impl MdtClient {
 
         // Client JAR + libraries (+ asset index). Vanilla stays untouched.
         let tasks = downloader::build_tasks_from_version_json(&version_json, &self.root);
+        self.reporter.status(&format!(
+            "下载 {version} 的游戏文件：jar / 依赖库 / natives，共 {} 个",
+            tasks.len()
+        ));
         downloader::execute_downloads(
             self.downloader.as_ref(),
             tasks,
@@ -225,6 +231,10 @@ impl MdtClient {
         // cache into `assets/objects`.
         #[cfg(not(feature = "minimal"))]
         let virtual_assets = if let Some(asset_index) = &version_json.asset_index {
+            self.reporter.status(&format!(
+                "同步 {version} 的游戏资源文件（索引 {}）…",
+                asset_index.id
+            ));
             AssetRegistry::fetch_and_sync(
                 &self.root,
                 asset_index,

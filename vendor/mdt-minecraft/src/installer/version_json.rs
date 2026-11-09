@@ -282,6 +282,10 @@ pub async fn install_from_profile(
     req: &InstallRequest,
     urls: &ManifestUrls,
 ) -> Result<InstalledVersion, MdtError> {
+    req.reporter.status(&format!(
+        "获取 {} 加载器配置…",
+        req.loader.display_name()
+    ));
     let (text, used_url) =
         fetch_profile_json(downloader, profile_urls, req.reporter.as_ref()).await?;
     let mut profile: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
@@ -377,6 +381,7 @@ pub async fn install_legacy_forge(
     ensure_empty_dir(&temp).await?;
 
     let installer_jar = temp.join("installer.jar");
+    reporter.status(&format!("下载 Forge {loader_version} 安装器…"));
     download_maven_fallback_reported(
         downloader,
         installer_url,
@@ -388,6 +393,7 @@ pub async fn install_legacy_forge(
     .await?;
 
     let unpack = temp.join("unpack");
+    reporter.status("解包 Forge 安装器…");
     unzip_jar(&installer_jar, &unpack).await?;
 
     // 1. Flatten the installer's `maven/` into `libraries/`, when it still ships one.
@@ -413,6 +419,7 @@ pub async fn install_legacy_forge(
 
     let maven_src = unpack.join("maven");
     if maven_src.exists() {
+        reporter.status("部署安装器内置的依赖库…");
         copy_dir_recursive_reported(&maven_src, &libraries_dir(root), reporter).await?;
     } else if let Some(profile) = &profile {
         deploy_legacy_profile(downloader, profile, &unpack, root, mirror, urls, reporter).await?;
@@ -452,6 +459,7 @@ pub async fn install_legacy_forge(
     let mirrored = apply_mirror_to_json(raw, mirror, urls);
 
     // 3. Write the version JSON.
+    reporter.status("写入 Forge 版本文件…");
     let vdir = match target_dir {
         Some(t) => t.to_path_buf(),
         None => version_dir(root, &id),
@@ -544,6 +552,7 @@ async fn deploy_legacy_profile(
             source.display()
         )));
     }
+    reporter.status("部署 Forge universal jar…");
     let dest = libraries_dir(root).join(library_path_from_name(&forge_name)?);
     if let Some(parent) = dest.parent() {
         crate::io::create_dir_all(parent).await?;
@@ -558,6 +567,16 @@ async fn deploy_legacy_profile(
         .map_err(MdtError::IoError)?;
 
     // 2. Fetch every library the profile lists, unless it is already on disk.
+    let needed = libraries
+        .iter()
+        .filter(|library| {
+            library
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| !name.starts_with("net.minecraftforge:forge:"))
+        })
+        .count();
+    reporter.status(&format!("检查 Forge 依赖库：{needed} 个"));
     for library in &libraries {
         let Some(name) = library.get("name").and_then(serde_json::Value::as_str) else {
             continue;

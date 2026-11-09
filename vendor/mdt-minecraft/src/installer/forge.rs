@@ -72,6 +72,9 @@ async fn install_modern(
         format!("net/minecraftforge/forge/{maven_version}/forge-{maven_version}-installer.jar");
     let reg_dir = registry::modloader_dir(req.loader.display_name(), &forge_version);
 
+    req.reporter.status(&format!(
+        "运行 Forge 官方安装器：forge {forge_version}（Java 注入模式）…"
+    ));
     install_via_official_installer(
         downloader,
         &installer_url,
@@ -84,6 +87,8 @@ async fn install_modern(
         req.java.as_deref(),
     )
     .await?;
+    req.reporter
+        .status("Forge 官方安装器已完成，检查版本文件…");
 
     // Verify: the official installer should produce a version JSON. Modern installers reuse the
     // vanilla client JAR via `inheritsFrom`, so only the JSON is required.

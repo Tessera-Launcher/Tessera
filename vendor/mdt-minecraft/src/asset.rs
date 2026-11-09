@@ -96,6 +96,11 @@ impl AssetRegistry {
         // 2. Parse the index and sync its assets.
         let content = crate::io::read_to_string(&local_index).await?;
         let index: AssetIndex = serde_json::from_str(&content)?;
+        let object_count = index.objects.len();
+        reporter.status(&format!(
+            "资源索引 {}：{} 个资源文件",
+            asset_index.id, object_count
+        ));
 
         // Legacy indexes (`legacy` for 1.6.1–1.7.2, `pre-1.6` for alpha–1.5.2) are read by the
         // game outside `assets/objects`, so remember what layout to materialise afterwards.

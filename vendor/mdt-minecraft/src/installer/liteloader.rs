@@ -45,6 +45,10 @@ pub async fn install(
         file
     );
     let candidates = dedup_urls(&[mirrored.clone(), official]);
+    req.reporter.status(&format!(
+        "下载 LiteLoader {} 核心文件…",
+        req.loader_version
+    ));
     // Never trust a cached JAR because a file happens to exist: a planted or half-written
     // `liteloader-*.jar` would be mounted straight into `libraries/`. The cache is reused only when
     // it matches the SHA-1 persisted next to it; otherwise it is re-downloaded and re-hashed.

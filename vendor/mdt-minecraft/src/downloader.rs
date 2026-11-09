@@ -247,6 +247,11 @@ pub async fn execute_downloads(
     // Resolve both mirrors once for the whole batch rather than once per task.
     let chain = MirrorChain::new(mirror, urls);
 
+    reporter.status(&format!(
+        "开始下载 {} 个文件（{:.1} MiB）",
+        total,
+        total_bytes as f64 / 1_048_576.0
+    ));
     reporter.progress_bytes(0, total, total_bytes);
 
     let results = stream::iter(tasks.into_iter().map(|task| {

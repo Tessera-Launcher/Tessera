@@ -29,6 +29,10 @@ pub async fn install(
         format!("net/neoforged/neoforge/{maven_version}/neoforge-{maven_version}-installer.jar");
     let reg_dir = registry::modloader_dir(req.loader.display_name(), &req.loader_version);
 
+    req.reporter.status(&format!(
+        "运行 NeoForge 官方安装器：{}（Java 注入模式）…",
+        req.loader_version
+    ));
     install_via_official_installer(
         downloader,
         &installer_url,
@@ -41,6 +45,8 @@ pub async fn install(
         req.java.as_deref(),
     )
     .await?;
+    req.reporter
+        .status("NeoForge 官方安装器已完成，检查版本文件…");
 
     // Verify: the official installer should produce a version JSON.
     let vdir = version_dir(&req.root_dir, &id);

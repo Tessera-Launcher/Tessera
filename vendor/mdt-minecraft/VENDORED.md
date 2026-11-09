@@ -220,6 +220,23 @@ installer-id directory and copies vanilla into it. If the finished install lands
 elsewhere (or fails), that copy is now removed, so the launcher no longer lists
 a phantom version with no JSON.
 
+### 11. Install activity is reported as status lines
+
+Tessera's install screen shows a live log, so the phases that used to be silent
+now emit `status` lines:
+
+- vanilla: version manifest, game files (`jar` / libraries / natives, with a
+  count), then the asset index by name and object count;
+- every download batch: `开始下载 N 个文件（M MiB）`;
+- Forge/NeoForge: running the official installer, then checking its output;
+- legacy Forge: downloading/unpacking the installer, deploying the universal jar
+  and bundled libraries, checking the dependency list, writing the version JSON;
+- Fabric/Quilt: fetching the profile, then the dependency count; LiteLoader: its
+  core file.
+
+Asset objects still skip per-file lines (thousands of them); the batch start and
+summary already say how many and how much.
+
 ## Tests added
 
 `src/asset.rs`: `legacy_index_flags_are_parsed`,
