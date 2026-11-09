@@ -443,6 +443,13 @@ crates/tessera-core/  纯逻辑 + 屏幕状态机：发现、启动参数、下�
 crates/tessera-core/src/app/   状态机（App / Screen / Effect）+ 每个流程的状态
 crates/tessera-core/src/input.rs  前端无关的按键事件类型
 crates/tessera-gui/   桌面前端：gpui-kit 窗口，复用同一个状态机
+crates/tessera-gui/src/main.rs  窗口、Launcher 状态与入口
+crates/tessera-gui/src/runtime.rs  按键翻译与 worker 事件循环
+crates/tessera-gui/src/sidebar.rs  左侧导航
+crates/tessera-gui/src/screens/  每屏一个文件：home / accounts / login / download / java
+crates/tessera-gui/src/widgets.rs  共享小组件
+crates/tessera-gui/src/menu.rs  版本列表右键菜单
+crates/tessera-gui/src/platform.rs  剪贴板、浏览器与按键映射
 crates/tessera-core/assets/  AOT 预加载与 fastmenu 两个 Java agent 的源码和 jar
 vendor/mdt-minecraft  下载层（upstream + 本地修复，见其 VENDORED.md）
 vendor/minecraft-auth 登录层（device code → 启动凭据）

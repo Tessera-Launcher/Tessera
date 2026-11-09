@@ -1,0 +1,158 @@
+//! Sidebar pages and the switch between the four screens.
+
+use super::*;
+
+/// The sidebar's pages, in display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Home,
+    Accounts,
+    Download,
+    Runtimes,
+}
+
+impl Page {
+    const ALL: [Page; 4] = [Page::Home, Page::Accounts, Page::Download, Page::Runtimes];
+
+    fn label(self) -> &'static str {
+        match self {
+            Page::Home => "主页",
+            Page::Accounts => "账户",
+            Page::Download => "下载",
+            Page::Runtimes => "运行时",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Page::Home => "page-home",
+            Page::Accounts => "page-accounts",
+            Page::Download => "page-download",
+            Page::Runtimes => "page-runtimes",
+        }
+    }
+
+    /// Which page a screen belongs to; login keeps the page it was opened from.
+    fn of(screen: Screen) -> Page {
+        match screen {
+            Screen::Main | Screen::Login => Page::Home,
+            Screen::Accounts => Page::Accounts,
+            Screen::Download | Screen::Installing => Page::Download,
+            Screen::Java => Page::Runtimes,
+        }
+    }
+}
+
+impl Launcher {
+    /// Switch screens from the sidebar. Clicking the active page is a no-op so
+    /// it never resets the screen's own state (a running install, a picker).
+    fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+        match page {
+            Page::Home => match self.state.screen {
+                Screen::Main => {}
+                Screen::Accounts => self.state.close_accounts(),
+                Screen::Download | Screen::Installing => self.state.close_download(),
+                Screen::Java => self.state.close_java(),
+                Screen::Login => self.state.close_login(),
+            },
+            Page::Accounts if self.state.screen != Screen::Accounts => {
+                self.state.open_accounts();
+            }
+            Page::Accounts => {}
+            Page::Download
+                if !matches!(self.state.screen, Screen::Download | Screen::Installing) =>
+            {
+                self.state.open_download();
+            }
+            Page::Download => {}
+            Page::Runtimes if self.state.screen != Screen::Java => {
+                self.state.open_java();
+            }
+            Page::Runtimes => {}
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = Page::of(self.state.screen);
+        let mut nav = div().v_flex().gap_1();
+        for page in Page::ALL {
+            let picked = page == active;
+            nav = nav.child(
+                div()
+                    .id(page.id())
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_2()
+                    .rounded_md()
+                    .bg(rgb(if picked { ROW } else { PANEL }))
+                    .child(
+                        div()
+                            .w(px(3.0))
+                            .h(px(14.0))
+                            .rounded_full()
+                            .bg(rgb(if picked { ACCENT } else { PANEL })),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(if picked { TEXT } else { DIM }))
+                            .child(page.label()),
+                    )
+                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                        this.navigate(page, cx);
+                    })),
+            );
+        }
+
+        div()
+            .v_flex()
+            .w(px(168.0))
+            .h_full()
+            .p_2()
+            .gap_3()
+            .rounded_md()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(ACCENT))
+                            .child("Tessera"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(DIM))
+                            .child("Minecraft Java 版启动器"),
+                    ),
+            )
+            .child(nav)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1()
+                    .child(div().text_xs().text_color(rgb(DIM)).child("当前账户"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(ACCENT))
+                            .child(self.state.account.label()),
+                    ),
+            )
+    }
+
+}
