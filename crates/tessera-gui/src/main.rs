@@ -969,7 +969,11 @@ impl Launcher {
             self.log_follow = false;
         }
         self.log_offset_seen = offset;
-        if self.log_follow && !at_bottom {
+        if self.log_follow {
+            // Re-assert every frame instead of waiting for "not at bottom": the
+            // new content height is only known after this frame's layout, so
+            // checking the previous frame's max_offset would scroll one frame
+            // late — the line appears first and only then slides into view.
             self.log_scroll.scroll_to_bottom();
         }
         let mut body = div()
