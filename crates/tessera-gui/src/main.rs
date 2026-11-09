@@ -831,7 +831,10 @@ impl Launcher {
                 .id("version-list-blank")
                 .absolute()
                 .inset_0()
-                .context_menu(move |menu, _, _| menu.item(refresh_menu_item(blank_weak.clone()))),
+                .context_menu(move |menu, _, _| {
+                    menu.item(download_menu_item(blank_weak.clone()))
+                        .item(refresh_menu_item(blank_weak.clone()))
+                }),
         );
 
         if self.state.versions.is_empty() {
@@ -901,9 +904,10 @@ impl Launcher {
                             let weak = weak.clone();
                             move |menu, _, _| {
                                 let dir = dir.clone();
-                                menu.item(refresh_menu_item(weak.clone()))
-                                    .separator()
+                                menu.item(launch_menu_item(weak.clone(), dir.clone()))
                                     .item(uninstall_menu_item(weak.clone(), dir))
+                                    .separator()
+                                    .item(refresh_menu_item(weak.clone()))
                             }
                         }),
                 );
@@ -1964,6 +1968,39 @@ impl Launcher {
 }
 
 // ---- context menu items ----
+
+fn download_menu_item(weak: WeakEntity<Launcher>) -> PopupMenuItem {
+    PopupMenuItem::new("下载游戏…").on_click(move |_, _, app| {
+        let _ = weak.update(app, |this, cx| {
+            this.state.open_download();
+            this.step(cx);
+            cx.notify();
+        });
+    })
+}
+
+/// Select the row the menu was opened on, then launch it, like a double click.
+fn launch_menu_item(weak: WeakEntity<Launcher>, dir: String) -> PopupMenuItem {
+    PopupMenuItem::new("启动").on_click(move |_, _, app| {
+        let _ = weak.update(app, |this, cx| {
+            let Some(index) = this
+                .state
+                .versions
+                .iter()
+                .position(|version| version.dir == dir)
+            else {
+                this.state
+                    .log(format!("版本 {dir} 已不在列表中，无法启动"));
+                cx.notify();
+                return;
+            };
+            this.state.selected = index;
+            this.state.request_launch();
+            this.step(cx);
+            cx.notify();
+        });
+    })
+}
 
 fn refresh_menu_item(weak: WeakEntity<Launcher>) -> PopupMenuItem {
     PopupMenuItem::new("刷新").on_click(move |_, _, app| {
