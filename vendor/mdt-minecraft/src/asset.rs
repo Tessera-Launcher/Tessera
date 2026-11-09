@@ -109,7 +109,7 @@ impl AssetRegistry {
 
         let registry = AssetRegistry::new(index, root, minecraft_version);
         registry
-            .sync(downloader, concurrency, mirror, urls, reporter)
+            .sync_labeled(downloader, concurrency, mirror, urls, reporter, Some(minecraft_version))
             .await?;
 
         if !needs_virtual {
@@ -235,6 +235,22 @@ impl AssetRegistry {
         urls: &ManifestUrls,
         reporter: &dyn ProgressReporter,
     ) -> Result<(), MdtError> {
+        self.sync_labeled(downloader, concurrency, mirror, urls, reporter, None)
+            .await
+    }
+
+    /// [`AssetRegistry::sync`], optionally labelling each object with its logical
+    /// asset name and the Minecraft version it belongs to, so the launcher's
+    /// activity log can show one line per downloaded asset.
+    async fn sync_labeled(
+        &self,
+        downloader: &dyn Downloader,
+        concurrency: usize,
+        mirror: &Mirror,
+        urls: &ManifestUrls,
+        reporter: &dyn ProgressReporter,
+        minecraft_version: Option<&str>,
+    ) -> Result<(), MdtError> {
         let needed = self.missing_locally().await?;
         if needed.is_empty() {
             return Ok(());
@@ -244,7 +260,10 @@ impl AssetRegistry {
         // here: `download_single_file` already size-checks and SHA-1-verifies the destination and
         // skips it when it matches. Filtering with `cache_has` first would hash the same bytes a
         // second time (the "two full SHA-1 passes" cost) for no extra safety.
-        let tasks = downloader::build_tasks_from_assets(&needed, &self.registry_dir);
+        let mut tasks = downloader::build_tasks_from_assets(&needed, &self.registry_dir);
+        if let Some(version) = minecraft_version {
+            label_asset_tasks(&mut tasks, &self.objects, version);
+        }
         let download_result =
             downloader::execute_downloads(downloader, tasks, concurrency, mirror, urls, reporter)
                 .await;
@@ -401,9 +420,33 @@ async fn fetch_index_file(
         by: None,
     };
     downloader::execute_downloads(downloader, vec![task], 1, mirror, urls, reporter).await?;
+    reporter.status(&format!("资源索引 {}.json 已下载", asset_index.id));
     VirtualDir::new(&cache_path, local_index)
         .mount_with_reporter(reporter)
         .await
+}
+
+
+/// Give every asset task a human-readable label so the launcher log can show one
+/// `Downloaded <logical name> by Minecraft <version>` line per downloaded object.
+///
+/// Several logical names can share one object; the first is enough.
+fn label_asset_tasks(
+    tasks: &mut [DownloadTask],
+    objects: &HashMap<String, AssetObject>,
+    version: &str,
+) {
+    let mut names: HashMap<&str, &str> = HashMap::with_capacity(objects.len());
+    for (name, object) in objects {
+        names.entry(object.hash.as_str()).or_insert(name.as_str());
+    }
+    let by = format!("Minecraft {version}");
+    for task in tasks {
+        if let Some(name) = names.get(task.sha1.as_str()) {
+            task.label = Some((*name).to_string());
+            task.by = Some(by.clone());
+        }
+    }
 }
 
 /// The content-addressed path for an object hash: `<dir>/<prefix>/<hash>`.
@@ -895,5 +938,29 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&cache_dir).ok();
+    }
+
+    #[test]
+    fn asset_tasks_get_logical_names_and_the_minecraft_version() {
+        let content = b"tex";
+        let object = object(content);
+        let objects: HashMap<String, AssetObject> =
+            [("minecraft/textures/a.png".to_string(), object.clone())]
+                .into_iter()
+                .collect();
+        let mut tasks = vec![DownloadTask {
+            url: "https://example.invalid/a".to_string(),
+            dest_path: PathBuf::from("/tmp/a"),
+            sha1: object.hash.clone(),
+            size: object.size,
+            extract_to: None,
+            label: None,
+            by: None,
+        }];
+
+        label_asset_tasks(&mut tasks, &objects, "1.12.2");
+
+        assert_eq!(tasks[0].label.as_deref(), Some("minecraft/textures/a.png"));
+        assert_eq!(tasks[0].by.as_deref(), Some("Minecraft 1.12.2"));
     }
 }

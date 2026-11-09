@@ -44,6 +44,7 @@ pub async fn install_via_official_installer(
         reporter,
     )
     .await?;
+    reporter.status("官方安装器已下载");
 
     // A caller-supplied runtime wins over `JAVA_HOME`/`PATH`: a launcher that manages its own JVMs
     // must not depend on whatever happens to be installed system-wide.

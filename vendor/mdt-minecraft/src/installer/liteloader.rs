@@ -86,7 +86,7 @@ pub async fn install(
         &req.mirror,
         &urls,
         reporter,
-        None,
+        Some(&format!("LiteLoader {}", req.loader_version)),
         Some(&reg_dir),
     )
     .await?;
@@ -98,7 +98,7 @@ pub async fn install(
         &req.mirror,
         &urls,
         reporter,
-        None,
+        Some(&format!("LiteLoader {}", req.loader_version)),
         Some(&reg_dir),
     )
     .await?;

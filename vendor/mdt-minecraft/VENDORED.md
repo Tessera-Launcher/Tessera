@@ -234,8 +234,9 @@ now emit `status` lines:
 - Fabric/Quilt: fetching the profile, then the dependency count; LiteLoader: its
   core file.
 
-Asset objects still skip per-file lines (thousands of them); the batch start and
-summary already say how many and how much.
+Asset objects also get a per-file line now (their logical name plus
+`by Minecraft <version>`), so a long asset phase is not just a counter. Batches
+still open with `开始下载 N 个文件（M MiB）` and close with a summary.
 
 ## Tests added
 

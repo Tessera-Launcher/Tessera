@@ -391,6 +391,7 @@ pub async fn install_legacy_forge(
         reporter,
     )
     .await?;
+    reporter.status(&format!("Forge {loader_version} 安装器已下载"));
 
     let unpack = temp.join("unpack");
     reporter.status("解包 Forge 安装器…");

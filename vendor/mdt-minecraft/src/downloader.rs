@@ -919,7 +919,8 @@ pub fn build_tasks_from_assets(objects: &[AssetObject], objects_dir: &Path) -> V
                 sha1: object.hash.clone(),
                 size: object.size,
                 extract_to: None,
-                // Assets are numerous; count them in the progress bar but skip per-file lines.
+                // The asset registry fills in a logical name + version when it
+                // wants per-file lines; a bare task only counts in the bar.
                 label: None,
                 by: None,
             }
