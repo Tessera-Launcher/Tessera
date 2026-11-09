@@ -204,6 +204,13 @@ required both removed entries and failed with
 Installers that still ship `maven/` and `version.json` take the original path
 unchanged.
 
+The copy-on-write step in `MdtClient::install_modloader` pre-created the
+*installer* id directory (`<mc>-forge-<ver>`) before installing. Forge's legacy
+manual unpack writes `<mc>+Forge<ver>` instead, so that copy was never used and
+survived every failed attempt as a phantom version with no JSON. The copy is now
+removed when the finished install lands elsewhere (and on a failed install), so
+the launcher no longer lists an unlaunchable leftover.
+
 ## Tests added
 
 `src/asset.rs`: `legacy_index_flags_are_parsed`,

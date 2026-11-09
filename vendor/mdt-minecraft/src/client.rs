@@ -287,6 +287,7 @@ impl MdtClient {
 
         // Copy-on-write: clone the vanilla directory into the loader's isolated directory before
         // installing, so vanilla is never mutated. Otherwise install in place.
+        let mut isolated = None;
         let target_dir = if copy_vanilla {
             let isolated_id = installer::installer_version_id(&mc_version, loader, loader_version);
             let isolated_dir = installer::version_dir(&self.root, &isolated_id);
@@ -308,6 +309,7 @@ impl MdtClient {
                 self.reporter.as_ref(),
                 "install_modloader: copy-on-write done",
             );
+            isolated = Some((isolated_id, isolated_dir));
             None
         } else {
             Some(vanilla_dir.to_path_buf())
@@ -323,7 +325,30 @@ impl MdtClient {
             reporter: self.reporter.clone(),
             java: self.java.clone(),
         };
-        installer::install_modloader(self.downloader.as_ref(), req).await
+        let result = installer::install_modloader(self.downloader.as_ref(), req).await;
+
+        // The copy above used the *installer* id, but Forge's legacy manual
+        // unpack names its own directory `<mc>+Forge<ver>` (the isolation
+        // convention). The pre-copied tree is then never written to: leaving it
+        // behind makes the launcher list a phantom version with no JSON. Drop it
+        // unless the finished install actually lives there; a failed install
+        // leaves only that same unused vanilla copy behind.
+        if let Some((isolated_id, isolated_dir)) = &isolated {
+            let keep = result
+                .as_ref()
+                .is_ok_and(|installed| installed.id == *isolated_id);
+            if !keep {
+                debug_line(
+                    self.reporter.as_ref(),
+                    &format!(
+                        "install_modloader: removing unused copy {}",
+                        isolated_dir.display()
+                    ),
+                );
+                let _ = crate::io::remove_dir_all(isolated_dir).await;
+            }
+        }
+        result
     }
 
     #[cfg(not(feature = "minimal"))]
