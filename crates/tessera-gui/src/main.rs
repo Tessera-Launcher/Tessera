@@ -880,8 +880,7 @@ impl Launcher {
                     .child(button("Java", cx, |this: &mut Launcher, cx| {
                         this.state.open_java();
                         cx.notify();
-                    }))
-                    .child(button("退出", cx, |_, cx| cx.quit())),
+                    })),
             )
     }
 
