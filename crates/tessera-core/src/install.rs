@@ -1,7 +1,7 @@
 //! Download and install, driven from the UI through a channel.
 //!
 //! Same shape as [`crate::login`]: the work runs on its own thread with a
-//! current-thread runtime, so the terminal keeps redrawing while thousands of
+//! current-thread runtime, so the UI keeps redrawing while thousands of
 //! files move. The reporter MDT calls into is a tiny shim that forwards to the
 //! channel, which keeps every rendering decision in the UI layer.
 

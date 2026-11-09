@@ -3,7 +3,7 @@
 //!
 //! The state structs and the `App` handlers that drive them live here; `App` in
 //! the parent module is still the only state machine, and this module never
-//! touches the terminal or a thread — it queues [`Effect`]s like every screen.
+//! touches the UI or a thread — it queues [`Effect`]s like every screen.
 
 use super::*;
 
@@ -461,7 +461,7 @@ impl App {
 
     /// Move the picker selection by `delta` steps.
     ///
-    /// The keyboard wraps (`↓` on the last row starts over) and the wheel stops at
+    /// The keyboard wraps (`↓` on the last row starts over); the picker stops at
     /// both ends; that is the only difference, so both share this walk.
     fn picker_step(&mut self, delta: i32, wrap: bool) {
         let step = |position: i32, count: usize| -> usize {
@@ -476,7 +476,7 @@ impl App {
         match self.download.focus {
             // Walk the drawn rows, not the filtered list: a folded group is one
             // stop, however many snapshots it hides, and its members are not
-            // steps either the keyboard or the wheel may land on.
+            // steps the keyboard may land on.
             PickerFocus::Versions | PickerFocus::Search => {
                 let stops = self.download.stops();
                 if stops.is_empty() {
@@ -495,105 +495,6 @@ impl App {
                 }
                 self.download.loader_pick = step(self.download.loader_pick as i32, count);
             }
-        }
-    }
-
-    pub(super) fn handle_download_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        if self.download.stage != DownloadStage::Picking {
-            return;
-        }
-        let (column, row) = (event.column, event.row);
-        // Clicks land on rows; the wheel works anywhere in the pane, so pointing
-        // at the header or the empty space below the last row still scrolls.
-        let over_versions_rows = layout.download_versions.contains(column, row);
-        let over_loaders_rows = layout.download_loaders.contains(column, row);
-        let over_versions = layout.download_versions_pane.contains(column, row);
-        let over_loaders = layout.download_loaders_pane.contains(column, row);
-        let over_search = layout.download_search.contains(column, row);
-        let chip = layout
-            .download_filters
-            .iter()
-            .position(|area| area.contains(column, row));
-        // The source switch sits inside the loader pane, so it has to be tested
-        // before the pane's rows are.
-        let source_chip = layout
-            .download_sources
-            .iter()
-            .position(|area| area.contains(column, row));
-
-        match event.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let delta = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                    -WHEEL_STEP
-                } else {
-                    WHEEL_STEP
-                };
-                // The pane under the pointer takes the focus, so the highlighted
-                // border always says which list the wheel is about to move.
-                if over_versions {
-                    self.download.focus = PickerFocus::Versions;
-                    self.picker_step(delta, false);
-                } else if over_loaders {
-                    self.download.focus = PickerFocus::Loaders;
-                    self.picker_step(delta, false);
-                }
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if over_search {
-                    self.download.focus = PickerFocus::Search;
-                } else if let Some(index) = chip {
-                    self.download.filter = VersionFilter::ALL[index];
-                    self.download.apply_filter();
-                } else if let Some(index) = source_chip {
-                    // The switch lives in the loader pane, so clicking it focuses
-                    // that pane like any other click there would.
-                    self.download.focus = PickerFocus::Loaders;
-                    self.set_source(crate::install::Source::ALL[index]);
-                } else if over_versions_rows {
-                    self.download.focus = PickerFocus::Versions;
-                    let drawn =
-                        layout.download_offset + (row - layout.download_versions.y) as usize;
-                    // A folded group unfolds on the first click either way; a
-                    // second click on the same row starts the install.
-                    let now = Instant::now();
-                    let double = matches!(
-                        self.download_click,
-                        Some((at, previous))
-                            if previous == drawn && now.duration_since(at) <= DOUBLE_CLICK
-                    );
-                    if double {
-                        self.download_click = None;
-                        self.pick_version_row(drawn);
-                        self.start_install();
-                    } else {
-                        self.download_click = Some((now, drawn));
-                        self.pick_version_row(drawn);
-                    }
-                } else if over_loaders_rows {
-                    self.download.focus = PickerFocus::Loaders;
-                    let index = (row - layout.download_loaders.y) as usize;
-                    if index < self.download.loaders.len() {
-                        self.download.loader_pick = index;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Clicking a drawn row: a version selects it, a folded group opens or closes.
-    fn pick_version_row(&mut self, drawn: usize) {
-        let Some(row) = self.download.rows.get(drawn).cloned() else {
-            return;
-        };
-        match row.kind {
-            crate::version_tree::RowKind::Version(index) => {
-                self.download.picked = index;
-                self.download.refresh_loaders();
-            }
-            // The row says "there is more behind me", so clicking it is what unfolds
-            // it; clicking the opened header folds it back up.
-            crate::version_tree::RowKind::Group { .. } => self.toggle_group(drawn, None),
         }
     }
 

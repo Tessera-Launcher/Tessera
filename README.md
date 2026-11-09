@@ -1,7 +1,7 @@
 # Tessera
 
-终端里的 Minecraft: Java Edition 启动器。TUI（`ratatui` + `crossterm`），
-无 WebView、无 GTK、无 GPU 依赖，可在 SSH 里跑。
+桌面版 Minecraft: Java Edition 启动器。界面基于 `gpui-kit`，
+无 WebView、无 GTK 依赖；启动逻辑与界面分离，核心在 `tessera-core`。
 
 ## 当前状态
 
@@ -12,10 +12,9 @@
 
 未做：mods/资源包管理、服务器列表、实例设置页、自动更新。
 
-### 图形界面（第一版）
+### 图形界面
 
-`crates/tessera-gui` 是基于 `gpui-kit` 的桌面前端，目前只**复刻 TUI 的主界面布局**，
-还没有接入操作：
+`crates/tessera-gui` 是启动器唯一的前端，基于 `gpui-kit`：
 
 ```
 ┌ Tessera  Minecraft Java 版启动器 ─────────────────────────────── 目录 · N 个版本 · N 个账户 ┐
@@ -25,14 +24,14 @@
 │  ● 26.3               Java 28 ├──────────────────────────────────────────────────────────┤
 │  …                            │ 日志                                                     │
 ├───────────────────────────────┴──────────────────────────────────────────────────────────┤
-│ 状态                                  刷新 · 下载 · 卸载 · 账户 · Java 尚未接入      退出 │
+│ 状态                                  刷新 · 下载 · 卸载 · 账户 · Java · 退出 │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 能用的：
 
-- **主界面**：列出 `data/游戏/versions`（按 TUI 的规则折叠基础版本）、点行切换详情
-  （含目录大小）、双击行直接启动、`启动`（和 TUI 同一条链路：选中版本 → 刷新令牌或
+- **主界面**：列出 `data/游戏/versions`（按核心的折叠规则折叠基础版本）、点行切换详情
+  （含目录大小）、双击行直接启动、`启动`（同一条链路：选中版本 → 刷新令牌或
   离线身份 → 拼命令 → 起进程，缺 Java / 缺库都会写进日志）、`刷新`、`退出`
 - **账户**：列表、切换、移除（点两次确认）、登录（官方身份、自定义 app id、`azure_app_ids.toml`
   里的现有凭据）；device code 页可以复制链接、打开链接、复制代码
@@ -44,7 +43,7 @@
   已装列表、换源、GitHub Proxy、单装与「全部更新」、下载进度
 - **AOT 训练**：26.1+ 原版装完自动训练，进度页显示「AOT 缓存训练」的类和组装阶段
 - **日志**：窗口里的日志同时写进 `data/日志/tessera.log`，关掉窗口也还在
-- **键盘**：和 TUI 同一套按键，直接走 `App::handle_key`，不是另一份映射表
+- **键盘**：按键直接走 `App::handle_key`，不是另一份映射表
 
   | 键 | 作用 |
   |---|---|
@@ -57,11 +56,12 @@
   | `Esc` `q` | 返回上一屏；主界面上是退出 |
   | `Ctrl-C` | 退出 |
 
-未接的：`配置.toml` 的写回（内存/窗口大小仍只能在 TUI 里改）、主题与 Unifont。
-数据目录仍由 `TESSERA_DATA` 或 `<exe>/data` 决定，和 TUI 一致。
+未接的：`配置.toml` 的写回（内存/窗口大小仍需手改文件）、主题与 Unifont。
+数据目录由 `TESSERA_DATA` 或 `<exe>/data` 决定。
 
 ```sh
-cargo run -p tessera-gui
+cargo run                     # 默认成员就是 tessera-gui
+cargo run -p tessera-gui      # 等价写法
 ```
 
 字体目前用系统字体；Unifont（MC 同款）与主题随 GUI 一起做，见后面的计划。
@@ -72,7 +72,7 @@ cargo run -p tessera-gui
 
 ```
 <exe>/data/
-├── 游戏/          versions / libraries / assets（--dir 可覆盖）
+├── 游戏/          versions / libraries / assets
 ├── 运行时/        下载的 JRE，一个版本一个文件夹（21.0.13+9、8u512-b09）
 ├── 凭据/账户/     一个会话一个 json（玩家名.json / 玩家名 (1).json …）
 ├── 凭据/启动器/   azure_app_ids.toml：可选的启动器 app id 清单
@@ -90,42 +90,10 @@ cargo run -p tessera-gui
 `TESSERA_DATA` 可覆盖 `data` 根目录（测试和源码运行时用）。
 
 ```sh
-cargo run                                   # 默认 $HOME/.minecraft
-cargo run -- --dir /tmp/mdt-1899            # 指定目录
-cargo run -- --once --dir /tmp/mdt-1899     # 渲染一帧后退出，不需要 TTY
-cargo run -- --once --login                 # 一帧里直接展示登录面板
-cargo run -- --once --jre                   # 一帧里直接展示 Java 下载界面
+cargo run                            # 启动桌面窗口
+TESSERA_DATA=/tmp/tessera cargo run  # 换一个数据目录（测试用）
 ```
 
-按键：`↑/k ↓/j` 选择，`g/G` 首尾，`PgUp/PgDn` 滚动日志，`l` 登录，`d` 下载版本，
-`v` 下载 Java（`j` 已经用来往下选了，`v` 取"虚拟机"），`a` 账户，`r` 重新扫描，
-`x` 卸载，`q/Esc` 退出，`Enter` 启动。
-
-**从文件管理器双击**：文件管理器启动程序时不给终端，`enable_raw_mode` 会失败，
-错误写进没人看的 stderr，窗口一闪都没有。`terminal.rs` 因此在 `stdin` 不是 TTY 时
-把自己重新丢进一个终端模拟器再退出；终端里启动（shell、tmux、SSH）`stdin` 是 TTY，
-这条路径不会触发，`tessera < 文件` 也照旧读文件。
-
-三个系统的情况不一样，所以只有 Linux/BSD 需要猜：
-
-- **Windows**：控制台子系统（Rust 默认）的程序被资源管理器双击时由系统分配控制台
-  窗口，本来就能跑；只有从 GUI 进程里启动时才用 `cmd /C start` 补一个。
-- **macOS**：Finder 双击 Unix 可执行文件本来就开 Terminal；从别的 App 启动时用
-  `open -a Terminal` 补上（这条不转交参数，有参数时不走）。
-- **Linux/BSD**：文件管理器一律直接 `exec`，没有终端。猜测顺序是
-  `$TERMINAL` → 桌面自己的终端（`$XDG_CURRENT_DESKTOP`：KDE→`konsole -e`、
-  GNOME/Unity/Cinnamon→`gnome-terminal --`、Xfce→`xfce4-terminal -x`、
-  MATE→`mate-terminal -x`、LXQt/LXDE→`qterminal -e`）→ 装了就用的 freedesktop 助手
-  `xdg-terminal-exec`（读 `~/.config/xdg-terminal-exec/xdg-terminals.list`）→
-  固定名单（`alacritty`、`ghostty`、`foot`、`kitty`）→ `x-terminal-emulator`。
-  每个终端的执行参数不同（`-x` / `--` / `-e`），表里的值取自 `xdg-terminal-exec`
-  自带的 `execarg_default` 名单。
-
-`xdg-terminal-exec` 排在本桌面终端之后是有意的：它是配置的正确来源，但发行版默认
-会把任何声明了 `X-TerminalArgExec` 的终端选进来——Debian 13 上 `xfce4-terminal.desktop`
-还没这个键，于是会给你一个 `uxterm`。想强制用它就把 `$TERMINAL` 设成自己的终端。
-
-桌面快捷方式当然也还有效：`.desktop` 里 `Terminal=true`、`Exec` 指向二进制即可。
 
 ### Java 运行时
 
@@ -164,21 +132,16 @@ cargo run -- --once --jre                   # 一帧里直接展示 Java 下载�
   同一大版本的旧文件夹会被删掉（日志里写明），不同的 `8 / 17 / 21 / 25 / 28` 各自并存
 - 下载/校验/解包都在后台线程，Esc 可以退出界面继续下
 - 启动时**只在 `data/运行时/` 里挑**（按版本号，够用就行；8 的档位仍然钉死 8）。
-  `JAVA_HOME` / `PATH` 一律不看，`--java` 已移除（传了会明确报错）
+  系统里有没有 `java` 都不影响；启动器从不使用系统 Java
 - **Forge / NeoForge 的安装器也用同一个运行时**：这两个 Loader 靠官方的 installer jar
   安装，要跑一个 JVM。挑哪个 Java 和启动时是同一条规则（版本 json 的 `javaVersion`，
   没有就按版本号推），装不了就在日志里说"还没有下载 Java N：按 v 打开 Java 下载界面"。
   Fabric / Quilt / LiteLoader 不跑 JVM，不需要 Java
-- 这个选择**不持久化**：下次打开回到清华源（和 `--mirror` 决定的是两件不同的事）
+- 这个选择**不持久化**：下次打开回到默认的清华源
 
 ### 启动
 
-`Enter` 用选中版本启动游戏。命令由 `launch.rs` 纯函数拼装，`--print-launch` 可以只看不跑：
-
-```sh
-tessera --dir /path/to/游戏 --print-launch 1.26.3
-tessera --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
-```
+`Enter` 用选中版本启动游戏。命令由 `launch.rs` 纯函数拼装：
 
 做的事：
 
@@ -208,7 +171,7 @@ tessera --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
   游戏是不是两秒就崩了）
 
 **Java 选择**：只用启动器自己下载的运行时（`data/运行时/`），**不再查 `JAVA_HOME` 或
-`PATH`，也没有 `--java`**。理由很直接：游戏跑在哪个 Java 上，启动器必须知道并能解释——
+`PATH`**。理由很直接：游戏跑在哪个 Java 上，启动器必须知道并能解释——
 环境里的 Java 是什么版本、什么时候变的，都不在启动器的控制之内。
 
 - **需要哪个版本**：版本 json 里的 `javaVersion.majorVersion` 说了算；没有这个字段
@@ -243,17 +206,16 @@ tessera --dir /path/to/游戏 --print-launch 1.26.3 --memory 4096
 启动参数里只有两样会被记住，写在 `data/配置.toml`（手改也行，缺失就是默认值）：
 
 ```toml
-memory_mb = 2048      # --memory 4096 会改成这里并保存
-window_width = 854    # --resolution 1280x720 同理
+memory_mb = 2048      # 游戏堆大小（MiB）
+window_width = 854    # 游戏窗口宽度
 window_height = 480
 github_proxy = ""     # Java 下载界面里填的 GitHub Proxy，关掉界面也还在
 ```
 
 下载源**故意不写进去**（见下载一节：一次切换不该变成长期设置）。游戏窗口默认
-854×480，改分辨率用 `--resolution 宽x高` 或直接编辑这个文件；`--width/--height` 仍然
-只作用于 `--once` 的渲染尺寸。
+854×480，改分辨率直接编辑这个文件；GUI 目前还不会回写这两项。
 
-每次启动都会在 `data/日志/tessera.log` 追加一段日志（带一行 session 头），面板里的
+每次启动都会在 `data/日志/tessera.log` 追加一段日志（带一行 session 头），窗口里的
 500 行是内存副本，退出就没了。日志文件写不进去（比如磁盘满）时只提示一次，不影响
 启动器的其余部分。
 
@@ -298,9 +260,9 @@ github_proxy = ""     # Java 下载界面里填的 GitHub Proxy，关掉界面�
 - 换版本时若原 Loader 仍可用就保留选择，否则回落到"无"
 - **下载源可以在面板里切换**：右下角（"安装内容"面板最后一行）是 `下载源 官方源 BMCLAPI`
   两个标签，点一下即切换，`s` 键在两者之间来回切；默认 `BMCLAPI`。切换只影响**这一次**
-  运行的后续下载，**不写盘**，重开回到默认（或 `--mirror` 指定的那个）。面板标题里的
+  运行的后续下载，**不写盘**，重开回到默认。面板标题里的
   `下载 BMCLAPI` 会立刻跟着变
-- `--mirror` 决定启动时的初始源（`bmclapi` 默认 / `mojang`）
+- 启动时的初始源固定为 `bmclapi`
 
 开始后进入安装界面：
 
@@ -429,42 +391,6 @@ refresh token 互不影响。列表和标题栏里那个编号是**灰色**的�
 "当前账户"和启动前刷新都按**文件路径**认人，不按玩家名——同名会话只有文件不同，
 按名字找会刷错人的令牌。
 
-### 鼠标
-
-启动时开启鼠标捕获（`EnableMouseCapture`，SGR 1006），退出/panic 时必定关闭。
-
-| 位置 | 动作 |
-|---|---|
-| 日志区 滚轮 | 滚动日志，每次 3 行；标题显示 `日志 (N 行之前)` 提示已回滚 |
-| 版本区 滚轮 | 上/下移动选择，每次 3 行；到头就停（键盘 `j/k` 才循环） |
-| 版本行 单击 | 选中该行（按当前滚动偏移换算下标） |
-| 版本行 **双击** | 启动该实例（400 ms 内同一行两次点击；`request_launch` 全部逻辑，含令牌刷新与 Java 选择） |
-| 右上角账户 点击 | 打开账户管理 |
-| 底部按键标注 点击 | 等价于按那个键（`d 下载` / `x 卸载` / `a 账户` / `h 基础版本` / `r 刷新` / `q 退出`；其他界面同理） |
-| 面板内提示行 点击 | 账户面板与登录面板底部的提示按**整串**可点：`Enter 切换`、`d 移除`、`l 登录新账户`、`Esc 关闭` 各是一块下划线按钮，点在卡在中文上也算（和底部标注走同一条回放路径，不会和绑定脱节） |
-| **右键（任意位置）** | 返回 / 取消，等价于 `Esc`。主界面除外——那里 `Esc` 是退出，右键不做事，避免误触关掉启动器 |
-| 下载页 搜索框 点击 | 光标进入搜索框 |
-| 下载页 类型标签 点击 | 直接切到该类型 |
-| 下载页 版本列表 滚轮 | 每次滚 3 **行**（折起的一组算一行，不会跳过看不见的版本），到头就停；指针在整块面板内即可（表头、行、下方空白都行），只有点击才必须落在行上 |
-| 下载页 版本列表 点击 | 选中版本；点在折起的一行上则展开/收起（选中后加载器列表按该版本重建） |
-| 下载页 版本行 **双击** | 开始安装（400 ms 内同一行两次点击，和主界面的双击启动一致）；单击只选中，不会误下 100+ MB |
-| Java 界面 行 点击 / **双击** | 单击只选中，双击开始下载（一个 JRE 约 50 MiB，值得多按一次） |
-| 下载页 加载器列表 滚轮 / 点击 | 移动或选中加载器 |
-| 登录面板 点击选项 | 选中并确认（官方直接开始；自定义进入 app id 输入；现有凭据进入清单） |
-| 登录面板 滚轮 | 上下切换身份 / 清单条目 |
-| 登录面板外 点击 | 取消 |
-
-页脚布局：状态文字（绿色）固定靠左，按键标注固定靠右——状态长度变化不会推动按钮，
-按钮位置永远不变；状态过长时按可用宽度截断并加 `…`。
-
-底部每个按键标注本身就是按钮（带下划线），点击等价于按那个键——实现上不是复制一份
-逻辑，而是把对应的 `KeyCode` 回放到 `App::handle_key`，所以标注和绑定不可能对不上。
-账户面板和登录面板内部的提示行用的是同一套机制（`ui::draw_hint`），键位后面那串说明
-文字和键位本身是**同一个**按钮：弹窗里的 `Enter 切换`、`d 移除`、`l 登录新账户`、
-`Esc 关闭` 整串都能点，而不是只有字母能点。
-
-代价：开启捕获后终端里的鼠标拖选复制交给应用，需要按住 Shift 才能用终端自身的选区（多数终端如此）。
-
 ### 登录
 
 `l` 打开面板：
@@ -499,17 +425,10 @@ token 只存在于登录线程和那个文件里，**UI 永远拿不到 token**�
 | 链接下面一行 | `o 浏览器打开` / `y 复制链接` | `o` / `y` | 用系统默认浏览器打开 / 复制链接 |
 | 设备码下面一行 | `c 复制设备码` | `c` | 复制设备码 |
 
-复制同时走两条路，因为哪一条都不够用：
+复制走系统剪贴板工具：依次尝试 `wl-copy` / `xclip` / `xsel` / `pbcopy` / WSL 的 `clip.exe`，
+谁先成功算谁的（每个最多等 500 ms，卡住的会被杀掉）。
 
-1. **剪贴板工具**：依次尝试 `wl-copy` / `xclip` / `xsel` / `pbcopy` / WSL 的 `clip.exe` /
-   `termux-clipboard-set`，谁先成功算谁的（每个最多等 500 ms，卡住的会被杀掉）。
-   这是本地桌面最可靠的一条。
-2. **OSC 52**（`ESC ] 52 ; c ; <base64>` + `BEL` 和 `ST` 两种结尾各发一次）：请**终端**去设
-   剪贴板，是 SSH 下唯一能落到"你粘贴的那台机器"的办法；但它要终端支持（xterm 默认关、
-   tmux 要 `set-clipboard on`、有的模拟器干脆没有），不支持时静默无效。
-
-日志里会写清楚这次用的是哪条（`剪贴板：xsel` / `剪贴板：OSC 52`）。只走了 OSC 52 时还会
-多一行提示——**如果粘贴出来是空的**，装一个 `wl-clipboard` 或 `xclip` 基本就能解决。
+日志里会写清楚这次用的是哪个工具（`剪贴板：xsel`）。
 
 链接的打开用 `xdg-open`（macOS `open`，Windows `cmd /C start`），失败会写进日志并提示按
 `y` 复制。
@@ -519,16 +438,14 @@ token 只存在于登录线程和那个文件里，**UI 永远拿不到 token**�
 ```
 crates/tessera-core/  纯逻辑 + 屏幕状态机：发现、启动参数、下载、Java、账户、清理
 crates/tessera-core/src/app/   状态机（App / Screen / Effect）+ 每个流程的状态
-crates/tessera-core/src/input.rs  前端无关的按键/鼠标事件类型
-crates/tessera-tui/   终端前端：渲染、crossterm 输入翻译、剪贴板
+crates/tessera-core/src/input.rs  前端无关的按键事件类型
 crates/tessera-gui/   桌面前端：gpui-kit 窗口，复用同一个状态机
-src/main.rs           组装：解析参数，把 core 与 tui 接起来
 crates/tessera-core/assets/  AOT 预加载与 fastmenu 两个 Java agent 的源码和 jar
 vendor/mdt-minecraft  下载层（upstream + 本地修复，见其 VENDORED.md）
 vendor/minecraft-auth 登录层（device code → 启动凭据）
 ```
 
-`tessera-core` 不含 `ratatui`/`crossterm`/`gpui`，TUI 和 GUI 都只是依赖它的前端；
+`tessera-core` 不含 `gpui`，GUI 只是依赖它的前端；
 `vendor/` 下的两个 crate 各自是独立的 workspace 根，因此在本仓库的
 `[workspace] exclude` 里排除，作为 path 依赖引入。
 
@@ -548,7 +465,7 @@ vendor/minecraft-auth 登录层（device code → 启动凭据）
 2. **登录** ✅（官方 / 自定义 app id / `azure_app_ids.toml` 清单，一账户一 json；恢复会话待接）
 3. **下载** ✅（版本 + Loader 选择，进度条/速度/文件日志；镜像与并发可调；26.1+ 原版安装后自动训练 AOT 缓存）
 4. **启动** ✅（版本链合并、classpath、natives、占位符；Java 只用 `data/运行时` 里下载的，
-   按版本 json / 版本号自动挑；`--print-launch` 可预览）
+   按版本 json / 版本号自动挑）
 5. **令牌自动刷新** ✅（过期才联网，轮换后的 refresh token 写回凭据）
 6. **Java 运行时** ✅（Adoptium 最新 JRE × 8/17/21/25/28 EA，清华源/官方源+GitHub Proxy，sha256 校验，
    装到 `data/运行时/<版本号>/`，启动时优先使用；打开界面时检查各大版本的小版本更新，`u` 批量更新）

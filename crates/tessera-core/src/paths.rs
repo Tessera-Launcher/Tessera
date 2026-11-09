@@ -131,7 +131,7 @@ impl Paths {
 
 /// `data/运行时` for an account directory at `<data>/凭据/账户`.
 ///
-/// The terminal app keeps its own copy of the data root but is built from
+/// The app keeps its own copy of the data root but is built from
 /// directory paths, so this single derivation keeps the runtime directory next to
 /// the credentials the app already knows about.
 pub fn runtime_dir_beside(accounts_dir: &Path) -> PathBuf {
@@ -158,7 +158,10 @@ mod tests {
         let paths = Paths::at("/opt/tessera/data");
         assert_eq!(paths.game(), Path::new("/opt/tessera/data/游戏"));
         assert_eq!(paths.accounts(), Path::new("/opt/tessera/data/凭据/账户"));
-        assert_eq!(paths.launchers(), Path::new("/opt/tessera/data/凭据/启动器"));
+        assert_eq!(
+            paths.launchers(),
+            Path::new("/opt/tessera/data/凭据/启动器")
+        );
         assert_eq!(
             paths.app_ids(),
             Path::new("/opt/tessera/data/凭据/启动器/azure_app_ids.toml")

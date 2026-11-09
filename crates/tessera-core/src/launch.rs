@@ -412,8 +412,8 @@ pub fn spawn_game(
         command
             .args(&prepared.command.args)
             .current_dir(&prepared.command.cwd)
-            // The game writes to the alternate screen; inheriting stdio would
-            // scribble over the TUI.
+            // The game writes its own output; inheriting stdio would
+            // scribble over whatever the front-end is showing.
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         match command.spawn() {
@@ -1031,7 +1031,9 @@ pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), Strin
         return Err(if required <= 8 {
             format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
         } else {
-            format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
+            format!(
+                "这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）"
+            )
         });
     };
 

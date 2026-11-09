@@ -119,7 +119,8 @@ impl Launcher {
     /// Hand one keystroke to the state machine, then run whatever it queued.
     ///
     /// Everything the keyboard can do already lives in `App::handle_key`, so the
-    /// front-end only translates: a second key map here would drift from the TUI.
+    /// front-end only translates: a second key map here would drift from the state
+    /// machine.
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus_handle.is_focused(window) {
             return;
@@ -583,8 +584,7 @@ impl Launcher {
                         .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
                         .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                             this.state.selected = index;
-                            // Two clicks on one row launch, the way the TUI's
-                            // double click does; one click only selects.
+                            // Two clicks on one row launch; one click only selects.
                             if event.click_count() > 1 {
                                 this.state.request_launch();
                             }
@@ -1326,7 +1326,7 @@ impl Launcher {
                     .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
                     .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                         this.state.java.selected = index;
-                        // Double click installs, like the TUI's Enter.
+                        // Double click installs, like Enter in the state machine.
                         if event.click_count() > 1 {
                             this.state.handle_java_key(Key::Enter, Modifiers::NONE);
                             this.step(cx);

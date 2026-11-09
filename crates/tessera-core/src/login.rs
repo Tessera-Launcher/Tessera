@@ -2,7 +2,7 @@
 //!
 //! The UI thread must keep drawing while Microsoft waits for the user, so the
 //! whole flow runs on its own thread with its own current-thread runtime and
-//! reports progress over a channel. Nothing here touches the terminal, and the
+//! reports progress over a channel. Nothing here touches the UI, and the
 //! tokens only ever exist in this thread and in the account file it writes —
 //! they are never sent to the UI.
 

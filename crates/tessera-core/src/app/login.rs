@@ -140,7 +140,7 @@ impl App {
         }
     }
 
-    /// All keyboard handling, so a mouse click can replay a key and behave
+    /// All keyboard handling, so every front-end can replay a key and behave
     /// identically to pressing it.
     pub fn handle_key(&mut self, code: Key, modifiers: Modifiers) {
         if modifiers.contains(Modifiers::CONTROL) && code == Key::Char('c') {
@@ -182,7 +182,7 @@ impl App {
             // Two presses, like removing an account: deleting a whole version
             // directory is not something a single stray key may do.
             Key::Char('x') | Key::Delete => self.request_uninstall(),
-            // Keyboard equivalent of the wheel, for terminals without mouse reporting.
+            // Page keys scroll the log without moving the selection.
             Key::PageUp => self.scroll_log(5),
             Key::PageDown => self.scroll_log_back(5),
             Key::Enter => self.request_launch(),
@@ -271,8 +271,7 @@ impl App {
                     }
                 }
                 Key::Char(c)
-                    if !modifiers.contains(Modifiers::CONTROL)
-                        && self.login.app_id.len() < 64 =>
+                    if !modifiers.contains(Modifiers::CONTROL) && self.login.app_id.len() < 64 =>
                 {
                     self.login.app_id.push(c);
                 }

@@ -116,41 +116,4 @@ impl App {
         }
         self.accounts_ui.confirm_delete = false;
     }
-
-    /// Mouse handling for the account manager.
-    pub(super) fn handle_accounts_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        let (column, row) = (event.column, event.row);
-        match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(index) = layout
-                    .account_rows
-                    .iter()
-                    .position(|area| area.contains(column, row))
-                {
-                    self.accounts_ui.selected = index;
-                    self.accounts_ui.confirm_delete = false;
-                    self.activate_selected_account();
-                    return;
-                }
-                if !layout.accounts_popup.contains(column, row) {
-                    self.close_accounts();
-                }
-            }
-            MouseEventKind::ScrollUp if layout.accounts_popup.contains(column, row) => {
-                let count = self.accounts.len();
-                if count > 0 {
-                    self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
-                    self.accounts_ui.confirm_delete = false;
-                }
-            }
-            MouseEventKind::ScrollDown if layout.accounts_popup.contains(column, row) => {
-                let count = self.accounts.len();
-                if count > 0 {
-                    self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
-                    self.accounts_ui.confirm_delete = false;
-                }
-            }
-            _ => {}
-        }
-    }
 }

@@ -1,12 +1,12 @@
-//! tessera's core: everything that does not need a terminal.
+//! tessera's core: every piece of logic that is not tied to a window.
 //!
 //! Discovery, launch-argument assembly, downloads, Java runtimes, accounts,
-//! tokens and cleanup live here. The terminal front-end (`tessera-tui`) is one
-//! consumer; a future GUI is another.
+//! tokens and cleanup live here. The desktop front-end (`tessera-gui`) is the
+//! only consumer.
 
 pub mod accounts;
-pub mod app;
 pub mod aot;
+pub mod app;
 pub mod app_ids;
 pub mod cleanup;
 pub mod discover;

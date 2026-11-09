@@ -1,31 +1,8 @@
 [workspace]
-members = ["crates/tessera-core", "crates/tessera-tui", "crates/tessera-gui"]
+members = ["crates/tessera-core", "crates/tessera-gui"]
+default-members = ["crates/tessera-gui"]
 exclude = ["vendor"]
 resolver = "2"
-
-[package]
-name = "tessera"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
-description = "A terminal Minecraft: Java Edition launcher"
-license = "GPL-3.0-or-later"
-default-run = "tessera"
-
-[[bin]]
-name = "tessera"
-path = "src/main.rs"
-
-[dependencies]
-tessera-core = { path = "crates/tessera-core" }
-tessera-tui = { path = "crates/tessera-tui" }
-ratatui = "0.30"
-crossterm = "0.29"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
-serde_json = "1"
-
-[dev-dependencies]
-tempfile = "3"
 
 [profile.dev]
 # 默认 debug = 2 会内嵌完整 DWARF 调试信息，单个二进制就 130MB+。
@@ -37,7 +14,7 @@ lto = "fat"
 strip = true
 panic = "abort"
 codegen-units = 1
-# Size wins for the great majority of the binary (the TUI, the state machine,
+# Size wins for the great majority of the binary (the GUI, the state machine,
 # the argument builders). The two CPU-heavy paths — SHA-1/SHA-256 verification
 # and gzip/zip extraction during a JRE install — are opted back into speed below.
 opt-level = "z"

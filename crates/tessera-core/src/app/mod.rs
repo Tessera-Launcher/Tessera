@@ -1,9 +1,8 @@
 //! Screen state and event handling.
 //!
-//! The terminal is never touched here: rendering takes `&mut App` but the layout
-//! comes back as a value, and everything that needs a thread, a process, the
-//! network or a long disk walk is queued as an [`Effect`] for the main loop. That
-//! is what keeps every screen transition testable without a TTY.
+//! No UI code lives here: everything that needs a thread, a process, the network
+//! or a long disk walk is queued as an [`Effect`] for the front-end. That is what
+//! keeps every screen transition testable without a window.
 //!
 //! This module owns the shared state ([`App`], [`Screen`], [`Effect`]) and the
 //! main screen. Each full-screen flow owns its state and handlers next door:
@@ -16,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use std::time::Instant;
 
-use crate::input::{Key, Modifiers, MouseButton, MouseEvent, MouseEventKind};
+use crate::input::{Key, Modifiers};
 
 use crate::accounts::{self, Account as SavedAccount};
 use crate::cleanup;
@@ -28,19 +27,6 @@ use crate::session::SessionEvent;
 
 /// How many log lines to keep before dropping the oldest.
 const LOG_CAPACITY: usize = 500;
-
-/// Two left clicks on the same version row inside this window launch it.
-///
-/// 400 ms is the usual double-click threshold (Windows defaults to 500 ms and
-/// users rarely exceed it); terminals do not report double clicks, so the
-/// launcher has to measure them itself.
-const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
-
-/// Rows a single wheel notch moves in a list.
-///
-/// Terminals report notches, not lines, and one row per notch feels stuck on a
-/// list of thirty versions; three matches what the log already does.
-const WHEEL_STEP: i32 = 3;
 
 /// Which layer is on top.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,87 +130,6 @@ pub use self::download::{DownloadStage, DownloadUi, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
 
-/// A rectangle in terminal cells, independent of the widget library.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Area {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-}
-
-impl Area {
-    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
-        Area {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    /// Whether a mouse cell falls inside (half-open, like every other rect).
-    pub fn contains(&self, column: u16, row: u16) -> bool {
-        column >= self.x
-            && column < self.x.saturating_add(self.width)
-            && row >= self.y
-            && row < self.y.saturating_add(self.height)
-    }
-}
-
-/// Where the last frame put things. The renderer fills this in so mouse hits can
-/// be resolved without duplicating the layout maths.
-#[derive(Debug, Clone, Default)]
-pub struct Layout {
-    /// Data rows of the version list (no header, no border).
-    pub list: Area,
-    /// Inner area of the log panel.
-    pub log: Area,
-    /// The account label in the header, which opens the login overlay.
-    pub account: Area,
-    /// The login popup.
-    pub overlay: Area,
-    /// Clickable option rows inside the overlay, in order.
-    pub overlay_options: Vec<Area>,
-    /// The account manager popup and its rows.
-    pub accounts_popup: Area,
-    pub account_rows: Vec<Area>,
-    /// The download picker's two panes, data rows only (no header, no border).
-    pub download_versions: Area,
-    pub download_loaders: Area,
-    /// The same panes including their header and title, which is what the wheel
-    /// hit-tests against: scrolling should not stop because the pointer is on the
-    /// header row.
-    pub download_versions_pane: Area,
-    pub download_loaders_pane: Area,
-    /// First visible row of the picker's version list, as rendered.
-    pub download_offset: usize,
-    /// The picker's search box and one area per kind filter, in `VersionFilter::ALL` order.
-    pub download_search: Area,
-    pub download_filters: Vec<Area>,
-    /// One area per source chip in the picker's bottom-right switch.
-    pub download_sources: Vec<Area>,
-    /// The Java picker: one area per row, one per source chip, and the proxy field.
-    pub java_rows: Vec<Area>,
-    pub java_sources: Vec<Area>,
-    pub java_proxy: Area,
-    /// Clickable key hints in the footer.
-    pub buttons: Vec<Button>,
-}
-
-/// One clickable hint in the footer: where it is and which key it stands for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Button {
-    pub area: Area,
-    pub code: Key,
-}
-
-impl Button {
-    pub fn new(area: Area, code: Key) -> Self {
-        Button { area, code }
-    }
-}
-
 /// The whole application state.
 #[derive(Debug)]
 pub struct App {
@@ -273,19 +178,10 @@ pub struct App {
     pub settings: crate::settings::Settings,
     /// The Java picker's state.
     pub java: JavaUi,
-    /// Where the last frame put things. The renderer returns this instead of
-    /// writing into the app, and the main loop stores it here so mouse hits can be
-    /// resolved against what is actually on screen.
-    pub layout: Layout,
     /// First visible row of the version list.
     list_offset: usize,
     /// Lines scrolled back from the newest log line; `0` follows the tail.
     pub log_scroll: usize,
-    /// When and where the last left click landed in the version list.
-    last_click: Option<(Instant, usize)>,
-    /// The same for the download picker's version rows, and the Java rows.
-    download_click: Option<(Instant, usize)>,
-    java_click: Option<(Instant, usize)>,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
     /// MDT's `MDT_HOME` when it lives inside this installation's data directory,
@@ -331,12 +227,8 @@ impl App {
             launch_options: launch::Options::default(),
             settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
-            layout: Layout::default(),
             list_offset: 0,
             log_scroll: 0,
-            last_click: None,
-            download_click: None,
-            java_click: None,
             uninstall_confirm: None,
             cache: None,
             size_cache: None,
@@ -441,10 +333,6 @@ impl App {
     }
 
     /// Move the selection without wrapping around.
-    ///
-    /// The keyboard wraps (`j` at the end starts over); the wheel does not,
-    /// because spinning past the bottom and landing at the top of a long list
-    /// reads as a bug.
     pub fn select_by(&mut self, delta: i32) {
         self.uninstall_confirm = None;
         if self.versions.is_empty() {
@@ -489,7 +377,7 @@ impl App {
     /// Scroll the log back by `lines` (saturating at the oldest retained line).
     pub fn scroll_log(&mut self, lines: usize) {
         self.log_scroll = self.log_scroll.saturating_add(lines);
-        // Clamping to the buffer length keeps repeated wheel events cheap; the
+        // Clamping to the buffer length keeps repeated scroll events cheap; the
         // renderer clamps again to what actually fits.
         self.log_scroll = self.log_scroll.min(self.log.len());
     }
@@ -730,155 +618,6 @@ impl App {
         // still the uninstall this sweep belongs to.
         if self.status.starts_with("已卸载") {
             self.status.push_str(&note);
-        }
-    }
-
-    // ---- mouse ----
-
-    /// Resolve a mouse event against the layout of the last frame.
-    ///
-    /// Hit testing lives here rather than in the renderer so that every click
-    /// path is testable without a terminal: tests set [`Layout`] directly.
-    pub fn handle_mouse(&mut self, event: MouseEvent) {
-        // The layout is a cache of the last frame; take it out so the handler can
-        // mutate the app while reading it, then put it back unchanged.
-        let layout = std::mem::take(&mut self.layout);
-        self.handle_mouse_in(&layout, event);
-        self.layout = layout;
-    }
-
-    fn handle_mouse_in(&mut self, layout: &Layout, event: MouseEvent) {
-        // Right click is "back", the way Android's back gesture works. On the main
-        // screen there is nothing to go back to and Esc would quit, so a stray
-        // right click must not close the launcher.
-        if matches!(event.kind, MouseEventKind::Down(MouseButton::Right)) {
-            if self.screen != Screen::Main {
-                self.handle_key(Key::Esc, Modifiers::NONE);
-            }
-            return;
-        }
-
-        // A footer hint is a button: replay its key instead of duplicating the
-        // action, so the two can never drift apart.
-        if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if let Some(button) = layout
-                .buttons
-                .iter()
-                .find(|button| button.area.contains(event.column, event.row))
-                .copied()
-            {
-                // A footer click means "stop typing": otherwise the replayed key
-                // would land in the search box as text.
-                if self.screen == Screen::Download {
-                    self.download.focus = PickerFocus::Versions;
-                }
-                self.handle_key(button.code, Modifiers::NONE);
-                return;
-            }
-        }
-        match self.screen {
-            Screen::Main => self.handle_main_mouse(layout, event),
-            Screen::Login => self.handle_login_mouse(layout, event),
-            Screen::Accounts => self.handle_accounts_mouse(layout, event),
-            Screen::Download => self.handle_download_mouse(layout, event),
-            Screen::Java => self.handle_java_mouse(layout, event),
-            // Downloads run in the background; the progress screen has no targets.
-            Screen::Installing => {}
-        }
-    }
-
-    fn handle_main_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        let (column, row) = (event.column, event.row);
-        match event.kind {
-            MouseEventKind::ScrollUp => {
-                if layout.log.contains(column, row) {
-                    self.scroll_log(3);
-                } else if layout.list.contains(column, row) {
-                    self.select_by(-WHEEL_STEP);
-                } else {
-                    self.scroll_log(3);
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if layout.log.contains(column, row) {
-                    self.scroll_log_back(3);
-                } else if layout.list.contains(column, row) {
-                    self.select_by(WHEEL_STEP);
-                } else {
-                    self.scroll_log_back(3);
-                }
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if layout.account.contains(column, row) {
-                    self.open_accounts();
-                    return;
-                }
-                if layout.list.contains(column, row) {
-                    let index = self.list_offset + (row - layout.list.y) as usize;
-                    if index >= self.versions.len() {
-                        return;
-                    }
-                    // Double click launches; a single one only selects.
-                    let now = Instant::now();
-                    let double = matches!(
-                        self.last_click,
-                        Some((at, previous)) if previous == index && now.duration_since(at) <= DOUBLE_CLICK
-                    );
-                    self.selected = index;
-                    if double {
-                        self.last_click = None;
-                        self.request_launch();
-                    } else {
-                        self.last_click = Some((now, index));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_login_mouse(&mut self, layout: &Layout, event: MouseEvent) {
-        let (column, row) = (event.column, event.row);
-        match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                // A click on an identity row both selects and confirms it, the way a
-                // menu behaves; a click outside the popup cancels.
-                if let Some(index) = layout
-                    .overlay_options
-                    .iter()
-                    .position(|area| area.contains(column, row))
-                {
-                    match self.login.step {
-                        // The saved list is windowed, so a row index is only an
-                        // index once the scroll offset is added back.
-                        LoginStep::ChooseAppIds => {
-                            self.login.app_id_choice = self.login.app_id_offset + index;
-                        }
-                        _ => self.login.choice = index.min(LoginUi::CHOICES - 1),
-                    }
-                    self.handle_login_key(Key::Enter, Modifiers::NONE);
-                    return;
-                }
-                if !layout.overlay.contains(column, row) {
-                    self.close_login();
-                }
-            }
-            MouseEventKind::ScrollUp if layout.overlay.contains(column, row) => {
-                if self.login.step == LoginStep::ChooseAppIds {
-                    self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
-                } else {
-                    self.login.choice = self.login.choice.saturating_sub(1);
-                }
-            }
-            MouseEventKind::ScrollDown if layout.overlay.contains(column, row) => {
-                if self.login.step == LoginStep::ChooseAppIds {
-                    let last = self.login.app_ids.len().saturating_sub(1);
-                    self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
-                } else {
-                    self.login.choice = (self.login.choice + 1).min(LoginUi::CHOICES - 1);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -1568,7 +1307,6 @@ mod tests {
         app.select_next();
         assert!(app.uninstall_confirm().is_none());
 
-        // The mouse wheel path clears it too.
         app.request_uninstall();
         app.select_by(1);
         assert!(app.uninstall_confirm().is_none());
@@ -2034,183 +1772,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert!(app.log.iter().any(|line| line.contains("网络不可达")));
     }
 
-    // ---- mouse ----
-
-    use crate::input::{MouseButton, MouseEvent, MouseEventKind};
-
-    /// A click whose predecessors are ancient, so it can never pair up into a
-    /// double click (which would start a download the test did not ask for).
-    fn click_later(app: &mut App, column: u16, row: u16) {
-        app.download_click = Some((Instant::now() - DOUBLE_CLICK * 2, usize::MAX));
-        app.java_click = Some((Instant::now() - DOUBLE_CLICK * 2, usize::MAX));
-        app.handle_mouse(click(column, row));
-    }
-
-    fn click(column: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column,
-            row,
-            modifiers: Modifiers::NONE,
-        }
-    }
-
-    fn wheel(up: bool, column: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind: if up {
-                MouseEventKind::ScrollUp
-            } else {
-                MouseEventKind::ScrollDown
-            },
-            column,
-            row,
-            modifiers: Modifiers::NONE,
-        }
-    }
-
-    /// A 100x28 frame, laid out like the renderer does.
-    fn laid_out() -> App {
-        let mut app = App::new(
-            "/mc",
-            "/acc",
-            vec![
-                version("a"),
-                version("b"),
-                version("c"),
-                version("d"),
-                version("e"),
-            ],
-            Vec::new(),
-        );
-        app.layout.list = Area::new(1, 5, 40, 4);
-        app.layout.log = Area::new(45, 5, 50, 10);
-        app.layout.account = Area::new(70, 1, 20, 1);
-        app
-    }
-
-    #[test]
-    fn area_contains_uses_half_open_bounds() {
-        let area = Area::new(2, 3, 4, 5);
-        assert!(area.contains(2, 3));
-        assert!(area.contains(5, 7));
-        assert!(!area.contains(6, 3), "right edge is exclusive");
-        assert!(!area.contains(2, 8), "bottom edge is exclusive");
-        assert!(!area.contains(1, 3));
-    }
-
-    #[test]
-    fn clicking_a_row_selects_it() {
-        let mut app = laid_out();
-        app.handle_mouse(click(10, 5));
-        assert_eq!(app.selected, 0);
-        app.handle_mouse(click(10, 7));
-        assert_eq!(app.selected, 2, "row offset maps to the third version");
-    }
-
-    #[test]
-    fn clicking_below_the_last_row_does_not_overflow_the_selection() {
-        let mut app = laid_out();
-        app.layout.list = Area::new(1, 5, 40, 20); // taller than the list
-        app.handle_mouse(click(10, 5 + 15));
-        assert_eq!(app.selected, 0, "out-of-range rows are ignored");
-    }
-
-    #[test]
-    fn clicks_respect_the_scroll_offset() {
-        let mut app = laid_out();
-        app.layout.list = Area::new(1, 5, 40, 2); // only two rows on screen
-        app.selected = 4;
-        app.clamp_list(2);
-        assert_eq!(app.list_offset(), 3, "viewport follows the selection");
-
-        app.handle_mouse(click(10, 5));
-        assert_eq!(app.selected, 3, "top visible row is index 3");
-        app.handle_mouse(click(10, 6));
-        assert_eq!(app.selected, 4);
-    }
-
-    fn right_click(column: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Right),
-            column,
-            row,
-            modifiers: Modifiers::NONE,
-        }
-    }
-
-    #[test]
-    fn the_wheel_over_the_version_list_moves_by_a_few_rows() {
-        let mut app = laid_out();
-        app.handle_mouse(wheel(false, 10, 6));
-        assert_eq!(app.selected, 3, "one notch is three rows");
-        app.handle_mouse(wheel(true, 10, 6));
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn the_wheel_stops_at_the_ends_instead_of_wrapping() {
-        let mut app = laid_out();
-        for _ in 0..5 {
-            app.handle_mouse(wheel(false, 10, 6));
-        }
-        assert_eq!(
-            app.selected,
-            app.versions.len() - 1,
-            "no jump back to the top"
-        );
-        for _ in 0..5 {
-            app.handle_mouse(wheel(true, 10, 6));
-        }
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn double_clicking_a_row_launches_it() {
-        let mut app = laid_out();
-
-        // First click only selects.
-        app.handle_mouse(click(10, 6));
-        assert_eq!(app.selected, 1);
-        assert!(
-            !app.log.iter().any(|line| line.contains("准备启动")),
-            "one click must not launch: {:?}",
-            app.log
-        );
-
-        // Second click on the same row within the window launches.
-        app.handle_mouse(click(10, 6));
-        assert!(
-            app.log
-                .iter()
-                .any(|line| line.contains("准备启动 b · 离线（Player）")),
-            "double click launches offline: {:?}",
-            app.log
-        );
-    }
-
-    #[test]
-    fn a_slow_second_click_does_not_launch() {
-        let mut app = laid_out();
-        app.handle_mouse(click(10, 6));
-        // Pretend the previous click was a second ago.
-        app.last_click = Some((Instant::now() - std::time::Duration::from_secs(1), 1));
-        app.handle_mouse(click(10, 6));
-        assert!(
-            !app.log.iter().any(|line| line.contains("准备启动")),
-            "clicks outside the window are separate: {:?}",
-            app.log
-        );
-    }
-
-    #[test]
-    fn double_clicking_a_different_row_only_selects() {
-        let mut app = laid_out();
-        app.handle_mouse(click(10, 5));
-        app.handle_mouse(click(10, 6));
-        assert_eq!(app.selected, 1);
-        assert!(!app.log.iter().any(|line| line.contains("准备启动")));
-    }
-
     #[test]
     fn launching_without_a_managed_runtime_says_where_to_get_one() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2244,80 +1805,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             "the log points at the Java screen: {:?}",
             app.log
         );
-    }
-
-    #[test]
-    fn a_double_click_signed_in_refreshes_instead_of_launching_blind() {
-        let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
-        app.layout.list = Area::new(1, 5, 40, 4);
-        app.handle_mouse(click(10, 5));
-        app.handle_mouse(click(10, 5));
-        assert_eq!(
-            refresh_effect(&app),
-            Some(PathBuf::from("/acc/Steve.json")),
-            "the launch path, refresh included, is what a double click runs"
-        );
-    }
-
-    #[test]
-    fn right_click_goes_back_from_every_screen_except_the_main_one() {
-        // Login overlay -> main screen (Esc semantics).
-        let mut app = laid_out();
-        app.open_login();
-        app.handle_mouse(right_click(10, 10));
-        assert_eq!(app.screen, Screen::Main);
-
-        // Account manager -> main screen.
-        let mut app = laid_out();
-        app.open_accounts();
-        app.handle_mouse(right_click(10, 10));
-        assert_eq!(app.screen, Screen::Main);
-
-        // Download picker -> main screen.
-        let mut app = laid_out();
-        app.open_download();
-        app.handle_mouse(right_click(10, 10));
-        assert_eq!(app.screen, Screen::Main);
-
-        // On the main screen Esc would quit, so right click must do nothing.
-        let mut app = laid_out();
-        app.handle_mouse(right_click(10, 10));
-        assert_eq!(app.screen, Screen::Main);
-        assert!(
-            !app.should_quit,
-            "a stray right click must not close the app"
-        );
-    }
-
-    #[test]
-    fn right_click_leaves_the_login_overlay_where_it_was_opened_from() {
-        let (_tmp, mut app) = with_accounts();
-        app.open_accounts();
-        app.handle_accounts_key(Key::Char('l'), Modifiers::NONE);
-        assert_eq!(app.screen, Screen::Login);
-        app.handle_mouse(right_click(10, 10));
-        assert_eq!(app.screen, Screen::Accounts, "back, not home");
-    }
-
-    #[test]
-    fn right_click_while_installing_returns_to_the_main_screen_not_the_picker() {
-        let mut app = downloader();
-        app.handle_download_key(Key::Enter, Modifiers::NONE);
-        assert_eq!(app.screen, Screen::Installing);
-        app.handle_mouse(right_click(10, 10));
-        assert_eq!(app.screen, Screen::Main);
-        assert_eq!(
-            app.download.stage,
-            DownloadStage::Installing,
-            "the download keeps running"
-        );
-    }
-
-    #[test]
-    fn clicking_the_account_label_opens_the_account_manager() {
-        let mut app = laid_out();
-        app.handle_mouse(click(75, 1));
-        assert_eq!(app.screen, Screen::Accounts);
     }
 
     // ---- account manager ----
@@ -2432,180 +1919,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert_eq!(app.screen, Screen::Login);
         app.handle_login_key(Key::Esc, Modifiers::NONE);
         assert_eq!(app.screen, Screen::Accounts, "not the main screen");
-    }
-
-    #[test]
-    fn clicking_an_account_row_selects_and_activates_it() {
-        let (_tmp, mut app) = with_accounts();
-        app.open_accounts();
-        app.layout.accounts_popup = Area::new(20, 8, 60, 10);
-        app.layout.account_rows = vec![Area::new(21, 9, 58, 1), Area::new(21, 10, 58, 1)];
-
-        app.handle_mouse(click(30, 9));
-        assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
-        assert_eq!(app.accounts_ui.selected, 0);
-    }
-
-    #[test]
-    fn clicking_outside_the_manager_closes_it() {
-        let (_tmp, mut app) = with_accounts();
-        app.open_accounts();
-        app.layout.accounts_popup = Area::new(20, 8, 60, 10);
-        app.handle_mouse(click(2, 2));
-        assert_eq!(app.screen, Screen::Main);
-    }
-
-    #[test]
-    fn scrolling_the_manager_moves_the_selection() {
-        let (_tmp, mut app) = with_accounts();
-        app.open_accounts();
-        app.layout.accounts_popup = Area::new(20, 8, 60, 10);
-        app.accounts_ui.selected = 0;
-        app.handle_mouse(wheel(false, 30, 12));
-        assert_eq!(app.accounts_ui.selected, 1);
-        app.handle_mouse(wheel(true, 30, 12));
-        assert_eq!(app.accounts_ui.selected, 0);
-    }
-
-    #[test]
-    fn the_wheel_scrolls_the_log_and_clamps_at_both_ends() {
-        let mut app = laid_out();
-        for i in 0..100 {
-            app.log(format!("line {i}"));
-        }
-
-        // Over the log: three lines per notch, away from the tail.
-        app.handle_mouse(wheel(true, 50, 6));
-        assert_eq!(app.log_scroll, 3);
-        app.handle_mouse(wheel(true, 50, 6));
-        assert_eq!(app.log_scroll, 6);
-
-        app.handle_mouse(wheel(false, 50, 6));
-        assert_eq!(app.log_scroll, 3);
-
-        // Never negative, never past the oldest retained line.
-        for _ in 0..10 {
-            app.handle_mouse(wheel(false, 50, 6));
-        }
-        assert_eq!(app.log_scroll, 0);
-        for _ in 0..200 {
-            app.handle_mouse(wheel(true, 50, 6));
-        }
-        // App::new already logged a few lines, so the bound is the buffer, not 100.
-        assert_eq!(
-            app.log_scroll,
-            app.log.len(),
-            "clamped to the buffer length"
-        );
-        // The renderer clamps further, to `len - visible`; that is where the panel
-        // scrolls to the oldest line instead of past it.
-        let max_scroll = app.log.len().saturating_sub(10);
-        app.clamp_log_scroll(max_scroll);
-        assert_eq!(app.log_scroll, max_scroll);
-    }
-
-    #[test]
-    fn the_wheel_over_the_list_moves_the_selection_instead_of_the_log() {
-        let mut app = laid_out();
-        for i in 0..50 {
-            app.log(format!("line {i}"));
-        }
-        app.handle_mouse(wheel(false, 10, 5));
-        assert_eq!(app.selected, WHEEL_STEP as usize, "one notch is a few rows");
-        assert_eq!(app.log_scroll, 0, "the log was not touched");
-
-        app.handle_mouse(wheel(true, 10, 5));
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn clicking_an_overlay_option_selects_and_confirms_it() {
-        let mut app = laid_out();
-        app.open_login();
-        app.layout.overlay = Area::new(20, 8, 60, 10);
-        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2), Area::new(21, 11, 58, 2)];
-
-        // Second option: the custom identity asks for an app id.
-        app.handle_mouse(click(30, 11));
-        assert_eq!(app.login.choice, 1);
-        assert_eq!(app.login.step, LoginStep::EnterAppId);
-
-        // And it must not start a login by itself while the id is empty.
-        assert!(login_effect(&app).is_none());
-    }
-
-    #[test]
-    fn clicking_a_saved_row_adds_the_scroll_offset_back() {
-        let (_tmp, mut app) = saved_app(
-            r#"
-[[api_keys]]
-name = "first"
-key = "aaaaaaaa-0000-0000-0000-000000000000"
-
-[[api_keys]]
-name = "second"
-key = "bbbbbbbb-0000-0000-0000-000000000000"
-"#,
-        );
-        app.open_login();
-        app.handle_login_key(Key::End, Modifiers::NONE);
-        app.handle_login_key(Key::Enter, Modifiers::NONE);
-        assert_eq!(app.login.app_ids.len(), 2);
-
-        // The renderer scrolled the list; row 0 on screen is entry 1 on disk.
-        app.login.app_id_offset = 1;
-        app.layout.overlay = Area::new(20, 8, 60, 10);
-        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2)];
-        app.handle_mouse(click(30, 9));
-
-        assert_eq!(
-            login_effect(&app),
-            Some(Identity::Saved {
-                name: "second".to_string(),
-                app_id: "bbbbbbbb-0000-0000-0000-000000000000".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn clicking_the_official_option_starts_the_flow() {
-        let mut app = laid_out();
-        app.open_login();
-        app.layout.overlay = Area::new(20, 8, 60, 10);
-        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2), Area::new(21, 11, 58, 2)];
-
-        app.handle_mouse(click(30, 9));
-        assert_eq!(login_effect(&app), Some(Identity::Official));
-    }
-
-    #[test]
-    fn clicking_outside_the_overlay_cancels_it() {
-        let mut app = laid_out();
-        app.open_login();
-        app.layout.overlay = Area::new(20, 8, 60, 10);
-        app.handle_mouse(click(2, 2));
-        assert_eq!(app.screen, Screen::Main);
-    }
-
-    #[test]
-    fn a_click_inside_the_overlay_but_outside_any_option_keeps_it_open() {
-        let mut app = laid_out();
-        app.open_login();
-        app.layout.overlay = Area::new(20, 8, 60, 10);
-        app.layout.overlay_options = vec![Area::new(21, 9, 58, 2)];
-        app.handle_mouse(click(30, 16));
-        assert_eq!(app.screen, Screen::Login);
-    }
-
-    #[test]
-    fn scrolling_the_overlay_moves_the_identity_choice() {
-        let mut app = laid_out();
-        app.open_login();
-        app.layout.overlay = Area::new(20, 8, 60, 10);
-        app.handle_mouse(wheel(false, 30, 12));
-        assert_eq!(app.login.choice, 1);
-        app.handle_mouse(wheel(true, 30, 12));
-        assert_eq!(app.login.choice, 0);
     }
 
     // ---- java runtimes ----
@@ -2833,43 +2146,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(java_effect(&app).is_some(), "retrying is one key away");
     }
 
-    #[test]
-    fn the_java_picker_takes_clicks_and_wheel() {
-        let mut app = app();
-        app.open_java();
-        app.handle_java_event(crate::java::Event::Listed(vec![
-            java_runtime(8),
-            java_runtime(17),
-            java_runtime(21),
-            java_runtime(25),
-        ]));
-        app.layout.java_rows = (0..4)
-            .map(|index| Area::new(2, 5 + index as u16, 40, 1))
-            .collect();
-        app.layout.java_sources = vec![Area::new(50, 12, 8, 1), Area::new(58, 12, 18, 1)];
-        app.layout.java_proxy = Area::new(20, 13, 40, 1);
-
-        app.handle_mouse(wheel(false, 10, 5));
-        assert_eq!(app.java.selected, 1, "one row per notch");
-
-        app.handle_mouse(click(10, 7));
-        assert_eq!(app.java.selected, 2);
-        assert!(
-            java_effect(&app).is_none(),
-            "one click only selects — a runtime is 50 MiB"
-        );
-        app.handle_mouse(click(10, 7));
-        assert!(java_effect(&app).is_some(), "the second click downloads");
-
-        app.take_effects();
-        app.handle_mouse(click(60, 12));
-        assert_eq!(app.java.source, crate::java::Source::Github);
-
-        app.handle_mouse(click(25, 13));
-        assert!(app.java.editing_proxy, "clicking the field starts editing");
-        assert!(!app.layout.java_proxy.contains(0, 0));
-    }
-
     // ---- download ----
 
     fn remote(id: &str, kind: &str) -> RemoteVersion {
@@ -2890,25 +2166,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         app
     }
 
-    /// The picker with its two panes where the renderer would put them.
-    fn laid_out_picker() -> App {
-        let mut app = App::new("/mc", "/acc", vec![], vec![]);
-        app.open_download();
-        app.handle_install_event(InstallEvent::Versions(vec![
-            remote("1.20.1", "release"),
-            remote("1.19.2", "release"),
-            remote("1.16.5", "release"),
-            remote("1.12.2", "release"),
-            remote("1.8.9", "release"),
-        ]));
-        app.layout.download_offset = 0;
-        app.layout.download_versions = Area::new(1, 5, 40, 10);
-        app.layout.download_loaders = Area::new(45, 5, 20, 10);
-        app.layout.download_versions_pane = Area::new(0, 4, 42, 11);
-        app.layout.download_loaders_pane = Area::new(44, 4, 22, 11);
-        app
-    }
-
     /// A picker whose "全部" list contains a real snapshot cycle.
     fn tree_picker() -> App {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
@@ -2920,11 +2177,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             remote("1.21.9-pre1", "snapshot"),
             remote("1.21.7", "release"),
         ]));
-        app.layout.download_offset = 0;
-        app.layout.download_versions = Area::new(1, 5, 40, 10);
-        app.layout.download_loaders = Area::new(45, 5, 20, 10);
-        app.layout.download_versions_pane = Area::new(0, 4, 42, 11);
-        app.layout.download_loaders_pane = Area::new(44, 4, 22, 11);
         app
     }
 
@@ -2950,32 +2202,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         // every frame.
         assert_eq!(app.download.folded_rows(), 1);
         assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
-    }
-
-    #[test]
-    fn clicking_a_folded_group_unfolds_it_and_the_opened_header_folds_it_back() {
-        let mut app = tree_picker();
-
-        // Row 1 is the folded cycle.
-        click_later(&mut app, 10, 6);
-        assert_eq!(app.download.expanded, ["1.21.9-pre".to_string()]);
-        assert_eq!(app.download.rows.len(), 6, "header plus three members");
-        assert_eq!(
-            app.download.picked_version().unwrap().id,
-            "1.21.9-pre3",
-            "unfolding selects the newest member"
-        );
-
-        // The opened header is still row 1, now a toggle that folds it back.
-        click_later(&mut app, 10, 6);
-        assert!(app.download.expanded.is_empty());
-        assert_eq!(app.download.rows.len(), 3);
-        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
-
-        // And a member row selects that member.
-        click_later(&mut app, 10, 6);
-        click_later(&mut app, 10, 8); // second member: pre2
-        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
     }
 
     #[test]
@@ -3058,99 +2284,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
     }
 
     #[test]
-    fn the_wheel_scrolls_the_picker_versions() {
-        let mut app = laid_out_picker();
-        app.handle_mouse(wheel(false, 10, 6));
-        assert_eq!(app.download.picked, 3);
-        assert_eq!(app.download.focus, PickerFocus::Versions);
-        app.handle_mouse(wheel(true, 10, 6));
-        assert_eq!(app.download.picked, 0, "the pane under the pointer moves");
-    }
-
-    #[test]
-    fn the_wheel_scrolls_drawn_rows_so_a_folded_cycle_is_one_notch() {
-        let mut app = tree_picker();
-        // One notch is `WHEEL_STEP` rows and there are three rows, so one notch
-        // lands on the last one; no scroll may leave the highlight where it was.
-        app.handle_mouse(wheel(false, 10, 6));
-        assert_eq!(
-            app.download.picked_version().unwrap().id,
-            "1.21.7",
-            "the folded cycle was stepped over as a row, not as three versions"
-        );
-
-        // It stops at the end instead of wrapping.
-        app.handle_mouse(wheel(false, 10, 6));
-        assert_eq!(app.download.picked_version().unwrap().id, "1.21.7");
-
-        app.handle_mouse(wheel(true, 10, 6));
-        assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
-        app.handle_mouse(wheel(true, 10, 6));
-        assert_eq!(
-            app.download.picked_version().unwrap().id,
-            "1.21.8",
-            "top end"
-        );
-
-        // An opened cycle puts its members on the wheel's path too.
-        app.handle_download_key(Key::Down, Modifiers::NONE);
-        assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
-        app.handle_download_key(Key::Right, Modifiers::NONE);
-        app.handle_download_key(Key::Up, Modifiers::NONE);
-        assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
-        app.handle_mouse(wheel(false, 10, 6));
-        assert_eq!(
-            app.download.picked_version().unwrap().id,
-            "1.21.9-pre1",
-            "the wheel landed on a member of the opened cycle, not on its header"
-        );
-    }
-
-    #[test]
-    fn the_wheel_works_anywhere_in_the_pane_not_just_on_a_row() {
-        let mut app = laid_out_picker();
-        // Pointing at the table header must still scroll the list.
-        app.handle_mouse(wheel(false, 10, 4));
-        assert_eq!(app.download.picked, WHEEL_STEP as usize, "header row");
-        // And so must the empty space below the last row.
-        let empty = app.layout.download_versions.y + 9;
-        app.handle_mouse(wheel(false, 10, empty));
-        assert!(
-            app.download.picked > WHEEL_STEP as usize,
-            "empty space below the rows"
-        );
-
-        // A click, unlike the wheel, only lands on a row.
-        let before = app.download.picked;
-        app.handle_mouse(click(10, 4));
-        assert_eq!(app.download.picked, before, "the header is not a version");
-    }
-
-    #[test]
-    fn the_wheel_over_the_loader_pane_moves_the_loaders() {
-        let mut app = laid_out_picker();
-        assert!(app.download.loaders.len() >= 2, "1.20.1 offers loaders");
-        app.handle_mouse(wheel(false, 50, 6));
-        assert_eq!(app.download.focus, PickerFocus::Loaders);
-        assert_eq!(
-            app.download.loader_pick,
-            (WHEEL_STEP as usize).min(app.download.loaders.len() - 1),
-            "a notch is a few rows, clamped to the list"
-        );
-        assert_eq!(app.download.picked, 0, "the version choice is untouched");
-    }
-
-    #[test]
-    fn clicking_a_picker_version_selects_it() {
-        let mut app = laid_out_picker();
-        app.handle_mouse(click(10, 8));
-        assert_eq!(app.download.picked, 3, "row offset from the pane's top");
-        assert_eq!(app.download.focus, PickerFocus::Versions);
-        // 1.12.2 rules out Fabric and Quilt, so the loader list is rebuilt.
-        assert!(!app.download.loaders.contains(&Loader::Fabric));
-    }
-
-    #[test]
     fn uninstall_plan_only_exists_while_a_confirmation_is_pending() {
         let mut app = app();
         // Selecting a version is not a question; a front-end that draws a dialog
@@ -3164,75 +2297,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
 
         app.cancel_uninstall();
         assert!(app.uninstall_plan().is_none());
-    }
-
-    #[test]
-    fn double_clicking_a_picker_version_starts_the_install() {
-        let mut app = laid_out_picker();
-        // One click only selects.
-        app.handle_mouse(click(10, 6));
-        assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
-        assert!(install_effect(&app).is_none(), "one click must not install");
-
-        // The second click on the same row starts it.
-        app.handle_mouse(click(10, 6));
-        let (version, _) = install_effect(&app).expect("an install started");
-        assert_eq!(version, "1.19.2");
-        assert_eq!(app.download.stage, DownloadStage::Installing);
-        assert_eq!(app.screen, Screen::Installing);
-    }
-
-    #[test]
-    fn a_double_click_that_is_too_slow_only_selects() {
-        let mut app = laid_out_picker();
-        app.handle_mouse(click(10, 6));
-        // Pretend the first click was two seconds ago.
-        app.download_click = Some((Instant::now() - std::time::Duration::from_secs(2), 1));
-        app.handle_mouse(click(10, 6));
-        assert!(
-            install_effect(&app).is_none(),
-            "clicks that far apart are separate"
-        );
-    }
-
-    #[test]
-    fn double_clicking_a_different_row_does_not_install() {
-        let mut app = laid_out_picker();
-        app.handle_mouse(click(10, 5));
-        app.handle_mouse(click(10, 6));
-        assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
-        assert!(install_effect(&app).is_none());
-    }
-
-    #[test]
-    fn clicking_a_picker_row_below_the_last_one_does_nothing() {
-        let mut app = laid_out_picker();
-        app.handle_mouse(click(10, 14));
-        assert_eq!(app.download.picked, 0);
-    }
-
-    #[test]
-    fn clicking_a_loader_row_selects_that_loader() {
-        let mut app = laid_out_picker();
-        let forge = app
-            .download
-            .loaders
-            .iter()
-            .position(|loader| *loader == Loader::Forge)
-            .expect("forge offered for 1.20.1");
-        app.handle_mouse(click(50, 5 + forge as u16));
-        assert_eq!(app.download.focus, PickerFocus::Loaders);
-        assert_eq!(app.download.loader_pick, forge);
-    }
-
-    #[test]
-    fn the_picker_ignores_the_mouse_while_installing() {
-        let mut app = laid_out_picker();
-        app.download.picked = 1;
-        app.download.stage = DownloadStage::Installing;
-        app.handle_mouse(wheel(false, 10, 6));
-        app.handle_mouse(click(10, 5));
-        assert_eq!(app.download.picked, 1);
     }
 
     #[test]
@@ -3265,7 +2329,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
         assert!(app.download.loaders.contains(&Loader::None));
     }
 
-    /// A picker with one of each kind: release, snapshot and old alpha.
     fn mixed_picker() -> App {
         let mut app = App::new("/mc", "/acc", vec![], vec![]);
         app.open_download();
@@ -3275,8 +2338,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             remote("23w31a", "snapshot"),
             remote("a1.2.6", "old_alpha"),
         ]));
-        app.layout.download_search = Area::new(1, 2, 40, 1);
-        app.layout.download_filters = (0..4).map(|i| Area::new(45 + i * 8, 2, 7, 1)).collect();
         app
     }
 
@@ -3426,56 +2487,6 @@ key = "bbbbbbbb-0000-0000-0000-000000000000"
             crate::install::Source::Bmclapi,
             "the switch is a two-way toggle"
         );
-    }
-
-    #[test]
-    fn clicking_a_source_chip_switches_the_source() {
-        let mut app = laid_out_picker();
-        app.layout.download_sources = vec![Area::new(50, 14, 8, 1), Area::new(58, 14, 10, 1)];
-
-        app.handle_mouse(click(52, 14));
-        assert_eq!(
-            app.source,
-            crate::install::Source::Mojang,
-            "the first chip is 官方源"
-        );
-        assert_eq!(app.download.focus, PickerFocus::Loaders);
-
-        app.handle_mouse(click(60, 14));
-        assert_eq!(app.source, crate::install::Source::Bmclapi);
-
-        // The chips sit on the pane's last row, which is not a loader row.
-        assert_eq!(app.download.loader_pick, 0, "no loader was picked");
-        assert_eq!(app.download.picked, 0, "no version was picked");
-    }
-
-    #[test]
-    fn clicking_a_kind_chip_sets_that_filter() {
-        let mut app = mixed_picker();
-        // Chip row starts at x=45, eight cells apart.
-        app.handle_mouse(click(45 + 8 * 2 + 1, 2));
-        assert_eq!(app.download.filter, VersionFilter::Snapshot);
-        assert_eq!(app.download.picked_version().unwrap().id, "23w31a");
-    }
-
-    #[test]
-    fn clicking_the_search_box_moves_the_caret_there() {
-        let mut app = mixed_picker();
-        app.handle_mouse(click(5, 2));
-        assert_eq!(app.download.focus, PickerFocus::Search);
-        app.handle_download_key(Key::Char('2'), Modifiers::NONE);
-        assert_eq!(app.download.query, "2");
-    }
-
-    #[test]
-    fn a_footer_click_leaves_the_search_box_first() {
-        let mut app = mixed_picker();
-        type_search(&mut app, "1");
-        // The footer replays the key, which must not become search text.
-        app.layout.buttons = vec![Button::new(Area::new(0, 27, 8, 1), Key::Char('f'))];
-        app.handle_mouse(click(2, 27));
-        assert_eq!(app.download.query, "1");
-        assert_eq!(app.download.filter, VersionFilter::Release);
     }
 
     #[test]

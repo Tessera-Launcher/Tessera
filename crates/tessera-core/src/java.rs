@@ -11,7 +11,7 @@
 //! on disk is the archive's single top-level directory, moved to
 //! `<root>/java/<feature>/` so that `bin/java` sits right below it.
 //!
-//! Nothing here touches the terminal or the app state: `spawn_*` runs on its own
+//! Nothing here touches the UI or the app state: `spawn_*` runs on its own
 //! thread and reports over a channel, exactly like the game download worker.
 
 use std::fs::{self, File};
