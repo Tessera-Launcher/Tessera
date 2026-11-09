@@ -182,6 +182,9 @@ pub fn spawn_install(
     loader: Loader,
 ) -> Receiver<InstallEvent> {
     spawn_worker(move |sender| {
+        // A cleanup sweep must not delete libraries while this install writes
+        // them. The guard lives for the whole install, not just the setup.
+        let _maintenance = crate::task::read();
         let java = installer_java(&root, &runtimes, &version, loader, &sender)?;
         let client = build_client(
             &root,

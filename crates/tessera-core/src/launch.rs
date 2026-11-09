@@ -400,6 +400,9 @@ pub fn spawn_game(
 ) -> Receiver<GameEvent> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
+        // The game keeps reading libraries/assets for its whole lifetime; a
+        // sweep must wait until it exits rather than delete the files under it.
+        let _maintenance = crate::task::read();
         let prepared = match prepare(&root, &version_dir, &credentials, &options) {
             Ok(prepared) => prepared,
             Err(reason) => {

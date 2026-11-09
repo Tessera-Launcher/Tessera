@@ -20,4 +20,5 @@ pub mod login;
 pub mod paths;
 pub mod session;
 pub mod settings;
+pub mod task;
 pub mod version_tree;

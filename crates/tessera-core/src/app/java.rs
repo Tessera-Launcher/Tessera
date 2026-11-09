@@ -121,6 +121,13 @@ impl App {
 
     /// Open the Java picker and ask the loop for Adoptium's list.
     pub fn open_java(&mut self) {
+        // A download owns this screen's worker slot. Reopening the screen must
+        // not replace `JavaUi` (and its Downloading stage) while it runs.
+        if self.java.stage == JavaStage::Downloading {
+            self.screen = Screen::Java;
+            self.status = "Java 下载进行中，请等待完成".to_string();
+            return;
+        }
         self.java = JavaUi::default();
         // The proxy is the one field of this screen that outlives it.
         self.java.proxy = self.settings.github_proxy.clone();
@@ -330,6 +337,11 @@ impl App {
                     .java
                     .selected
                     .min(self.java.runtimes.len().saturating_sub(1));
+                // A list requested before a download started must not replace the
+                // Downloading stage or its progress.
+                if self.java.stage == JavaStage::Downloading {
+                    return;
+                }
                 self.java.stage = JavaStage::Picking;
                 let updates = self.java.update_count();
                 if updates > 0 {

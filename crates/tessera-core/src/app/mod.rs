@@ -184,6 +184,8 @@ pub struct App {
     pub log_scroll: usize,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
+    /// True from `start_install` until the worker reports Finished/Failed.
+    install_running: bool,
     /// MDT's `MDT_HOME` when it lives inside this installation's data directory,
     /// i.e. the download cache a sweep may prune. `None` leaves it alone.
     pub cache: Option<PathBuf>,
@@ -230,6 +232,7 @@ impl App {
             list_offset: 0,
             log_scroll: 0,
             uninstall_confirm: None,
+            install_running: false,
             cache: None,
             size_cache: None,
         };
@@ -2683,6 +2686,52 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     }
 
     #[test]
+    fn a_new_install_ignores_the_previous_versions_aot_events() {
+        let mut app = downloader();
+        app.screen = Screen::Installing;
+        app.handle_install_event(InstallEvent::Finished {
+            version: "26.3".to_string(),
+            loader: None,
+        });
+        assert_eq!(app.download.aot_training.as_deref(), Some("26.3"));
+
+        app.start_install();
+        assert!(app.install_running);
+        app.handle_aot_event(crate::aot::Event::Progress {
+            version: "26.3".to_string(),
+            loaded: 123,
+            total: 456,
+        });
+        assert_eq!(
+            app.download.aot_loaded, 0,
+            "stale AOT must not touch the new install"
+        );
+    }
+
+    #[test]
+    fn opening_the_picker_does_not_reset_a_running_install() {
+        let mut app = downloader();
+        app.install_running = true;
+        app.download.stage = DownloadStage::Installing;
+        app.take_effects();
+        app.open_download();
+        assert_eq!(app.download.stage, DownloadStage::Installing);
+        assert!(
+            !has_fetch_versions(&app),
+            "a running install must not be replaced by a version-list request"
+        );
+        app.start_install();
+        assert_eq!(
+            app.effects()
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Install { .. }))
+                .count(),
+            0,
+            "a second install must be refused"
+        );
+    }
+
+    #[test]
     fn aot_progress_and_completion_land_on_the_install_screen() {
         let mut app = downloader();
         app.screen = Screen::Installing;
@@ -2792,7 +2841,12 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
             .iter()
             .filter(|effect| matches!(effect, Effect::RefreshSession(_)))
             .count();
-        assert_eq!(refreshes, 1, "one refresh for one launch, got {:?}", app.effects());
+        assert_eq!(
+            refreshes,
+            1,
+            "one refresh for one launch, got {:?}",
+            app.effects()
+        );
         assert!(app.status.contains("刷新"), "{}", app.status);
     }
 

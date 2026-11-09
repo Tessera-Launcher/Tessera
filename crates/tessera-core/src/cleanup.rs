@@ -114,7 +114,20 @@ impl Sweep {
 /// `cache` is MDT's `MDT_HOME` when it lives inside this installation's data
 /// directory; `None` leaves the download registry alone.
 pub fn sweep(root: &Path, cache: Option<&Path>, installed: &[String]) -> Sweep {
-    let plan = plan(root, cache, installed);
+    // Install/launch/training hold the shared side; wait for them before
+    // deleting anything. While this guard is held no new version can appear.
+    let _maintenance = crate::task::write();
+    // The caller's list is a snapshot from uninstall time. Merge in what is on
+    // disk now as well: an install that finished between the snapshot and this
+    // sweep must keep its libraries. The union can only keep too much, which is
+    // the safe direction for a deleter.
+    let mut installed = installed.to_vec();
+    for version in crate::discover::scan(root) {
+        if !installed.contains(&version.dir) {
+            installed.push(version.dir);
+        }
+    }
+    let plan = plan(root, cache, &installed);
     if let Some(reason) = plan.skipped {
         return Sweep {
             skipped: Some(reason),
@@ -638,6 +651,25 @@ mod tests {
         assert!(!stale.exists(), "the worker deleted the stale jar");
         assert_eq!(sweep.files, 1);
         assert_eq!(sweep.bytes, 11);
+    }
+
+    #[test]
+    fn a_stale_snapshot_still_keeps_versions_that_landed_meanwhile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let kept = "com/example/shared/1.0/shared-1.0.jar";
+        install(
+            root,
+            "1.20.1",
+            &profile(&library("com.example:shared:1.0", Some(kept), &[]), None),
+        );
+        touch(&root.join("libraries").join(kept), 10);
+
+        // The caller's snapshot predates this version; the sweep must re-read
+        // the directory under its exclusive lock instead of deleting its jar.
+        let sweep = sweep(root, None, &[]);
+        assert!(root.join("libraries").join(kept).is_file());
+        assert_eq!(sweep.files, 0);
     }
 
     #[test]

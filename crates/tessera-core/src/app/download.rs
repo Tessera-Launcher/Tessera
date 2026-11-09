@@ -131,6 +131,8 @@ pub struct DownloadUi {
     pub aot_assembling: bool,
     /// A short explanation for the Done screen (AOT skipped/failed).
     pub aot_note: Option<String>,
+    /// The version whose AOT training this screen is currently tracking.
+    pub aot_training: Option<String>,
 }
 
 impl Default for DownloadUi {
@@ -161,6 +163,7 @@ impl Default for DownloadUi {
             aot_preparing: false,
             aot_assembling: false,
             aot_note: None,
+            aot_training: None,
         }
     }
 }
@@ -372,6 +375,13 @@ impl App {
 
     /// Open the picker and ask the main loop to fetch the version list.
     pub fn open_download(&mut self) {
+        // An install owns the progress screen and its worker slot. Resetting
+        // `DownloadUi` here would hide a running install and detach its events.
+        if self.install_running {
+            self.screen = Screen::Download;
+            self.status = "安装进行中，请等待完成".to_string();
+            return;
+        }
         self.download = DownloadUi::default();
         self.screen = Screen::Download;
         self.request(Effect::FetchVersions);
@@ -572,11 +582,16 @@ impl App {
     }
 
     pub fn start_install(&mut self) {
+        if self.install_running {
+            self.status = "已有安装正在进行".to_string();
+            return;
+        }
         let Some(version) = self.download.picked_version() else {
             return;
         };
         let version = version.id.clone();
         let loader = self.download.picked_loader();
+        self.install_running = true;
         self.download.stage = DownloadStage::Installing;
         self.download.done = 0;
         self.download.total = 0;
@@ -584,6 +599,10 @@ impl App {
         self.download.remaining_bytes = 0;
         self.download.speed = 0.0;
         self.download.sample = None;
+        self.download.installed = None;
+        self.download.error = None;
+        self.download.aot_note = None;
+        self.download.aot_training = None;
         self.screen = Screen::Installing;
         self.status = format!("安装 {version} · {}", loader.label());
         self.log(format!("开始安装 {version}（{}）", loader.label()));
@@ -594,6 +613,11 @@ impl App {
     pub fn handle_install_event(&mut self, event: InstallEvent) {
         match event {
             InstallEvent::Versions(versions) => {
+                // A stale list request must not flip a running install back to
+                // the picker or reset its progress.
+                if self.install_running {
+                    return;
+                }
                 self.log(format!("版本列表：{} 个", versions.len()));
                 self.download.all = versions;
                 self.download.stage = DownloadStage::Picking;
@@ -638,6 +662,7 @@ impl App {
                 self.download.remaining_bytes = remaining_bytes;
             }
             InstallEvent::Finished { version, loader } => {
+                self.install_running = false;
                 self.download.installed = Some((version.clone(), loader.clone()));
                 self.download.aot_loaded = 0;
                 self.download.aot_total = 0;
@@ -656,6 +681,7 @@ impl App {
                 // custom ClassLoader and cannot enter the AOT cache anyway.
                 if loader.is_none() && crate::aot::eligible(&version) {
                     self.download.stage = DownloadStage::Training;
+                    self.download.aot_training = Some(version.clone());
                     self.status = format!("安装完成，正在训练 {version} 的 AOT 缓存");
                     self.log("开始 AOT 训练（26.1+ 原版）");
                     self.request(Effect::TrainAot(version));
@@ -665,6 +691,7 @@ impl App {
                 }
             }
             InstallEvent::Failed(message) => {
+                self.install_running = false;
                 self.download.stage = DownloadStage::Failed;
                 self.download.error = Some(message.clone());
                 self.status = "下载失败".to_string();
@@ -691,6 +718,11 @@ impl App {
                     && self.screen == Screen::Installing,
             ),
         };
+        // A training run for an older version may still be finishing after a new
+        // install started; its progress must not overwrite the new install's.
+        if self.download.aot_training.as_deref() != Some(version.as_str()) {
+            return;
+        }
         match event {
             Event::Preparing { message, .. } => {
                 self.download.aot_preparing = true;
@@ -739,6 +771,7 @@ impl App {
                 self.download.aot_preparing = false;
                 self.download.aot_assembling = false;
                 self.download.aot_note = Some(note.clone());
+                self.download.aot_training = None;
                 if showing {
                     self.download.stage = DownloadStage::Done;
                 }
@@ -748,6 +781,7 @@ impl App {
             Event::Skipped { reason, .. } => {
                 self.download.aot_preparing = false;
                 self.download.aot_note = Some(format!("跳过 AOT：{reason}"));
+                self.download.aot_training = None;
                 if showing {
                     self.download.stage = DownloadStage::Done;
                 }
@@ -758,6 +792,7 @@ impl App {
                 self.download.aot_preparing = false;
                 self.download.aot_assembling = false;
                 self.download.aot_note = Some(format!("AOT 训练失败：{reason}"));
+                self.download.aot_training = None;
                 if showing {
                     self.download.stage = DownloadStage::Done;
                 }

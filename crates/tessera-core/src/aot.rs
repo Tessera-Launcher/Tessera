@@ -12,7 +12,7 @@
 //! ModLauncher) load the classes AOT cannot cache, so the win is not there.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -107,6 +107,9 @@ pub fn spawn(
 ) -> Receiver<Event> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
+        // Training launches the game, so the same protection as a normal launch
+        // applies: do not sweep libraries while the training JVM is using them.
+        let _maintenance = crate::task::read();
         if let Err(reason) = train(&root, &runtimes, &options, &proxy, &version, &sender) {
             let _ = sender.send(Event::Failed {
                 version: version.clone(),
@@ -214,12 +217,14 @@ fn train(
     let mut last_report = Instant::now();
     let mut menu_seen: Option<Instant> = None;
     let mut terminated = false;
+    let mut class_log_tail = ClassLogTail::default();
+    let mut game_log_tail = TextTail::default();
     let mut last_loaded;
     loop {
-        if menu_seen.is_none() && log_contains(&game_log, "Sound engine started") {
+        if menu_seen.is_none() && game_log_tail.contains(&game_log, "Sound engine started") {
             menu_seen = Some(Instant::now());
         }
-        let loaded = loaded_classes(&class_log);
+        let loaded = class_log_tail.count(&class_log);
         last_loaded = loaded;
         if last_report.elapsed() >= Duration::from_millis(200) {
             last_report = Instant::now();
@@ -288,20 +293,110 @@ fn train(
     Ok(())
 }
 
-fn log_contains(path: &Path, needle: &str) -> bool {
-    fs::read_to_string(path)
-        .map(|text| text.contains(needle))
-        .unwrap_or(false)
+/// Incremental substring watcher for a log the JVM is still writing.
+///
+/// The menu marker arrives once, but the loop polls until it does; reading the
+/// whole `latest.log` every time grew more expensive the longer the game took.
+#[derive(Default)]
+struct TextTail {
+    file: Option<File>,
+    offset: u64,
+    carry: String,
 }
 
-fn loaded_classes(path: &Path) -> usize {
-    fs::read_to_string(path)
-        .map(|text| {
-            text.lines()
+impl TextTail {
+    fn contains(&mut self, path: &Path, needle: &str) -> bool {
+        if self.file.is_none() {
+            self.file = File::open(path).ok();
+        }
+        let Some(file) = self.file.as_mut() else {
+            return false;
+        };
+        if file
+            .metadata()
+            .map(|meta| meta.len() < self.offset)
+            .unwrap_or(false)
+        {
+            self.offset = 0;
+            self.carry.clear();
+        }
+        if file.seek(SeekFrom::Start(self.offset)).is_err() {
+            self.file = None;
+            return false;
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            self.file = None;
+            return false;
+        }
+        self.offset += bytes.len() as u64;
+        self.carry.push_str(&String::from_utf8_lossy(&bytes));
+        if self.carry.contains(needle) {
+            self.carry.clear();
+            return true;
+        }
+        // Keep enough tail that a marker split across two reads is still seen.
+        if self.carry.len() > needle.len() {
+            let keep = self.carry.len() - (needle.len() - 1).min(self.carry.len());
+            self.carry.drain(..keep);
+        }
+        false
+    }
+}
+
+/// Incremental reader for `-Xlog:class+load=info:file=…`.
+///
+/// The log grows to tens of thousands of lines. Re-reading the whole file every
+/// 100 ms was quadratic work; this keeps one handle, seeks to the last offset and
+/// only parses newly appended bytes. A partial line is kept until its newline
+/// arrives so a count is never split across two reads.
+#[derive(Default)]
+struct ClassLogTail {
+    file: Option<File>,
+    offset: u64,
+    pending: String,
+    loaded: usize,
+}
+
+impl ClassLogTail {
+    fn count(&mut self, path: &Path) -> usize {
+        if self.file.is_none() {
+            self.file = File::open(path).ok();
+        }
+        let Some(file) = self.file.as_mut() else {
+            return self.loaded;
+        };
+        // The assembling JVM truncates this log; start over if that happened.
+        if file
+            .metadata()
+            .map(|meta| meta.len() < self.offset)
+            .unwrap_or(false)
+        {
+            self.offset = 0;
+            self.pending.clear();
+            self.loaded = 0;
+        }
+        if file.seek(SeekFrom::Start(self.offset)).is_err() {
+            self.file = None;
+            return self.loaded;
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            self.file = None;
+            return self.loaded;
+        }
+        self.offset += bytes.len() as u64;
+        self.pending.push_str(&String::from_utf8_lossy(&bytes));
+        if let Some(last_newline) = self.pending.rfind('\n') {
+            let complete = &self.pending[..=last_newline];
+            self.loaded += complete
+                .lines()
                 .filter(|line| line.contains("[class,load]") && line.contains("source: file:"))
-                .count()
-        })
-        .unwrap_or(0)
+                .count();
+            self.pending = self.pending[last_newline + 1..].to_string();
+        }
+        self.loaded
+    }
 }
 
 /// How many classes the classpath could contribute, so the bar has a ceiling.
@@ -538,5 +633,37 @@ mod tests {
             classpath_classes(&["-cp".to_string(), "/tmp/missing.jar".to_string()]),
             0
         );
+    }
+
+    #[test]
+    fn the_game_log_tail_sees_a_marker_split_across_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("latest.log");
+        let mut tail = TextTail::default();
+        std::fs::write(&path, "starting\nSound engine").unwrap();
+        assert!(!tail.contains(&path, "Sound engine started"));
+        std::fs::write(&path, "starting\nSound engine started\n").unwrap();
+        assert!(tail.contains(&path, "Sound engine started"));
+    }
+
+    #[test]
+    fn the_class_log_tail_only_reads_what_was_appended() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("aot-classload.log");
+        let line = "[0.1s][info][class,load] example.A source: file:/game/a.jar\n";
+        let mut tail = ClassLogTail::default();
+
+        std::fs::write(&path, format!("{line}{line}")).unwrap();
+        assert_eq!(tail.count(&path), 2);
+
+        // A partial write is not a line yet.
+        std::fs::write(&path, format!("{line}{line}partial")).unwrap();
+        assert_eq!(tail.count(&path), 2);
+
+        // Completing it and appending another line counts the new matching line
+        // exactly once; the partial line itself does not match.
+        std::fs::write(&path, format!("{line}{line}partial\n{line}")).unwrap();
+        assert_eq!(tail.count(&path), 3);
+        assert_eq!(tail.count(&path), 3, "no new bytes, no double count");
     }
 }

@@ -65,6 +65,9 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
+        // A refresh is a small request; a hung socket must not block a launch.
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|error| format!("无法创建 HTTP 客户端: {error}"))?;
 

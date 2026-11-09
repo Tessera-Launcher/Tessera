@@ -429,6 +429,11 @@ pub fn spawn_install(runtimes: PathBuf, runtime: Runtime, urls: Vec<String>) -> 
 fn blocking_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
+        // A stalled connection must not hang the Java screen forever. The
+        // 15-minute cap is for the whole artifact download; metadata requests
+        // override it with a much shorter per-request timeout.
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(15 * 60))
         .build()
         .map_err(|error| format!("无法创建 HTTP 客户端：{error}"))
 }
@@ -721,10 +726,14 @@ fn blocking_fetch(
     url: &str,
     sender: &Sender<Event>,
 ) -> Result<String, String> {
-    let outcome = client.get(url).send().and_then(|response| {
-        let status = response.status();
-        response.text().map(|text| (status, text))
-    });
+    let outcome = client
+        .get(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .and_then(|response| {
+            let status = response.status();
+            response.text().map(|text| (status, text))
+        });
     match outcome {
         Ok((status, text)) if status.is_success() => Ok(text),
         Ok((status, _)) => {

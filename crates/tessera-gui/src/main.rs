@@ -7,7 +7,7 @@
 
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -36,11 +36,19 @@ struct Launcher {
     client: reqwest::Client,
     session_rx: Option<Receiver<session::SessionEvent>>,
     login_rx: Option<Receiver<LoginEvent>>,
+    /// The mirror's version list and an actual install have separate slots:
+    /// opening the picker must never steal a running install's events.
+    versions_rx: Option<Receiver<InstallEvent>>,
     install_rx: Option<Receiver<InstallEvent>>,
-    aot_rx: Option<Receiver<aot::Event>>,
-    sweep_rx: Option<Receiver<cleanup::Sweep>>,
-    java_rx: Option<Receiver<java::Event>>,
+    aot_rx: Vec<Receiver<aot::Event>>,
+    sweep_rx: Vec<Receiver<cleanup::Sweep>>,
+    /// Same split for Adoptium's list and a runtime download.
+    java_list_rx: Option<Receiver<java::Event>>,
+    java_install_rx: Option<Receiver<java::Event>>,
     launch_rx: Vec<Receiver<launch::GameEvent>>,
+    /// Clipboard writes run off the UI thread: a stuck `xclip`/`wl-copy` must
+    /// not freeze the window.
+    clipboard_rx: Vec<Receiver<Result<String, String>>>,
     /// `data/日志/tessera.log`; `None` once a write failed, so a full disk does
     /// not fail again on every frame.
     log_file: Option<logfile::LogFile>,
@@ -124,6 +132,9 @@ impl Launcher {
         };
         let client = reqwest::Client::builder()
             .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
+            // A stalled login poll must not keep a channel occupied forever.
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
@@ -131,11 +142,14 @@ impl Launcher {
             client,
             session_rx: None,
             login_rx: None,
+            versions_rx: None,
             install_rx: None,
-            aot_rx: None,
-            sweep_rx: None,
-            java_rx: None,
+            aot_rx: Vec::new(),
+            sweep_rx: Vec::new(),
+            java_list_rx: None,
+            java_install_rx: None,
             launch_rx: Vec::new(),
+            clipboard_rx: Vec::new(),
             log_file,
             focus_handle,
             focus_scheduled: false,
@@ -216,7 +230,7 @@ impl Launcher {
                     ));
                 }
                 Effect::FetchVersions => {
-                    self.install_rx = Some(install::spawn_versions(
+                    self.versions_rx = Some(install::spawn_versions(
                         self.state.root.clone(),
                         self.state.source,
                         ASSET_CONCURRENCY,
@@ -241,10 +255,10 @@ impl Launcher {
                     ));
                 }
                 Effect::FetchJavaList => {
-                    self.java_rx = Some(java::spawn_list());
+                    self.java_list_rx = Some(java::spawn_list());
                 }
                 Effect::InstallJava { runtime, urls } => {
-                    self.java_rx = Some(java::spawn_install(
+                    self.java_install_rx = Some(java::spawn_install(
                         self.state.runtimes.clone(),
                         runtime,
                         urls,
@@ -252,14 +266,14 @@ impl Launcher {
                 }
                 Effect::Sweep(installed) => {
                     // Walking the shared library tree stats thousands of files.
-                    self.sweep_rx = Some(cleanup::spawn(
+                    self.sweep_rx.push(cleanup::spawn(
                         self.state.root.clone(),
                         self.state.cache.clone(),
                         installed,
                     ));
                 }
                 Effect::TrainAot(version) => {
-                    self.aot_rx = Some(aot::spawn(
+                    self.aot_rx.push(aot::spawn(
                         self.state.root.clone(),
                         self.state.runtimes.clone(),
                         self.state.launch_options.clone(),
@@ -267,10 +281,13 @@ impl Launcher {
                         version,
                     ));
                 }
-                Effect::Copy(text) => match copy_to_clipboard(&text) {
-                    Ok(tool) => self.state.log(format!("已复制（{tool}）")),
-                    Err(error) => self.state.log(error),
-                },
+                Effect::Copy(text) => {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(copy_to_clipboard(&text));
+                    });
+                    self.clipboard_rx.push(receiver);
+                }
                 Effect::OpenBrowser(url) => match open_browser(&url) {
                     Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
                     Err(error) => self.state.log(format!("打开浏览器失败：{error}")),
@@ -316,6 +333,25 @@ impl Launcher {
             }
         }
 
+        if let Some(rx) = self.versions_rx.take() {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        self.state.handle_install_event(event);
+                        changed = true;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.versions_rx = Some(rx);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         if let Some(rx) = self.install_rx.take() {
             loop {
                 match rx.try_recv() {
@@ -339,7 +375,7 @@ impl Launcher {
             }
         }
 
-        if let Some(rx) = self.java_rx.take() {
+        if let Some(rx) = self.java_list_rx.take() {
             loop {
                 match rx.try_recv() {
                     Ok(event) => {
@@ -347,7 +383,7 @@ impl Launcher {
                         changed = true;
                     }
                     Err(TryRecvError::Empty) => {
-                        self.java_rx = Some(rx);
+                        self.java_list_rx = Some(rx);
                         break;
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -358,34 +394,15 @@ impl Launcher {
             }
         }
 
-        if let Some(rx) = self.sweep_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(sweep) => {
-                        self.state.handle_sweep(sweep);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.sweep_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if let Some(rx) = self.aot_rx.take() {
+        if let Some(rx) = self.java_install_rx.take() {
             loop {
                 match rx.try_recv() {
                     Ok(event) => {
-                        self.state.handle_aot_event(event);
+                        self.state.handle_java_event(event);
                         changed = true;
                     }
                     Err(TryRecvError::Empty) => {
-                        self.aot_rx = Some(rx);
+                        self.java_install_rx = Some(rx);
                         break;
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -395,6 +412,34 @@ impl Launcher {
                 }
             }
         }
+
+        self.sweep_rx.retain_mut(|rx| loop {
+            match rx.try_recv() {
+                Ok(sweep) => {
+                    self.state.handle_sweep(sweep);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => {
+                    changed = true;
+                    return false;
+                }
+            }
+        });
+
+        self.aot_rx.retain_mut(|rx| loop {
+            match rx.try_recv() {
+                Ok(event) => {
+                    self.state.handle_aot_event(event);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => {
+                    changed = true;
+                    return false;
+                }
+            }
+        });
 
         // The log pane is the memory copy; this is the one that outlives the
         // window. A burst goes out as one write.
@@ -407,6 +452,24 @@ impl Launcher {
                 }
             }
         }
+
+        self.clipboard_rx.retain_mut(|rx| loop {
+            match rx.try_recv() {
+                Ok(Ok(tool)) => {
+                    self.state.log(format!("已复制（{tool}）"));
+                    changed = true;
+                }
+                Ok(Err(error)) => {
+                    self.state.log(error);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => {
+                    changed = true;
+                    return false;
+                }
+            }
+        });
 
         let mut open = Vec::new();
         for rx in self.launch_rx.drain(..) {
@@ -600,7 +663,20 @@ impl Launcher {
                     .child("没有找到任何版本 —— 按「刷新」重新扫描，或先下载一个版本"),
             );
         } else {
-            for (index, version) in self.state.versions.iter().enumerate() {
+            // A large `.minecraft` can hold thousands of versions; only render a
+            // page around the selection instead of building every row per frame.
+            let total = self.state.versions.len();
+            let cursor = self.state.selected.min(total.saturating_sub(1));
+            let start = cursor.saturating_sub(150);
+            let end = (start + 300).min(total);
+            for (index, version) in self
+                .state
+                .versions
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(end - start)
+            {
                 let selected = index == self.state.selected;
                 let broken = !version.has_jar && version.inherits.is_none();
                 let java = version
@@ -1075,7 +1151,14 @@ impl Launcher {
             );
         }
 
-        for (drawn, row) in download.rows.iter().enumerate().take(400) {
+        // Render the page around the cursor: `.take(400)` used to make versions
+        // past row 400 invisible even while the keyboard could still select them.
+        let total_rows = download.rows.len();
+        let cursor = download.cursor().min(total_rows.saturating_sub(1));
+        let start = cursor.saturating_sub(200);
+        let end = (start + 400).min(total_rows);
+        for drawn in start..end {
+            let row = &download.rows[drawn];
             let indent = f32::from(row.depth) * 14.0;
             match row.kind.clone() {
                 RowKind::Version(index) => {
@@ -1821,7 +1904,24 @@ fn copy_to_clipboard(text: &str) -> Result<String, String> {
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(text.as_bytes());
         }
-        if child.wait().map(|status| status.success()).unwrap_or(false) {
+        // Some clipboard tools keep running as a daemon or wait for the
+        // selection owner; never let one hold the worker forever.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let succeeded = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.success(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break false;
+                }
+                Err(_) => break false,
+            }
+        };
+        if succeeded {
             return Ok(program.to_string());
         }
     }
