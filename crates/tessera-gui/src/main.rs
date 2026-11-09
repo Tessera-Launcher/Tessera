@@ -651,16 +651,26 @@ impl Launcher {
         let weak = cx.entity().downgrade();
         let mut list = div()
             .id("version-list")
+            .relative()
             .v_flex()
             .gap_1()
             .p_2()
-            .overflow_y_scroll()
-            // Right-clicking empty space in the list only refreshes; the row
-            // menus below add uninstall because they have a version to target.
-            .context_menu({
-                let weak = weak.clone();
-                move |menu, _, _| menu.item(refresh_menu_item(weak.clone()))
-            });
+            // Fill the panel body so right-clicking below the last row still
+            // hits this list, not the panel behind it.
+            .size_full()
+            .min_h(px(0.0))
+            .overflow_y_scroll();
+        // A backdrop sibling, not a parent, of the rows: right-clicking empty
+        // space gets only refresh, while a row's own menu can add uninstall.
+        // Nesting both context menus made the outer one swallow the row event.
+        let blank_weak = weak.clone();
+        list = list.child(
+            div()
+                .id("version-list-blank")
+                .absolute()
+                .inset_0()
+                .context_menu(move |menu, _, _| menu.item(refresh_menu_item(blank_weak.clone()))),
+        );
 
         if self.state.versions.is_empty() {
             list = list.child(
@@ -2035,6 +2045,9 @@ impl Render for Launcher {
 fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        // The window is a dark UI; the component library otherwise defaults to
+        // its light theme, which made context menus the only bright surface.
+        gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
         let launcher = cx.new(|cx| {
             let mut launcher = Launcher::new(cx);
             launcher.start(cx);
