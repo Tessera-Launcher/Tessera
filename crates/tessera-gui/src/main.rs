@@ -956,13 +956,19 @@ impl Launcher {
     fn log_panel(&mut self) -> impl IntoElement {
         // Stick to the tail while the pane grows, but stop following as soon as
         // the user moves it away from the bottom; coming back re-arms it.
-        let offset = self.log_scroll.offset().y;
+        // GPUI stores the offset as a negative distance from the top, so flip it
+        // before comparing with the (positive) maximum.
+        let offset = -self.log_scroll.offset().y;
         let max = self.log_scroll.max_offset().y;
         let at_bottom = offset >= max - px(2.0);
-        if offset != self.log_offset_seen {
-            self.log_follow = at_bottom;
-            self.log_offset_seen = offset;
+        if at_bottom {
+            self.log_follow = true;
+        } else if offset < self.log_offset_seen {
+            // Only an upward move is the user's doing; our own scroll to the
+            // bottom must not switch following off again.
+            self.log_follow = false;
         }
+        self.log_offset_seen = offset;
         if self.log_follow && !at_bottom {
             self.log_scroll.scroll_to_bottom();
         }
