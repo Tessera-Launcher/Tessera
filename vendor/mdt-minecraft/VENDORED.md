@@ -95,7 +95,7 @@ Measured on this machine with a 256 MB random file (page cache warm, `sha1` crat
   ~96k allocations for a 3.7k-object install — plus, for `Mirror::Custom`, an `RwLock` read and a
   runtime provider table clone per URL rewrite.
 
-### 7. Progress cadence is time-based, not ten-per-batch
+### 5. Progress cadence is time-based, not ten-per-batch
 
 `execute_downloads` used to report after every `total / 10` files. For 1.8.9's 722
 assets that is one update every 72 files, and for a 3 700-asset version one update
@@ -132,7 +132,7 @@ connection. A pool of HTTP/1.1 connections is twice as fast for this workload an
 keeps multiplexing and enables the adaptive flow-control window (the h2 path is still ~10%
 faster with it).
 
-### 5. Duplicate asset objects and cross-device mounts
+### 7. Duplicate asset objects and cross-device mounts
 
 Found by running `examples/download_bench` with the registry on one filesystem and the install
 target on another (`~/.mdt` on `/home`, target on `/tmp`). Two defects, one cause: an index names
@@ -273,8 +273,10 @@ cargo run --release --example download_bench -- /tmp/mdt-1.8.9 --asset-concurren
 
 ## Updating from upstream
 
-The three changes touch `src/downloader.rs` (struct fields, classifier
-selection, task dedupe), `src/asset.rs` (materialisation), `src/client.rs`
-(`VanillaInstall`), `src/lib.rs` (exports) and one test fixture in
-`tests/downloader.rs`. They do not touch the mirror/URL/provider table, so
-upstream mirror work applies cleanly; re-check the two helpers after a rebase.
+The changes touch `src/downloader.rs` (struct fields, classifier selection, task
+dedupe, progress cadence), `src/asset.rs` (materialisation), `src/client.rs`
+(`VanillaInstall`, installer JVM), `src/http.rs` (HTTP/1.1 default),
+`src/installer/*` (version ids, legacy Forge), `src/lib.rs` (exports) and the
+tests beside them. They do not touch the mirror/URL/provider table, so upstream
+mirror work applies cleanly; re-run the crate's tests after a rebase and re-check
+the helpers named above.
