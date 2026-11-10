@@ -453,28 +453,78 @@ struct AotSelection {
 }
 
 fn aot_cache(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Option<AotSelection> {
-    #[derive(serde::Deserialize)]
-    struct Meta {
-        java_major: u32,
-        java_version: String,
-        unsigned_jar: String,
-        agent: String,
+    match aot_lookup(version_dir, version_dir_name, runtimes) {
+        AotLookup::Ready(selection) => Some(selection),
+        AotLookup::Absent | AotLookup::Broken(_) => None,
     }
+}
+
+/// Whether a trained version's AOT cache can be used, for the launcher log.
+///
+/// `None` means the version was never trained (no cache artifacts); `Err` names
+/// the artifact that is missing or stale, so a version that *was* trained does
+/// not silently launch without its cache.
+pub fn aot_status(
+    version_dir: &Path,
+    version_dir_name: &str,
+    runtimes: &Path,
+) -> Option<Result<String, String>> {
+    match aot_lookup(version_dir, version_dir_name, runtimes) {
+        AotLookup::Absent => None,
+        AotLookup::Ready(selection) => Some(Ok(format!("Java {}", selection.java_major))),
+        AotLookup::Broken(reason) => Some(Err(reason)),
+    }
+}
+
+/// One trained version's files, or why they cannot be used.
+enum AotLookup {
+    /// No `.aot` / `.aot.json` at all: the version was never trained.
+    Absent,
+    Ready(AotSelection),
+    Broken(String),
+}
+
+#[derive(serde::Deserialize)]
+struct AotMeta {
+    java_major: u32,
+    java_version: String,
+    unsigned_jar: String,
+    agent: String,
+}
+
+fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> AotLookup {
     let cache = version_dir.join(format!("{version_dir_name}.aot"));
     let meta_path = version_dir.join(format!("{version_dir_name}.aot.json"));
-    if !cache.is_file() {
-        return None;
+    if !cache.is_file() && !meta_path.is_file() {
+        return AotLookup::Absent;
     }
-    let meta: Meta = serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
-    let java = crate::java::installed_runtimes(runtimes)
+    if !cache.is_file() {
+        return AotLookup::Broken("缺少 .aot 缓存文件".to_string());
+    }
+    let Ok(text) = std::fs::read_to_string(&meta_path) else {
+        return AotLookup::Broken("缺少 .aot.json 元数据".to_string());
+    };
+    let Ok(meta) = serde_json::from_str::<AotMeta>(&text) else {
+        return AotLookup::Broken("AOT 元数据损坏".to_string());
+    };
+    let Some(java) = crate::java::installed_runtimes(runtimes)
         .into_iter()
-        .find(|runtime| runtime.version == meta.java_version && runtime.major == meta.java_major)?;
+        .find(|runtime| runtime.version == meta.java_version && runtime.major == meta.java_major)
+    else {
+        return AotLookup::Broken(format!(
+            "训练时使用的 Java {}（major {}）已不在运行时目录",
+            meta.java_version, meta.java_major
+        ));
+    };
     let unsigned_jar = version_dir.join(&meta.unsigned_jar);
     let agent = version_dir.join(&meta.agent);
-    if !unsigned_jar.is_file() || !agent.is_file() {
-        return None;
+    if !unsigned_jar.is_file() {
+        return AotLookup::Broken(format!("缺少 {}", meta.unsigned_jar));
     }
-    Some(AotSelection {
+    if !agent.is_file() {
+        return AotLookup::Broken(format!("缺少 {}", meta.agent));
+    }
+    AotLookup::Ready(AotSelection {
         cache,
         java: java.java,
         java_major: meta.java_major,
@@ -1208,6 +1258,50 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         fake_java(&bin, major);
         root.join("运行时")
+    }
+
+    #[test]
+    fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        fixture(tmp.path());
+        let runtimes = managed_runtime(tmp.path(), 8);
+        let version_dir = tmp.path().join("versions/1.8.9");
+        let cache = version_dir.join("1.8.9.aot");
+        let unsigned = version_dir.join("1.8.9.unsigned.jar");
+        let agent = version_dir.join("1.8.9.aot-agent.jar");
+
+        // Untrained: nothing to say at all.
+        assert!(aot_status(&version_dir, "1.8.9", &runtimes).is_none());
+
+        std::fs::write(&cache, b"cache").unwrap();
+        std::fs::write(&unsigned, b"jar").unwrap();
+        std::fs::write(&agent, b"agent").unwrap();
+        std::fs::write(
+            version_dir.join("1.8.9.aot.json"),
+            r#"{"java_major":8,"java_version":"8.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        )
+        .unwrap();
+        let ready = aot_status(&version_dir, "1.8.9", &runtimes).unwrap().unwrap();
+        assert!(ready.contains("Java 8"), "{ready}");
+
+        std::fs::remove_file(&unsigned).unwrap();
+        let broken = aot_status(&version_dir, "1.8.9", &runtimes)
+            .unwrap()
+            .unwrap_err();
+        assert!(broken.contains("1.8.9.unsigned.jar"), "{broken}");
+
+        // A cache trained by a runtime that has since been removed is equally
+        // unusable, and the log names that runtime.
+        std::fs::write(&unsigned, b"jar").unwrap();
+        std::fs::write(
+            version_dir.join("1.8.9.aot.json"),
+            r#"{"java_major":25,"java_version":"25.0.5+8","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        )
+        .unwrap();
+        let missing = aot_status(&version_dir, "1.8.9", &runtimes)
+            .unwrap()
+            .unwrap_err();
+        assert!(missing.contains("25.0.5+8"), "{missing}");
     }
 
     #[test]

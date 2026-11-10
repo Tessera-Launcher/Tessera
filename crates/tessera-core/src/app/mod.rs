@@ -657,6 +657,20 @@ impl App {
             return;
         }
 
+        // A trained version launches with its cache only when every piece the
+        // training run recorded is still on disk. Say which it is before the
+        // token refresh, so the log explains a slow first launch either way.
+        if let Some(runtimes) = self.launch_options.runtimes.clone() {
+            let version_dir = self.root.join("versions").join(&version.dir);
+            match launch::aot_status(&version_dir, &version.dir, &runtimes) {
+                Some(Ok(detail)) => self.log(format!("AOT 缓存：有效（{detail}）")),
+                Some(Err(reason)) => {
+                    self.log(format!("AOT 缓存：无效（{reason}），本次不使用"));
+                }
+                None => {}
+            }
+        }
+
         // By file, never by name: the same player may be signed in several times
         // and only the file says which session's tokens get refreshed.
         let account_file = self.account.file().map(Path::to_path_buf);
