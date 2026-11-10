@@ -41,6 +41,12 @@
 - **卸载**：确认弹窗写明要删的目录、占用和会被连带删除的依赖版本，`Esc` 取消
 - **Java**：整屏的运行时列表（8/17/21/25/28 EA，含大小与「已装/可更新」标记）、
   已装列表、换源、GitHub Proxy、单装与「全部更新」、下载进度
+- **音乐**：左栏列出已安装的版本（含只作为 Loader 父版本存在的基线版本），右栏
+  按索引里写的名字列出这个版本的唱片或背景音乐（`t` 切换），每条带所属场景、
+  文件大小和「缺失」标记；`←→` 在两个列表间切换，`↑↓` 选择，`Esc` 返回
+- **音乐播放条**：底栏从左到右是唱片/背景音乐开关、播放暂停、当前位置、可拖动的
+  进度条、曲目总长、音量滑块、播放顺序（顺序 / 单曲 / 随机）。真的会出声：rodio +
+  symphonia 解码，`cpal` 输出；只编译 Vorbis 一种编码进去，全平台不需要 FFmpeg
 - **AOT 训练**：26.1+ 原版装完自动训练，进度页显示「AOT 缓存训练」的类和组装阶段
 - **日志**：窗口里的日志同时写进 `data/日志/tessera.log`，关掉窗口也还在
 - **键盘**：按键直接走 `App::handle_key`，不是另一份映射表
@@ -50,11 +56,14 @@
   | `↑` `↓` `j` `k` / `Home` `g` / `End` `G` | 选版本 |
   | `Enter` / 双击行 | 启动 |
   | `x` `Delete` | 卸载（第一次只提示，再按一次才删） |
-  | `d` / `a` / `v` / `l` / `r` / `h` | 下载 / 账户 / Java / 登录 / 重扫 / 折叠基础版本 |
+  | `d` / `a` / `v` / `m` / `l` / `r` / `h` | 下载 / 账户 / Java / 音乐 / 登录 / 重扫 / 折叠基础版本 |
   | `PageUp` `PageDown` | 翻日志 |
   | `Tab` | 在各屏的焦点里走 |
   | `Esc` `q` | 返回上一屏；主界面上是退出 |
   | `Ctrl-C` | 退出 |
+
+  音乐页另有自己的键：`←→` 切换列表、`↑↓`/`jk` 选择、`t` 唱片 ⇄ 背景音乐、
+  `Space` 播放/暂停、`Enter` 从头播放当前曲目、`o` 播放顺序、`r` 重扫、`Esc` 返回。
 
 - **右键菜单**：在版本行上右键 = `刷新` + `卸载`；在版本列表空白处右键 = 只显示 `刷新`。
   右键菜单里的「卸载」同样会先弹出确认框。
@@ -290,6 +299,44 @@ github_proxy = ""     # Java 下载界面里填的 GitHub Proxy，关掉界面�
 - 有字节总量时按字节算百分比，否则按文件数
 - `Esc` 关界面但**下载在后台继续**，完成后自动重扫本地版本
 - 完成/失败会停在结果页，`Enter`/`Esc` 返回列表
+
+### 音乐：名字从索引来，字节从对象来
+
+声音在 1.7.3 之后不再是带名字的文件，而是 `assets/objects/<xx>/<sha1>` 里的内容寻址
+对象，名字只存在于 `assets/indexes/<id>.json`。启动器因此不需要启动游戏就能列出某个
+版本的全部唱片和背景音乐：
+
+- 版本 → 资源索引：读 `versions/<dir>/<dir>.json` 的 `assetIndex.id`；Loader 档只有
+  `inheritsFrom`，就顺着父版本找到索引（1.6 及更早用裸的 `assets` 字段）
+- 索引 → 曲目：`sounds/records/*.ogg` 是唱片，`sounds/music/**` 是背景音乐；标题取
+  文件名（`one_more_day` → `One More Day`），场景取目录（`nether/crimson_forest` →
+  `下界 · 绯红森林`）
+- 曲目 → 文件：`sounds/objects/<sha1 前两位>/<sha1>`；老索引（`virtual`）里游戏读的是
+  `assets/virtual/<index>/<路径>` 的具名副本，那个存在就用它
+- 列表不信任 `sounds.json`，所以资源包替换了某首曲子不会影响这里显示的原版曲目
+
+索引解析在 `tessera-core::music`，页面状态在 `tessera_core::app::music`；扫描是本地几次
+读盘，跟着光标就地重扫，不占 worker。
+
+曲目长度也是从文件里读的：Vorbis 的头里没有时长，Ogg 末页的 granule 是整条流的采样
+数，除以 id 头里的采样率即可，不需要解码器。
+
+播放条的位置来自解码器自己的时钟：音频线程在 `tessera-core::audio`，rodio 的 `Player`
+每 120 ms 报一次 `get_pos()`，`App` 只是把那个数画出来；一曲播完由 `Player::empty()` 判
+定，然后按播放顺序决定下一首。离开音乐页会停掉声音（否则会出现没有人能暂停的孤儿流）。
+
+**要不要装 FFmpeg / 编解码器**：不用，三个平台都不用。rodio 的解码走 symphonia（纯
+Rust），输出走 cpal（Windows 用 WASAPI、macOS 用 CoreAudio、Linux 用 ALSA），不需要
+任何外部库或运行时编解码器。唯一的平台要求是**在 Linux 上编译**时需要 ALSA 的头文件
+（Debian/Ubuntu 的 `libasound2-dev`、Fedora 的 `alsa-lib-devel`），Windows 和 macOS 的
+构建不需要任何额外系统包。依赖里也只开了 Vorbis：
+
+```toml
+rodio = { version = "0.23", default-features = false, features = ["playback", "vorbis"] }
+```
+
+依赖树里只有 `symphonia-codec-vorbis` 和 `symphonia-format-ogg`，flac / mp3 / mp4 /
+wav 的解码器和 recording API 根本不会被编译进来。
 
 ### 26.1+ 原版的 AOT 训练
 

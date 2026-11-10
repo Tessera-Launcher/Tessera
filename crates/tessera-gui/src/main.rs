@@ -13,15 +13,22 @@ use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::*;
 
-use tessera_core::app::{App as State, DownloadStage, Effect, JavaStage, LoginStep, Screen, VersionFilter};
-use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
+use crate::platform::{copy_to_clipboard, gui_key, open_browser};
+use tessera_core::app::{
+    App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
+    VersionFilter,
+};
 use tessera_core::input::{Key, Modifiers};
+use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};
-use crate::platform::{copy_to_clipboard, gui_key, open_browser};
-use tessera_core::{accounts, aot, cleanup, discover, java, logfile, paths::Paths, session, version_tree::RowKind};
+use tessera_core::{
+    accounts, aot, audio, cleanup, discover, java, logfile, music, paths::Paths, session,
+    version_tree::RowKind,
+};
 
 const ACCENT: u32 = 0x6c_d6_7a;
 const SNAPSHOT: u32 = 0xe8_c9_6a;
@@ -93,6 +100,24 @@ struct Launcher {
     app_id_sub: Option<Subscription>,
     proxy_input: Option<Entity<InputState>>,
     proxy_sub: Option<Subscription>,
+    /// The audio worker, started on the first sound: a launcher that never plays
+    /// anything must not open an audio device.
+    music_audio: Option<(
+        std::sync::mpsc::Sender<audio::Command>,
+        Receiver<audio::Event>,
+    )>,
+    /// The music transport's two sliders. Both are created on first use, like the
+    /// text fields, because a slider needs a window.
+    music_progress: Option<Entity<SliderState>>,
+    music_progress_sub: Option<Subscription>,
+    music_volume: Option<Entity<SliderState>>,
+    music_volume_sub: Option<Subscription>,
+    /// True while the pointer drags the progress bar, so the clock does not fight
+    /// the drag by writing the position back into the slider.
+    music_seeking: bool,
+    /// The last value written into the progress slider, to skip redundant writes
+    /// (each one asks for another frame).
+    music_progress_seen: f32,
     /// `data/配置.toml`; edits to the persisted fields are written back here.
     settings_path: std::path::PathBuf,
 }
@@ -105,12 +130,18 @@ impl Launcher {
         // and point MDT at its portable cache before any worker starts.
         let mut startup_notes = Vec::new();
         if let Err(error) = data.ensure() {
-            startup_notes.push(format!("无法创建数据目录 {}：{error}", data.root().display()));
+            startup_notes.push(format!(
+                "无法创建数据目录 {}：{error}",
+                data.root().display()
+            ));
         }
         let cache = match data.adopt_vendor_cache() {
             Ok(cache) => Some(cache),
             Err(error) => {
-                startup_notes.push(format!("无法创建缓存目录 {}：{error}", data.cache().display()));
+                startup_notes.push(format!(
+                    "无法创建缓存目录 {}：{error}",
+                    data.cache().display()
+                ));
                 None
             }
         };
@@ -194,6 +225,13 @@ impl Launcher {
             app_id_sub: None,
             proxy_input: None,
             proxy_sub: None,
+            music_audio: None,
+            music_progress: None,
+            music_progress_sub: None,
+            music_volume: None,
+            music_volume_sub: None,
+            music_seeking: false,
+            music_progress_seen: 0.0,
             settings_path,
         }
     }
@@ -215,6 +253,7 @@ impl Render for Launcher {
                 self.download_screen(window, cx).into_any_element()
             }
             Screen::Java => self.java_screen(window, cx).into_any_element(),
+            Screen::Music => self.music_screen(window, cx).into_any_element(),
         };
 
         let overlay = self.uninstall_overlay(cx);

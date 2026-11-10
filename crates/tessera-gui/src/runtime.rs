@@ -8,7 +8,12 @@ impl Launcher {
     /// Everything the keyboard can do already lives in `App::handle_key`, so the
     /// front-end only translates: a second key map here would drift from the state
     /// machine.
-    pub(crate) fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.focus_handle.is_focused(window) {
             return;
         }
@@ -120,6 +125,9 @@ impl Launcher {
                         self.state.settings.github_proxy.clone(),
                         version,
                     ));
+                }
+                Effect::Music(command) => {
+                    self.send_audio(command, cx);
                 }
                 Effect::Copy(text) => {
                     let (sender, receiver) = std::sync::mpsc::channel();
@@ -332,6 +340,17 @@ impl Launcher {
         }
         self.launch_rx = open;
 
+        // Reports from the audio worker: where the device is, and when a track
+        // ends. Only the music page runs a transport.
+        if let Some(rx) = self.music_audio.as_ref().map(|(_, rx)| rx) {
+            let events: Vec<_> = rx.try_iter().collect();
+            for event in events {
+                if self.state.handle_music_event(event) {
+                    changed = true;
+                }
+            }
+        }
+
         if changed {
             cx.notify();
         }
@@ -347,5 +366,27 @@ impl Launcher {
             }
         })
         .detach();
+    }
+}
+
+impl Launcher {
+    /// Hand one command to the audio worker, starting it on first use.
+    ///
+    /// A device that cannot be opened, or a worker that has gone away, is
+    /// reported through the log rather than failing the click silently.
+    fn send_audio(&mut self, command: audio::Command, cx: &mut Context<Self>) {
+        if self.music_audio.is_none() {
+            let (commands, events) = audio::spawn();
+            self.music_audio = Some((commands, events));
+        }
+        let Some((commands, _)) = &self.music_audio else {
+            return;
+        };
+        if let Err(error) = commands.send(command) {
+            let message = format!("音频线程不可用：{error}");
+            self.state.log(message);
+            self.music_audio = None;
+            cx.notify();
+        }
     }
 }

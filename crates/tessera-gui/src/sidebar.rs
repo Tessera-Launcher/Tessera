@@ -1,4 +1,4 @@
-//! Sidebar pages and the switch between the four screens.
+//! Sidebar pages and the switch between the five screens.
 
 use super::*;
 
@@ -9,10 +9,17 @@ enum Page {
     Accounts,
     Download,
     Runtimes,
+    Music,
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Home, Page::Accounts, Page::Download, Page::Runtimes];
+    const ALL: [Page; 5] = [
+        Page::Home,
+        Page::Accounts,
+        Page::Download,
+        Page::Runtimes,
+        Page::Music,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -20,6 +27,7 @@ impl Page {
             Page::Accounts => "账户",
             Page::Download => "下载",
             Page::Runtimes => "运行时",
+            Page::Music => "音乐",
         }
     }
 
@@ -29,6 +37,7 @@ impl Page {
             Page::Accounts => "page-accounts",
             Page::Download => "page-download",
             Page::Runtimes => "page-runtimes",
+            Page::Music => "page-music",
         }
     }
 
@@ -39,6 +48,7 @@ impl Page {
             Screen::Accounts => Page::Accounts,
             Screen::Download | Screen::Installing => Page::Download,
             Screen::Java => Page::Runtimes,
+            Screen::Music => Page::Music,
         }
     }
 }
@@ -53,6 +63,7 @@ impl Launcher {
                 Screen::Accounts => self.state.close_accounts(),
                 Screen::Download | Screen::Installing => self.state.close_download(),
                 Screen::Java => self.state.close_java(),
+                Screen::Music => self.state.close_music(),
                 Screen::Login => self.state.close_login(),
             },
             Page::Accounts if self.state.screen != Screen::Accounts => {
@@ -69,6 +80,10 @@ impl Launcher {
                 self.state.open_java();
             }
             Page::Runtimes => {}
+            Page::Music if self.state.screen != Screen::Music => {
+                self.state.open_music();
+            }
+            Page::Music => {}
         }
         cx.notify();
     }
@@ -154,5 +169,4 @@ impl Launcher {
                     ),
             )
     }
-
 }

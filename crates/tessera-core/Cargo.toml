@@ -2,7 +2,7 @@
 name = "tessera-core"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "GPL-3.0-or-later"
 description = "Core logic for Tessera: version discovery, launch assembly, downloads, Java runtimes, accounts, cleanup"
 
@@ -20,6 +20,9 @@ minecraft-auth = { path = "../../vendor/minecraft-auth" }
 mdt-minecraft = { path = "../../vendor/mdt-minecraft" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
 tokio = { version = "1", features = ["rt", "time", "sync"] }
+# Ogg Vorbis only: the game ships nothing else, and `default-features = false`
+# keeps flac/mp3/mp4/wav and the recording API out of the binary entirely.
+rodio = { version = "0.23", default-features = false, features = ["playback", "vorbis"] }
 
 [dev-dependencies]
 tempfile = "3"

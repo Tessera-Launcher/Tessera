@@ -164,6 +164,10 @@ impl App {
                 self.handle_java_key(code, modifiers);
                 return;
             }
+            Screen::Music => {
+                self.handle_music_key(code, modifiers);
+                return;
+            }
             Screen::Main => {}
         }
         match code {
@@ -179,6 +183,7 @@ impl App {
             Key::Char('d') => self.open_download(),
             // `j` already moves the selection; the Java screen gets `v` (虚拟机).
             Key::Char('v') => self.open_java(),
+            Key::Char('m') => self.open_music(),
             // Two presses, like removing an account: deleting a whole version
             // directory is not something a single stray key may do.
             Key::Char('x') | Key::Delete => self.request_uninstall(),
