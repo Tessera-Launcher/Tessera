@@ -354,12 +354,12 @@ impl Launcher {
             body = body.child(div().text_xs().text_color(rgb(DIM)).child(line));
         }
         if download.stage == DownloadStage::Training {
-            let step = if download.aot_assembling {
+            let step = if download.aot.assembling {
                 "正在组装缓存（可能要几分钟）".to_string()
-            } else if download.aot_preparing {
+            } else if download.aot.preparing {
                 "正在准备 Java 28…".to_string()
-            } else if download.aot_total > 0 {
-                format!("AOT 训练：{} / {} 个类", download.aot_loaded, download.aot_total)
+            } else if download.aot.total > 0 {
+                format!("AOT 训练：{} / {} 个类", download.aot.loaded, download.aot.total)
             } else {
                 "AOT 训练：准备中…".to_string()
             };
@@ -367,7 +367,7 @@ impl Launcher {
                 .child(div().mt_2().text_sm().text_color(rgb(ACCENT)).child("AOT 缓存训练"))
                 .child(div().text_xs().text_color(rgb(DIM)).child(step));
         }
-        if let Some(note) = &download.aot_note {
+        if let Some(note) = &download.aot.note {
             body = body.child(div().text_xs().text_color(rgb(DIM)).child(note.clone()));
         }
         if let Some(error) = &download.error {

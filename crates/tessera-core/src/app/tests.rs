@@ -1951,7 +1951,7 @@ fn a_new_install_ignores_the_previous_versions_aot_events() {
         version: "26.3".to_string(),
         loader: None,
     });
-    assert_eq!(app.download.aot_training.as_deref(), Some("26.3"));
+    assert_eq!(app.download.aot.training.as_deref(), Some("26.3"));
 
     app.start_install();
     assert!(app.install_running);
@@ -1961,7 +1961,7 @@ fn a_new_install_ignores_the_previous_versions_aot_events() {
         total: 456,
     });
     assert_eq!(
-        app.download.aot_loaded, 0,
+        app.download.aot.loaded, 0,
         "stale AOT must not touch the new install"
     );
 }
@@ -2003,13 +2003,13 @@ fn aot_progress_and_completion_land_on_the_install_screen() {
         total: 200,
     });
     assert_eq!(app.download.stage, DownloadStage::Training);
-    assert_eq!(app.download.aot_loaded, 100);
-    assert_eq!(app.download.aot_total, 200);
+    assert_eq!(app.download.aot.loaded, 100);
+    assert_eq!(app.download.aot.total, 200);
 
     app.handle_aot_event(crate::aot::Event::Assembling {
         version: "26.3".to_string(),
     });
-    assert!(app.download.aot_assembling);
+    assert!(app.download.aot.assembling);
 
     app.handle_aot_event(crate::aot::Event::Finished {
         version: "26.3".to_string(),
@@ -2019,15 +2019,15 @@ fn aot_progress_and_completion_land_on_the_install_screen() {
         java_version: "28+23-ea-beta".to_string(),
     });
     assert_eq!(app.download.stage, DownloadStage::Done);
-    assert!(!app.download.aot_assembling);
+    assert!(!app.download.aot.assembling);
     assert!(
         app.download
-            .aot_note
+            .aot.note
             .as_deref()
             .unwrap()
             .contains("AOT 缓存已生成"),
         "{:?}",
-        app.download.aot_note
+        app.download.aot.note
     );
 }
 
@@ -2867,7 +2867,7 @@ fn aot_training_finishes_even_if_the_page_was_left_and_reopened() {
         loader: None,
     });
     assert_eq!(app.download.stage, DownloadStage::Training);
-    assert!(app.download.aot_training.is_some());
+    assert!(app.download.aot.training.is_some());
 
     // Leaving and coming back used to flip the screen to Download, which the
     // old "is this page showing it" check read as "not showing", so the
@@ -2883,7 +2883,7 @@ fn aot_training_finishes_even_if_the_page_was_left_and_reopened() {
         java_version: "28-ea".to_string(),
     });
     assert_eq!(app.download.stage, DownloadStage::Done);
-    assert!(app.download.aot_note.as_deref().unwrap_or("").contains("AOT"));
+    assert!(app.download.aot.note.as_deref().unwrap_or("").contains("AOT"));
 }
 
 #[test]
