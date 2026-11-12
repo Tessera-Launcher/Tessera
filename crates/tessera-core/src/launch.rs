@@ -1140,13 +1140,13 @@ pub fn required_java(version_id: &str, declared: Option<u32>) -> u32 {
     if let Some(major) = declared.filter(|major| *major > 0) {
         return major;
     }
-    match release_number(version_id) {
-        Some((major, minor, patch)) => {
-            if (major, minor, patch) >= (1, 20, 5) {
+    match crate::version::McVersion::parse(version_id) {
+        Some(version) => {
+            if version.at_least(1, 20, 5) {
                 21
-            } else if (major, minor, patch) >= (1, 18, 0) {
+            } else if version.at_least(1, 18, 0) {
                 17
-            } else if (major, minor) >= (1, 17) {
+            } else if version.major == 1 && version.minor == 17 {
                 16
             } else {
                 8
@@ -1156,32 +1156,6 @@ pub fn required_java(version_id: &str, declared: Option<u32>) -> u32 {
         // and those are all Java 8 anyway.
         None => 8,
     }
-}
-
-/// `1.20.1` / `1.21.9-pre9` / `26.4-snapshot-7` → `(1, 20, 1)`.
-fn release_number(version_id: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = version_id.split('.');
-    let major: u32 = parts.next()?.parse().ok()?;
-    let rest = parts.next()?;
-    let minor: u32 = rest
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .parse()
-        .ok()?;
-    // A third component is optional (`1.21`).
-    let patch: u32 = parts
-        .next()
-        .and_then(|tail| {
-            tail.chars()
-                .take_while(char::is_ascii_digit)
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .or_else(|| rest.chars().any(|c| !c.is_ascii_digit()).then_some(0))
-        .unwrap_or(0);
-    Some((major, minor, patch))
 }
 
 /// `ETXTBSY`: the binary is still open for writing somewhere.

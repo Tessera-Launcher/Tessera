@@ -19,9 +19,7 @@ pub const AGENT: &[u8] = include_bytes!("../assets/fastmenu-agent.jar");
 
 /// Whether this profile id is in the unobfuscated 26.x series.
 pub fn eligible(version: &str) -> bool {
-    version
-        .strip_prefix("26.")
-        .is_some_and(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    crate::version::McVersion::parse(version).is_some_and(|version| version.major == 26)
 }
 
 /// Copy the agent next to the launcher's cache, if it is not there yet.

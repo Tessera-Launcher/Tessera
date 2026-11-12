@@ -71,31 +71,8 @@ pub enum Event {
 ///
 /// `1.21.11` is out, `25w46a` is out, `26.1` and `26.4-snapshot-7` are in.
 pub fn eligible(version: &str) -> bool {
-    let mut chars = version.chars().peekable();
-    let major = take_number(&mut chars);
-    let Some(major) = major else {
-        return false;
-    };
-    if chars.next() != Some('.') {
-        return false;
-    }
-    let Some(minor) = take_number(&mut chars) else {
-        return false;
-    };
-    major > 26 || (major == 26 && minor >= 1)
-}
-
-fn take_number(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<u32> {
-    let mut digits = String::new();
-    while let Some(character) = chars.peek() {
-        if character.is_ascii_digit() {
-            digits.push(*character);
-            chars.next();
-        } else {
-            break;
-        }
-    }
-    digits.parse().ok()
+    crate::version::McVersion::parse(version)
+        .is_some_and(|version| version.at_least(26, 1, 0))
 }
 
 /// Train one vanilla version and leave a cache next to its jar.
