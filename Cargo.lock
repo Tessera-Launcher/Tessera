@@ -7065,6 +7065,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "hex",
+ "libc",
  "mdt-minecraft",
  "minecraft-auth",
  "reqwest",
@@ -7077,6 +7078,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 1.2.1+spec-1.1.0",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

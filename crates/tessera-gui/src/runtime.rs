@@ -31,6 +31,16 @@ impl Launcher {
             cx.notify();
             return;
         }
+        if self.blocked {
+            // Only quitting is safe: another launcher owns the data directory.
+            let quit = matches!(code, Key::Char('q') | Key::Esc)
+                || (event.keystroke.modifiers.control && code == Key::Char('c'));
+            if quit {
+                self.state.should_quit = true;
+            }
+            cx.notify();
+            return;
+        }
         let mut modifiers = Modifiers::NONE;
         if event.keystroke.modifiers.control {
             modifiers = modifiers | Modifiers::CONTROL;
@@ -58,6 +68,12 @@ impl Launcher {
         if self.state.should_quit {
             self.tasks.stop();
             cx.quit();
+            return;
+        }
+        if self.blocked {
+            // Do not even drain the effects: every one of them writes to a data
+            // directory someone else is using.
+            self.state.take_effects();
             return;
         }
         let mut changed = false;

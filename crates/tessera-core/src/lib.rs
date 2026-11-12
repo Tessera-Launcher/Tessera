@@ -14,6 +14,7 @@ pub mod discover;
 pub mod error;
 pub mod fastmenu;
 pub mod input;
+pub mod instance;
 pub mod install;
 pub mod java;
 pub mod launch;

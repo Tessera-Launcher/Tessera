@@ -29,6 +29,8 @@ pub enum Kind {
     Process,
     /// The launcher itself is in a state it should not be in.
     Internal,
+    /// Another process holds a resource this one needs (the instance lock).
+    Busy,
 }
 
 /// One failure, with a user-facing message and a machine-readable category.
@@ -96,6 +98,11 @@ impl Error {
         Self::new(Kind::Internal, message)
     }
 
+    /// Another process holds what this one needs.
+    pub fn busy(message: impl Into<String>) -> Self {
+        Self::new(Kind::Busy, message)
+    }
+
     pub fn kind(&self) -> Kind {
         self.kind
     }
@@ -140,6 +147,8 @@ impl Error {
                         | io::ErrorKind::PermissionDenied
                 )
             ),
+            // The other instance closing is the retry the user is being asked for.
+            Kind::Busy => true,
             Kind::Integrity | Kind::Missing | Kind::Invalid | Kind::Process | Kind::Internal => {
                 false
             }

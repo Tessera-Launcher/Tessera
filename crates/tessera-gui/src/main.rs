@@ -26,8 +26,8 @@ use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};
 use tessera_core::{
-    accounts, aot, audio, cleanup, discover, java, logfile, music, paths::Paths, session,
-    version_tree::RowKind,
+    accounts, aot, audio, cleanup, discover, instance, java, logfile, music, paths::Paths,
+    session, version_tree::RowKind,
 };
 
 const ACCENT: u32 = 0x6c_d6_7a;
@@ -52,6 +52,13 @@ mod widgets;
 struct Launcher {
     state: State,
     client: reqwest::Client,
+    /// Held for the life of the window: two instances sharing `data/` would race
+    /// on the log, the cache and the version tree. Never read — the lock lives on
+    /// the open handle, and dropping the field would release it.
+    _instance: Option<instance::InstanceLock>,
+    /// True when another launcher owns the data directory: nothing here may
+    /// write to it, so only quitting works.
+    blocked: bool,
     /// Every background worker's channel, drained in one place.
     tasks: tasks::Tasks,
     /// Explicit handles so the scrollbars can track the same offset the plain
@@ -121,6 +128,17 @@ impl Launcher {
                 data.root().display()
             ));
         }
+        // Take the lock before anything else touches `data/`.
+        let instance = match instance::acquire(data.root()) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                startup_notes.push(format!(
+                    "{error}：这个窗口只能退出，关闭另一个后再启动"
+                ));
+                None
+            }
+        };
+        let blocked = instance.is_none();
         let cache = match data.adopt_vendor_cache() {
             Ok(cache) => Some(cache),
             Err(error) => {
@@ -181,9 +199,14 @@ impl Launcher {
             .read_timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        if blocked {
+            state.status = "另一个 Tessera 正在使用这个数据目录".to_string();
+        }
         Self {
             state,
             client,
+            _instance: instance,
+            blocked,
             tasks: tasks::Tasks::new(),
             log_scroll: ScrollHandle::default(),
             download_scroll: ScrollHandle::default(),
