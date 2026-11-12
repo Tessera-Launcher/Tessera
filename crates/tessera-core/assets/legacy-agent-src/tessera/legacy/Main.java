@@ -17,12 +17,41 @@ public final class Main {
     private Main() {}
 
     public static void main(String[] args) throws Exception {
+        watchForWindow();
         Method main = findMain();
         if (main != null) {
             main.invoke(null, (Object) args);
             return;
         }
         hostApplet(args);
+    }
+
+    /**
+     * Print one line once a game window exists.
+     *
+     * The classic and infdev clients log nothing at all, so an AOT training run
+     * had no way to tell "menu is up" from "still starting"; this is the only
+     * reliable signal they give.
+     */
+    private static void watchForWindow() {
+        Thread watcher = new Thread(() -> {
+            for (int tick = 0; tick < 600; tick++) {
+                for (java.awt.Window window : java.awt.Window.getWindows()) {
+                    if (window.isShowing() && window.getWidth() > 0 && window.getHeight() > 0) {
+                        System.out.println("[tessera] window up");
+                        System.out.flush();
+                        return;
+                    }
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+            }
+        }, "tessera-window-watch");
+        watcher.setDaemon(true);
+        watcher.start();
     }
 
     private static Method findMain() {

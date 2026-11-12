@@ -34,9 +34,14 @@ use crate::launch;
 const MENU_DWELL: Duration = Duration::from_secs(10);
 /// Lines that mean the game reached its menu.
 ///
-/// Modern versions log "Sound engine started"; the applet-era ones print
-/// "OpenAL initialized" and no log file at all.
-const MENU_MARKERS: [&str; 2] = ["Sound engine started", "OpenAL initialized"];
+/// Modern versions log "Sound engine started", the applet-era ones print
+/// "OpenAL initialized" and no log file at all, and classic/infdev print
+/// nothing — for those the legacy agent reports its own first window.
+const MENU_MARKERS: [&str; 3] = [
+    "Sound engine started",
+    "OpenAL initialized",
+    "[tessera] window up",
+];
 /// Hard cap for reaching that menu. Big vanilla packs are slow, but this is only
 /// vanilla.
 const START_TIMEOUT: Duration = Duration::from_secs(8 * 60);
