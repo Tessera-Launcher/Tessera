@@ -197,7 +197,7 @@ pub fn build(
 
 /// The flat layout used by the tests below: every version is visible.
 #[cfg(test)]
-pub fn build_for_test(versions: &[RemoteVersion], expanded: &[String], tree: bool) -> Vec<Row> {
+fn build_for_test(versions: &[RemoteVersion], expanded: &[String], tree: bool) -> Vec<Row> {
     let visible: Vec<usize> = (0..versions.len()).collect();
     build(versions, &visible, expanded, tree)
 }

@@ -5,9 +5,10 @@
 use super::*;
 
 /// Steps of the login overlay.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum LoginStep {
     /// Pick the identity.
+    #[default]
     Choose,
     /// Type the custom application's client id.
     EnterAppId,
@@ -22,7 +23,7 @@ pub enum LoginStep {
 }
 
 /// The login overlay's own state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LoginUi {
     pub step: LoginStep,
     /// 0 = official launcher, 1 = custom app id, 2 = the saved list.
@@ -37,20 +38,6 @@ pub struct LoginUi {
     pub app_id_choice: usize,
     /// First drawn row, so a long list can scroll under the selection.
     pub app_id_offset: usize,
-}
-
-impl Default for LoginUi {
-    fn default() -> Self {
-        LoginUi {
-            step: LoginStep::Choose,
-            choice: 0,
-            app_id: String::new(),
-            app_ids: Vec::new(),
-            app_ids_error: None,
-            app_id_choice: 0,
-            app_id_offset: 0,
-        }
-    }
 }
 
 impl LoginUi {
