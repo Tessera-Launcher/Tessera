@@ -99,9 +99,15 @@ impl Tasks {
         }
     }
 
-    /// The window is quitting: no bridge may touch the entity after this.
+    /// The window is quitting: no bridge may touch the entity after this, and
+    /// long-running workers (AOT training) see the same flag and unwind.
     pub(crate) fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// The quit flag, for workers that have to cancel their own child process.
+    pub(crate) fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
     }
 }
 

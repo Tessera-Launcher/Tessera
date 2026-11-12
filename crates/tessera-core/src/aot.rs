@@ -15,7 +15,9 @@ use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::java;
@@ -82,13 +84,22 @@ pub fn spawn(
     options: launch::Options,
     proxy: String,
     version: String,
+    cancel: Arc<AtomicBool>,
 ) -> Receiver<Event> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         // Training launches the game, so the same protection as a normal launch
         // applies: do not sweep libraries while the training JVM is using them.
         let _maintenance = crate::task::read();
-        if let Err(reason) = train(&root, &runtimes, &options, &proxy, &version, &sender) {
+        if let Err(reason) = train(
+            &root,
+            &runtimes,
+            &options,
+            &proxy,
+            &version,
+            &sender,
+            &cancel,
+        ) {
             let _ = sender.send(Event::Failed {
                 version: version.clone(),
                 reason: reason.user_message(),
@@ -105,6 +116,7 @@ fn train(
     proxy: &str,
     version: &str,
     sender: &Sender<Event>,
+    cancel: &AtomicBool,
 ) -> Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
@@ -183,6 +195,9 @@ fn train(
     );
     args.insert(2, format!("-javaagent:{}", agent.display()));
     args.insert(3, "-Dtessera.aot.preload=1".to_string());
+    if cancel.load(Ordering::Relaxed) {
+        return Err(Error::process("启动器退出，AOT 训练已取消"));
+    }
     let mut child = Command::new(&prepared.command.exe)
         .args(&args)
         .current_dir(&prepared.command.cwd)
@@ -199,6 +214,10 @@ fn train(
     let mut game_log_tail = TextTail::default();
     let mut last_loaded;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            terminate(&mut child);
+            return Err(Error::process("启动器退出，AOT 训练已取消"));
+        }
         if menu_seen.is_none() && game_log_tail.contains(&game_log, "Sound engine started") {
             menu_seen = Some(Instant::now());
         }
@@ -239,7 +258,7 @@ fn train(
             version: version.to_string(),
         });
     }
-    wait_for_exit(&mut child, ASSEMBLY_TIMEOUT)?;
+    wait_for_exit(&mut child, ASSEMBLY_TIMEOUT, cancel)?;
     // The cache-assembly JVM is launched with the same `-Xlog:...:file=` option
     // and truncates the class log, so use the count captured before termination.
     let loaded = last_loaded;
@@ -425,9 +444,14 @@ fn terminate(child: &mut Child) {
     let _ = child.kill();
 }
 
-fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<()> {
+fn wait_for_exit(child: &mut Child, timeout: Duration, cancel: &AtomicBool) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::process("启动器退出，AOT 缓存组装已取消"));
+        }
         match child.try_wait() {
             Ok(Some(_)) => return Ok(()),
             Ok(None) if Instant::now() < deadline => {
@@ -537,6 +561,20 @@ fn swap_client_jar(args: &mut [String], original: &Path, unsigned: &Path) -> boo
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_assembly_kills_its_child_instead_of_waiting_out_the_timeout() {
+        // `sleep` stands in for the cache-assembly JVM: nothing about the wait
+        // loop cares which program it is holding.
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let started = Instant::now();
+        let error = wait_for_exit(&mut child, Duration::from_secs(30), &AtomicBool::new(true))
+            .expect_err("cancelled");
+        assert_eq!(error.kind(), crate::error::Kind::Process);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(child.try_wait().unwrap().is_some(), "the child was reaped");
+    }
 
     #[test]
     fn only_the_26_1_window_is_eligible() {

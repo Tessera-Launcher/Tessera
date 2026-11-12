@@ -66,8 +66,7 @@ impl Launcher {
     /// without waiting for the next key press.
     pub(crate) fn step(&mut self, cx: &mut Context<Self>) {
         if self.state.should_quit {
-            self.tasks.stop();
-            cx.quit();
+            self.shutdown(cx);
             return;
         }
         if self.blocked {
@@ -149,12 +148,14 @@ impl Launcher {
                     self.tasks.watch(TaskKind::Sweep, rx, deliver_sweep, sweep_done);
                 }
                 Effect::TrainAot(version) => {
+                    let cancel = self.tasks.stop_flag();
                     let rx = aot::spawn(
                         self.state.root.clone(),
                         self.state.runtimes.clone(),
                         self.state.launch_options.clone(),
                         self.state.settings.github_proxy.clone(),
                         version,
+                        cancel,
                     );
                     self.tasks.watch(TaskKind::Aot, rx, deliver_aot, aot_done);
                 }
@@ -181,6 +182,19 @@ impl Launcher {
         if changed {
             cx.notify();
         }
+    }
+
+    /// Quit without losing the log tail or leaving a training JVM behind.
+    ///
+    /// The game process is deliberately not killed: a player who closes the
+    /// launcher expects the game to keep running.
+    pub(crate) fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.tasks.stop();
+        self.flush_log();
+        // Dropping the handle closes the file; do it while the window still
+        // exists so a failed final write can be logged before the process ends.
+        self.log_file = None;
+        cx.quit();
     }
 
     /// Move the log pane's queued lines into `data/日志/tessera.log`.
