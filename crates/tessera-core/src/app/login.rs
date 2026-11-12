@@ -187,9 +187,6 @@ impl App {
             // Two presses, like removing an account: deleting a whole version
             // directory is not something a single stray key may do.
             Key::Char('x') | Key::Delete => self.request_uninstall(),
-            // Page keys scroll the log without moving the selection.
-            Key::PageUp => self.scroll_log(5),
-            Key::PageDown => self.scroll_log_back(5),
             Key::Enter => self.request_launch(),
             _ => {}
         }

@@ -240,10 +240,6 @@ pub struct App {
     pub java: JavaUi,
     /// The music page's state.
     pub music: MusicUi,
-    /// First visible row of the version list.
-    list_offset: usize,
-    /// Lines scrolled back from the newest log line; `0` follows the tail.
-    pub log_scroll: usize,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
     /// True from `start_install` until the worker reports Finished/Failed.
@@ -292,8 +288,6 @@ impl App {
             settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
             music: MusicUi::default(),
-            list_offset: 0,
-            log_scroll: 0,
             uninstall_confirm: None,
             install_running: false,
             cache: None,
@@ -351,7 +345,6 @@ impl App {
         if self.selected >= self.versions.len() {
             self.selected = self.versions.len().saturating_sub(1);
         }
-        self.list_offset = 0;
     }
 
     /// Number of versions hidden because a loader profile inherits from them.
@@ -416,48 +409,6 @@ impl App {
     pub fn select_last(&mut self) {
         self.uninstall_confirm = None;
         self.selected = self.versions.len().saturating_sub(1);
-    }
-
-    /// First visible row, for the renderer.
-    pub fn list_offset(&self) -> usize {
-        self.list_offset
-    }
-
-    /// Keep the selection inside a `visible`-row viewport.
-    pub fn clamp_list(&mut self, visible: usize) {
-        if visible == 0 {
-            return;
-        }
-        if self.selected < self.list_offset {
-            self.list_offset = self.selected;
-        }
-        if self.selected >= self.list_offset + visible {
-            self.list_offset = self.selected + 1 - visible;
-        }
-        let last_page = self.versions.len().saturating_sub(visible);
-        if self.list_offset > last_page {
-            self.list_offset = last_page;
-        }
-    }
-
-    /// Scroll the log back by `lines` (saturating at the oldest retained line).
-    pub fn scroll_log(&mut self, lines: usize) {
-        self.log_scroll = self.log_scroll.saturating_add(lines);
-        // Clamping to the buffer length keeps repeated scroll events cheap; the
-        // renderer clamps again to what actually fits.
-        self.log_scroll = self.log_scroll.min(self.log.len());
-    }
-
-    /// Cap the scrollback once the renderer knows how many lines fit.
-    pub fn clamp_log_scroll(&mut self, maximum: usize) {
-        if self.log_scroll > maximum {
-            self.log_scroll = maximum;
-        }
-    }
-
-    /// Scroll the log towards the newest line.
-    pub fn scroll_log_back(&mut self, lines: usize) {
-        self.log_scroll = self.log_scroll.saturating_sub(lines);
     }
 
     /// Ask the main loop for a side effect.

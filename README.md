@@ -49,8 +49,8 @@ Windows / macOS 无需额外系统包。音乐播放不依赖 FFmpeg 或系统�
 | `Enter` / 双击行 | 启动（列表里是切换/确认） |
 | `x` `Delete` | 卸载，先问一次再按一次才删 |
 | `d` / `a` / `v` / `m` / `l` / `r` / `h` | 下载 / 账户 / Java / 音乐 / 登录 / 重扫 / 折叠基础版本 |
-| `PageUp` `PageDown` | 翻日志 |
-| `Tab` | 切换焦点 |
+| `PageUp` `PageDown` | 翻日志（主页） |
+| `Tab` | 切换焦点（下载 / Java / 音乐页） |
 | `Esc` `q` | 返回上一屏；主界面上是退出 |
 | `Ctrl-C` | 退出 |
 
