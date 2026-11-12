@@ -452,9 +452,9 @@ impl App {
             return;
         }
         if launch::uses_launchwrapper(version.main_class.as_deref()) {
-            self.status = "这个版本只能用 Java 25 或 8 启动，无法训练 AOT".to_string();
+            self.status = "这个版本无法训练 AOT".to_string();
             self.log(
-                "1.5.2 及更早的版本通过 MinecraftApplet 启动，需要 java.applet（Java 28 已移除），只能跑 Java 8–25；AOT 训练固定用 Java 28，所以这里没有可训练的东西",
+                "1.5.2 及更早的版本要靠 -Djava.system.class.loader 绕过 LaunchWrapper 的强转，JDK 因此不会把游戏的类写进 AOT 缓存；Java 28 上还要 --patch-module 补 java.applet，而 JVM 不允许在写缓存时打补丁。这些版本只能普通启动",
             );
             return;
         }

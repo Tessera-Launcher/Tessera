@@ -250,6 +250,16 @@ fn prepare_inner(
         })?;
         classpath.push(loader.clone());
     }
+    // JDK 28 dropped `java.applet`, and up to 1.5.2 the game is an applet even
+    // when started from its own `main`. Patching the package back into
+    // java.desktop is the only way to load those classes; the stub implements
+    // exactly the surface the game calls.
+    let applet_stub = (kind == JavaKind::Legacy && java_major > APPLET_ERA_MAX_JAVA)
+        .then(|| version_dir.join(format!("{version_dir_name}.applet-stub.jar")));
+    if let Some(stub) = &applet_stub {
+        crate::fsutil::write_atomic(stub, APPLET_STUB, false)
+            .map_err(|error| Error::io(format!("无法写入 {}", stub.display()), error))?;
+    }
 
     let natives = find_natives(&version_dir, version_dir_name, &merged.parents);
     // Absolute, because the game runs with the version directory as its cwd: a
@@ -344,6 +354,12 @@ fn prepare_inner(
 
     if legacy_loader.is_some() {
         args.push(format!("-Djava.system.class.loader={LEGACY_LOADER_CLASS}"));
+    }
+    if let Some(stub) = &applet_stub {
+        args.push("--patch-module".to_string());
+        args.push(format!("java.desktop={}", stub.display()));
+        args.push("--add-exports".to_string());
+        args.push("java.desktop/java.applet=ALL-UNNAMED".to_string());
     }
     args.push(merged.main_class.clone());
 
@@ -1085,18 +1101,24 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
 /// The main class LaunchWrapper installs run on.
 pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
 
-/// The newest Java that still ships `java.applet`.
+/// The newest JDK that still ships `java.applet`.
 ///
 /// Minecraft up to 1.5.2 launches through `MinecraftApplet`, which extends
-/// `java.applet.Applet`; JDK 28 removed that package, so those versions cannot
-/// start there at all (the game class itself fails to resolve). JDK 25 still
-/// has it, which makes 25 the newest runtime worth offering them.
+/// `java.applet.Applet`. JDK 28 removed the package, so those versions need
+/// [`APPLET_STUB`] patched into `java.desktop` before they can start there.
 pub const APPLET_ERA_MAX_JAVA: u32 = 25;
 
 /// The class in `assets/legacy-loader.jar` that replaces the system loader.
 const LEGACY_LOADER_CLASS: &str = "tessera.legacy.CastSafeLoader";
 /// Source and class file live in `assets/legacy-loader.java` / `.jar`.
 const LEGACY_LOADER: &[u8] = include_bytes!("../assets/legacy-loader.jar");
+
+/// A minimal `java.applet` for JDKs that dropped the package.
+///
+/// `--patch-module java.desktop=` puts it back, and `--add-exports` lets the
+/// game (an unnamed module) extend it. Sources live in
+/// `assets/applet-stub-src/`; the surface is what 1.0–1.5.2 actually call.
+const APPLET_STUB: &[u8] = include_bytes!("../assets/applet-stub.jar");
 
 /// Which Java rule a profile follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1105,8 +1127,9 @@ pub enum JavaKind {
     /// first.
     Vanilla,
     /// Minecraft that boots through LaunchWrapper with no loader on top, i.e.
-    /// 1.4.7–1.5.2. Its game class needs `java.applet`, so the newest usable
-    /// runtime is capped at [`APPLET_ERA_MAX_JAVA`].
+    /// up to 1.5.2. It takes the newest runtime like vanilla, but needs two
+    /// compatibility shims: a system class loader the wrapper can cast, and —
+    /// past [`APPLET_ERA_MAX_JAVA`] — the `java.applet` package put back.
     Legacy,
     /// Forge and friends: the profile's pin, exactly.
     Loader,
@@ -1134,10 +1157,11 @@ pub fn pick_major(installed: &[u32], required: u32, kind: JavaKind) -> Option<u3
             .copied()
             .filter(|major| *major >= required)
             .max(),
+        // Same choice as vanilla: the shims below make the newest JVM work.
         JavaKind::Legacy => installed
             .iter()
             .copied()
-            .filter(|major| *major >= required && *major <= APPLET_ERA_MAX_JAVA)
+            .filter(|major| *major >= required)
             .max(),
         JavaKind::Loader => installed
             .iter()
@@ -1193,7 +1217,7 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
                 runtimes.display()
             ),
             JavaKind::Legacy => format!(
-                "还没有下载 Java：1.5.2 及更早的版本需要 java.applet，只能用 Java 8–{APPLET_ERA_MAX_JAVA}（{}）",
+                "还没有下载 Java：1.5.2 及更早的版本跑最新的 Java 就行（去 Java 运行时界面装一个，{}）",
                 runtimes.display()
             ),
             JavaKind::Loader => format!(
@@ -1213,11 +1237,7 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
             .map(|(major, _)| format!("Java {major}"))
             .collect::<Vec<_>>()
             .join("、");
-        return Err(Error::missing(if kind == JavaKind::Legacy {
-            format!(
-                "这个版本的 Minecraft 需要 java.applet（Java 28 已移除），需要 Java 8–{APPLET_ERA_MAX_JAVA} 之一，现在只有 {seen}（去 Java 运行时界面装 Java {APPLET_ERA_MAX_JAVA} 或 8）"
-            )
-        } else if kind == JavaKind::Vanilla {
+        return Err(Error::missing(if kind == JavaKind::Vanilla || kind == JavaKind::Legacy {
             format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
         } else if required <= 8 {
             format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
@@ -1538,22 +1558,17 @@ mod tests {
     }
 
     #[test]
-    fn an_applet_era_version_never_gets_java_28() {
+    fn an_applet_era_version_takes_the_newest_java_too() {
         let tmp = tempfile::tempdir().unwrap();
         managed_runtime(tmp.path(), 8);
         managed_runtime(tmp.path(), 25);
         managed_runtime(tmp.path(), 28);
         let runtimes = tmp.path().join("运行时");
 
-        // 1.5.2 boots MinecraftApplet, which extends java.applet.Applet: JDK 28
-        // dropped that package, so 25 is the newest runtime that can start it.
-        assert_eq!(find_java(&runtimes, 8, JavaKind::Legacy).unwrap().1, 25);
-        // Nothing at or below 25: the message names the reason, not just a number.
-        let only_new = tempfile::tempdir().unwrap();
-        managed_runtime(only_new.path(), 28);
-        let error = find_java(&only_new.path().join("运行时"), 8, JavaKind::Legacy).unwrap_err();
-        assert!(error.to_string().contains("java.applet"), "{error}");
-        assert!(error.to_string().contains("25"), "{error}");
+        // Up to 1.5.2 the game is an applet, but the launch shims make that a
+        // non-issue, so these versions follow the vanilla rule.
+        assert_eq!(find_java(&runtimes, 8, JavaKind::Legacy).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 8, JavaKind::Vanilla).unwrap().1, 28);
     }
 
     #[test]
@@ -1591,6 +1606,55 @@ mod tests {
             launch.command.args
         );
         assert!(version_dir.join("1.5.2.legacy-loader.jar").is_file());
+        // 25 still ships java.applet, so nothing is patched.
+        assert!(!launch
+            .command
+            .args
+            .iter()
+            .any(|arg| arg == "--patch-module"));
+    }
+
+    #[test]
+    fn a_legacy_launch_on_28_patches_java_applet_back_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        fixture(tmp.path());
+        let runtimes = managed_runtime(tmp.path(), 28);
+        let version_dir = tmp.path().join("versions/1.5.2");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("1.5.2.json"),
+            r#"{"id":"1.5.2","mainClass":"net.minecraft.launchwrapper.Launch","minecraftArguments":"${auth_player_name} --gameDir ${game_directory}","libraries":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(version_dir.join("1.5.2.jar"), b"jar").unwrap();
+
+        let launch = prepare(
+            tmp.path(),
+            "1.5.2",
+            &Credentials::offline("Tester"),
+            &Options {
+                runtimes: Some(runtimes),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(launch.java_major, 28);
+        let args = &launch.command.args;
+        let stub = version_dir.join("1.5.2.applet-stub.jar");
+        assert!(stub.is_file(), "the stub is written next to the version");
+        let patch = args.iter().position(|arg| arg == "--patch-module");
+        assert_eq!(
+            patch.map(|at| args[at + 1].as_str()),
+            Some(format!("java.desktop={}", stub.display()).as_str())
+        );
+        assert!(args
+            .iter()
+            .any(|arg| arg == "java.desktop/java.applet=ALL-UNNAMED"));
+        // Both shims are present, and both precede the main class.
+        assert!(args
+            .iter()
+            .any(|arg| arg == "-Djava.system.class.loader=tessera.legacy.CastSafeLoader"));
+        assert!(patch.unwrap() < args.iter().position(|arg| arg == "net.minecraft.launchwrapper.Launch").unwrap());
     }
 
     #[test]

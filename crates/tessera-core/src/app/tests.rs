@@ -2978,13 +2978,13 @@ fn vanilla_versions_are_labelled_with_the_newest_runtime() {
     app.installed_java = vec![28, 17];
     assert_eq!(app.java_for(&selected), Some(28));
 
-    // Mojang's 1.5.2 profile has no parent but needs java.applet, so it takes
-    // the newest runtime that still has it — never 28.
+    // Mojang's 1.5.2 profile has no parent but boots LaunchWrapper; the launch
+    // shims (class loader, and java.applet past 25) let it take the newest too.
     let mut legacy = version("1.5.2");
     legacy.java = Some(8);
     legacy.main_class = Some(crate::launch::LAUNCHWRAPPER.to_string());
     app.installed_java = vec![28, 25, 17];
-    assert_eq!(app.java_for(&legacy), Some(25));
+    assert_eq!(app.java_for(&legacy), Some(28));
 
     // A loader profile keeps the pin its JSON declares.
     let mut loader = version("1.8.9-forge-11.15.0.1656");
