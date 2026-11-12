@@ -13,6 +13,7 @@ use minecraft_auth::java::JavaAuthManager;
 use minecraft_auth::AuthApplication;
 
 use crate::accounts;
+use crate::error::{Error, Result};
 
 /// Which application identity the sign-in runs as.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,13 +72,13 @@ pub fn spawn(
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|error| format!("无法创建异步运行时: {error}"))
+            .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))
             .and_then(|runtime| {
                 runtime.block_on(run(client, identity, accounts_dir, sender.clone()))
             });
         // A failure that never reached a callback still has to end the wait.
-        if let Err(message) = outcome {
-            let _ = sender.send(LoginEvent::Failed(message));
+        if let Err(error) = outcome {
+            let _ = sender.send(LoginEvent::Failed(error.to_string()));
         }
     });
     receiver
@@ -88,7 +89,7 @@ async fn run(
     identity: Identity,
     accounts_dir: PathBuf,
     sender: Sender<LoginEvent>,
-) -> Result<(), String> {
+) -> Result<()> {
     let application = match &identity {
         Identity::Official => AuthApplication::official_launcher(),
         Identity::Custom { app_id } => {
@@ -113,17 +114,17 @@ async fn run(
             });
         })
         .await
-        .map_err(|error| format!("登录失败: {error}"))?;
+        .map_err(|error| Error::network(format!("登录失败: {error}")))?;
 
     // `launch_session` resolves the profile (name + uuid) and the access token.
     let session = manager
         .launch_session()
         .await
-        .map_err(|error| format!("获取游戏档案失败: {error}"))?;
+        .map_err(|error| Error::network(format!("获取游戏档案失败: {error}")))?;
     let document = manager
         .to_json()
         .await
-        .map_err(|error| format!("序列化会话失败: {error}"))?;
+        .map_err(|error| Error::internal(format!("序列化会话失败: {error}")))?;
 
     let file = accounts::save(
         &accounts_dir,
@@ -133,7 +134,7 @@ async fn run(
         &session.player_uuid.to_string(),
         &document,
     )
-    .map_err(|error| format!("写入凭据失败: {error}"))?;
+    .map_err(|error| Error::io("写入凭据失败", error))?;
 
     let _ = sender.send(LoginEvent::Succeeded {
         player_name: session.player_name,

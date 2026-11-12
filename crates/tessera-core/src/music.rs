@@ -12,6 +12,8 @@
 
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
+
+use crate::error::{Error, Result};
 use std::time::Duration;
 
 /// Which half of the soundtrack to list.
@@ -107,25 +109,25 @@ impl Library {
 /// `game` is the `.minecraft` tree (the directory holding `versions/` and
 /// `assets/`). `version` is the directory name under `versions/`, which is what
 /// every path is built from — not the profile's inner `id`.
-pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library, String> {
+pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library> {
     let index = asset_index(game, version)?;
     let index_path = game
         .join("assets")
         .join("indexes")
         .join(format!("{index}.json"));
     let text = std::fs::read_to_string(&index_path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => format!(
+        std::io::ErrorKind::NotFound => Error::missing(format!(
             "没有资源索引 {}：这个版本的资源还没下载完",
             index_path.display()
-        ),
-        _ => format!("读取资源索引 {} 失败：{error}", index_path.display()),
+        )),
+        _ => Error::io(format!("读取资源索引 {}", index_path.display()), error),
     })?;
     let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|error| format!("资源索引 {} 解析失败：{error}", index_path.display()))?;
+        .map_err(|error| Error::invalid(format!("资源索引 {} 解析失败：{error}", index_path.display())))?;
     let objects = json
         .get("objects")
         .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| format!("资源索引 {} 里没有 objects", index_path.display()))?;
+        .ok_or_else(|| Error::invalid(format!("资源索引 {} 里没有 objects", index_path.display())))?;
 
     // Legacy indexes (< 1.7) are also copied out under their own names; when the
     // game reads those, that copy is the one that exists.
@@ -178,10 +180,10 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library, String> {
     }
 
     if tracks.is_empty() {
-        return Err(format!(
+        return Err(Error::missing(format!(
             "版本 {version} 的索引 {index} 里没有{}",
             kind.label()
-        ));
+        )));
     }
     tracks.sort_by(|a, b| {
         group_rank(kind, &a.group)
@@ -204,17 +206,17 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library, String> {
 /// A loader install copies the vanilla directory and writes a profile with
 /// `inheritsFrom` and no `assetIndex` of its own, so the chain is followed until
 /// one is found. `assets` is the 1.6-era spelling of the same thing.
-fn asset_index(game: &Path, version: &str) -> Result<String, String> {
+fn asset_index(game: &Path, version: &str) -> Result<String> {
     let mut dir = version.to_string();
     // A hand-written profile can inherit in a cycle; stop instead of looping.
     for _ in 0..16 {
         let path = game.join("versions").join(&dir).join(format!("{dir}.json"));
         let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => format!("版本 {dir} 没有 {} ", path.display()),
-            _ => format!("读取 {} 失败：{error}", path.display()),
+            std::io::ErrorKind::NotFound => Error::missing(format!("版本 {dir} 没有 {} ", path.display())),
+            _ => Error::io(format!("读取 {}", path.display()), error),
         })?;
         let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|error| format!("{} 解析失败：{error}", path.display()))?;
+            .map_err(|error| Error::invalid(format!("{} 解析失败：{error}", path.display())))?;
         let named = |key: &str| {
             json.get(key)
                 .and_then(|value| {
@@ -237,13 +239,13 @@ fn asset_index(game: &Path, version: &str) -> Result<String, String> {
         {
             Some(parent) => dir = parent.to_string(),
             None => {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "版本 {version} 的 json 里没有 assetIndex，也没有可继承的父版本"
-                ))
+                )))
             }
         }
     }
-    Err(format!("版本 {version} 的继承链成环，找不到资源索引"))
+    Err(Error::invalid(format!("版本 {version} 的继承链成环，找不到资源索引")))
 }
 
 /// `minecraft/sounds/records/one_more_day.ogg` → `One More Day`.
@@ -582,15 +584,15 @@ mod tests {
         fs::remove_file(game.join("assets/indexes/34.json")).unwrap();
 
         let error = scan(game, "26.3", Kind::Records).unwrap_err();
-        assert!(error.contains("没有资源索引"), "{error}");
-        assert!(error.contains("还没下载完"), "{error}");
+        assert!(error.to_string().contains("没有资源索引"), "{error}");
+        assert!(error.to_string().contains("还没下载完"), "{error}");
     }
 
     #[test]
     fn an_unknown_version_is_an_error_not_a_panic() {
         let root = home("34", &sample_index(), "26.3", PROFILE);
         let error = scan(root.path(), "1.21.11", Kind::Records).unwrap_err();
-        assert!(error.contains("1.21.11"), "{error}");
+        assert!(error.to_string().contains("1.21.11"), "{error}");
     }
 
     #[test]

@@ -18,6 +18,8 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+
+use crate::error::{Error, Result};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -354,7 +356,7 @@ pub fn is_newer(latest: &str, installed: &str) -> bool {
 ///
 /// Used by the forced AOT training for Java 28 EA: it must not silently fall
 /// back to an older JVM, because the cache is tied to the exact build.
-pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Installed, String> {
+pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Installed> {
     if let Some(found) = installed_runtimes(runtimes)
         .into_iter()
         .find(|runtime| runtime.major == feature)
@@ -364,7 +366,7 @@ pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Inst
     let spec = FEATURES
         .iter()
         .find(|spec| spec.major == feature)
-        .ok_or_else(|| format!("不提供 Java {feature}"))?;
+        .ok_or_else(|| Error::invalid(format!("不提供 Java {feature}")))?;
     let client = blocking_client()?;
     let (sender, _receiver) = mpsc::channel();
     let runtime = if spec.ea {
@@ -381,7 +383,7 @@ pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Inst
     installed_runtimes(runtimes)
         .into_iter()
         .find(|installed| installed.major == feature)
-        .ok_or_else(|| format!("Java {feature} 安装后没有找到 bin/java"))
+        .ok_or_else(|| Error::missing(format!("Java {feature} 安装后没有找到 bin/java")))
 }
 
 /// `bin/java` under an unpacked runtime, if there is one.
@@ -426,7 +428,7 @@ pub fn spawn_install(runtimes: PathBuf, runtime: Runtime, urls: Vec<String>) -> 
 ///
 /// Adoptium's API sits behind Cloudflare and answers 403 to clients that look
 /// like a script, so the agent is not optional.
-fn blocking_client() -> Result<reqwest::blocking::Client, String> {
+fn blocking_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
         // A stalled connection must not hang the Java screen forever. The
@@ -435,7 +437,7 @@ fn blocking_client() -> Result<reqwest::blocking::Client, String> {
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(15 * 60))
         .build()
-        .map_err(|error| format!("无法创建 HTTP 客户端：{error}"))
+        .map_err(|error| Error::internal(format!("无法创建 HTTP 客户端：{error}")))
 }
 
 /// What the worker tells the UI.
@@ -464,11 +466,12 @@ fn install(
     runtime: &Runtime,
     urls: &[String],
     sender: &Sender<Event>,
-) -> Result<(), String> {
+) -> Result<()> {
     let dir = install_dir(runtimes, &runtime.version());
     let work = runtimes.join(format!(".incoming-{}", runtime.major));
     let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(|error| format!("无法创建 {}: {error}", work.display()))?;
+    fs::create_dir_all(&work)
+        .map_err(|error| Error::io(format!("无法创建 {}", work.display()), error))?;
 
     let archive = work.join(&runtime.name);
     let mut last_error = String::new();
@@ -481,7 +484,7 @@ fn install(
             Ok(()) => {
                 if let Err(error) = verify(&archive, &runtime.sha256) {
                     let _ = sender.send(Event::Log(format!("{error}，换一个来源重试")));
-                    hash_error = Some(error);
+                    hash_error = Some(error.to_string());
                     last_error = "下载结果校验失败".to_string();
                     let _ = fs::remove_file(&archive);
                     continue;
@@ -491,7 +494,7 @@ fn install(
             }
             Err(error) => {
                 let _ = sender.send(Event::Log(format!("{}（{}）", error, shorten(url))));
-                last_error = error;
+                last_error = error.to_string();
                 let _ = fs::remove_file(&archive);
             }
         }
@@ -499,26 +502,30 @@ fn install(
     if !archive.is_file() {
         let _ = fs::remove_dir_all(&work);
         return Err(match (hash_error, last_error.is_empty()) {
-            (Some(hash), _) => format!("下载失败：{hash}"),
-            (None, true) => "没有可用的下载地址".to_string(),
-            (None, false) => format!("下载失败：{last_error}"),
+            (Some(hash), _) => Error::network(format!("下载失败：{hash}")),
+            (None, true) => Error::network("没有可用的下载地址"),
+            (None, false) => Error::network(format!("下载失败：{last_error}")),
         });
     }
 
     let _ = sender.send(Event::Log("解包…".to_string()));
     let unpacked = work.join("unpacked");
-    extract(&archive, &unpacked).map_err(|error| format!("解包失败：{error}"))?;
+    extract(&archive, &unpacked).map_err(|error| Error::invalid(format!("解包失败：{error}")))?;
     // The archive holds one top-level directory; move it into place so `bin/java`
     // sits directly under the install directory.
-    let top = single_entry(&unpacked).map_err(|error| format!("解包结果异常：{error}"))?;
+    let top = single_entry(&unpacked)
+        .map_err(|error| Error::invalid(format!("解包结果异常：{error}")))?;
     if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|error| format!("无法替换旧运行时: {error}"))?;
+        fs::remove_dir_all(&dir)
+            .map_err(|error| Error::io("无法替换旧运行时", error))?;
     }
     fs::create_dir_all(dir.parent().unwrap_or(&dir)).ok();
-    fs::rename(&top, &dir).map_err(|error| format!("无法安装到 {}: {error}", dir.display()))?;
+    fs::rename(&top, &dir)
+        .map_err(|error| Error::io(format!("无法安装到 {}", dir.display()), error))?;
     let _ = fs::remove_dir_all(&work);
 
-    let java = java_binary(&dir).ok_or_else(|| format!("{} 里没有 bin/java", dir.display()))?;
+    let java = java_binary(&dir)
+        .ok_or_else(|| Error::missing(format!("{} 里没有 bin/java", dir.display())))?;
     mark_executable(&java);
     // The new build supersedes the older one of the same feature; keeping both
     // would just grow `运行时/` with every patch release.
@@ -574,17 +581,18 @@ fn fetch_to(
     path: &Path,
     expected_size: u64,
     sender: &Sender<Event>,
-) -> Result<(), String> {
+) -> Result<()> {
     let response = client
         .get(url)
         .send()
-        .map_err(|error| format!("请求失败：{error}"))?;
+        .map_err(|error| Error::network(format!("请求失败：{error}")))?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
+        return Err(Error::network(format!("HTTP {}", response.status())));
     }
     let total = response.content_length().unwrap_or(expected_size);
     let mut file =
-        File::create(path).map_err(|error| format!("无法写入 {}: {error}", path.display()))?;
+        File::create(path)
+            .map_err(|error| Error::io(format!("无法写入 {}", path.display()), error))?;
     let mut done = 0u64;
     let started = Instant::now();
     let mut since = Instant::now();
@@ -593,12 +601,12 @@ fn fetch_to(
     loop {
         let read = reader
             .read(&mut chunk)
-            .map_err(|error| format!("读取响应失败：{error}"))?;
+            .map_err(|error| Error::network(format!("读取响应失败：{error}")))?;
         if read == 0 {
             break;
         }
         file.write_all(&chunk[..read])
-            .map_err(|error| format!("写入失败：{error}"))?;
+            .map_err(|error| Error::io("写入失败", error))?;
         done += read as u64;
         if since.elapsed() >= Duration::from_millis(200) {
             let elapsed = started.elapsed().as_secs_f64().max(0.001);
@@ -615,7 +623,7 @@ fn fetch_to(
         total,
         speed: done as f64 / started.elapsed().as_secs_f64().max(0.001),
     });
-    file.flush().map_err(|error| format!("写入失败：{error}"))?;
+    file.flush().map_err(|error| Error::io("写入失败", error))?;
     Ok(())
 }
 
@@ -635,12 +643,14 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
 }
 
 /// Check a downloaded archive against the hash the API published.
-pub fn verify(path: &Path, expected: &str) -> Result<(), String> {
-    let actual = sha256_file(path).map_err(|error| format!("无法读取下载结果：{error}"))?;
+pub fn verify(path: &Path, expected: &str) -> Result<()> {
+    let actual = sha256_file(path).map_err(|error| Error::io("无法读取下载结果", error))?;
     if actual.eq_ignore_ascii_case(expected.trim()) {
         Ok(())
     } else {
-        Err(format!("哈希不匹配（期望 {expected}，实际 {actual}）"))
+        Err(Error::integrity(format!(
+            "哈希不匹配（期望 {expected}，实际 {actual}）"
+        )))
     }
 }
 
@@ -725,7 +735,7 @@ fn blocking_fetch(
     client: &reqwest::blocking::Client,
     url: &str,
     sender: &Sender<Event>,
-) -> Result<String, String> {
+) -> Result<String> {
     let outcome = client
         .get(url)
         .timeout(Duration::from_secs(30))
@@ -738,20 +748,20 @@ fn blocking_fetch(
         Ok((status, text)) if status.is_success() => Ok(text),
         Ok((status, _)) => {
             let _ = sender.send(Event::Log(format!("{url} → HTTP {status}")));
-            Err(format!("Adoptium API 返回 HTTP {status}"))
+            Err(Error::network(format!("Adoptium API 返回 HTTP {status}")))
         }
-        Err(error) => Err(format!("无法访问 Adoptium API：{error}")),
+        Err(error) => Err(Error::network(format!("无法访问 Adoptium API：{error}"))),
     }
 }
 
 /// Pull one runtime out of an `/assets/latest/…` response.
-pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime, String> {
+pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime> {
     let assets: Vec<Asset> = serde_json::from_str(text)
-        .map_err(|error| format!("Java {feature} 的响应无法解析：{error}"))?;
+        .map_err(|error| Error::invalid(format!("Java {feature} 的响应无法解析：{error}")))?;
     let asset = assets
         .into_iter()
         .find(|asset| asset.binary.image_type == "jre")
-        .ok_or_else(|| format!("Adoptium 没有 Java {feature} 的 JRE"))?;
+        .ok_or_else(|| Error::missing(format!("Adoptium 没有 Java {feature} 的 JRE")))?;
     let ea = asset.release_name.contains("-ea");
     Ok(Runtime {
         major: feature,
@@ -768,18 +778,18 @@ pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime, String> {
 ///
 /// That endpoint returns releases with a `binaries` array, not the flat
 /// one-binary-per-asset shape of `/assets/latest`.
-pub fn parse_ea_assets(text: &str, feature: u32) -> Result<Runtime, String> {
+pub fn parse_ea_assets(text: &str, feature: u32) -> Result<Runtime> {
     let releases: Vec<EaRelease> = serde_json::from_str(text)
-        .map_err(|error| format!("Java {feature} EA 的响应无法解析：{error}"))?;
+        .map_err(|error| Error::invalid(format!("Java {feature} EA 的响应无法解析：{error}")))?;
     let release = releases
         .into_iter()
         .next()
-        .ok_or_else(|| format!("Adoptium 没有 Java {feature} 的 EA 版本"))?;
+        .ok_or_else(|| Error::missing(format!("Adoptium 没有 Java {feature} 的 EA 版本")))?;
     let binary = release
         .binaries
         .into_iter()
         .find(|binary| binary.image_type == "jre")
-        .ok_or_else(|| format!("Adoptium 没有 Java {feature} EA 的 JRE"))?;
+        .ok_or_else(|| Error::missing(format!("Adoptium 没有 Java {feature} EA 的 JRE")))?;
     Ok(Runtime {
         major: feature,
         release: release.release_name,
@@ -820,12 +830,12 @@ struct Package {
 
 fn spawn<F>(work: F) -> Receiver<Event>
 where
-    F: FnOnce(Sender<Event>) -> Result<(), String> + Send + 'static,
+    F: FnOnce(Sender<Event>) -> Result<()> + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         if let Err(message) = work(sender.clone()) {
-            let _ = sender.send(Event::Failed(message));
+            let _ = sender.send(Event::Failed(message.user_message()));
         }
     });
     receiver
@@ -1094,7 +1104,8 @@ mod tests {
     fn a_response_without_a_jre_is_an_error_not_a_panic() {
         let text = r#"[{"release_name":"jdk-16.0.2+7","binary":{"image_type":"jdk","package":{"name":"x","size":1,"checksum":"0","link":"https://example/x"}}}]"#;
         let error = parse_assets(text, 16).unwrap_err();
-        assert!(error.contains("Java 16"), "{error}");
+        assert_eq!(error.kind(), crate::error::Kind::Missing);
+        assert!(error.to_string().contains("Java 16"), "{error}");
     }
 
     #[test]
@@ -1144,7 +1155,8 @@ mod tests {
             "case-insensitive"
         );
         let error = verify(&path, &"0".repeat(64)).unwrap_err();
-        assert!(error.contains("哈希不匹配"), "{error}");
+        assert_eq!(error.kind(), crate::error::Kind::Integrity);
+        assert!(error.to_string().contains("哈希不匹配"), "{error}");
     }
 
     #[test]

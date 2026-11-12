@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
+use crate::error::{Error, Result};
+
 /// Who the game should think is playing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
@@ -38,17 +40,19 @@ impl Credentials {
     /// The access token is taken as-is: an expired one still starts the game and
     /// only fails when joining a server, so refreshing is left to the login flow
     /// instead of blocking a launch on the network.
-    pub fn from_account_file(path: &Path) -> Result<Self, String> {
+    pub fn from_account_file(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
-            .map_err(|error| format!("读取凭据 {} 失败: {error}", path.display()))?;
+            .map_err(|error| Error::io(format!("读取凭据 {}", path.display()), error))?;
         let doc: serde_json::Value =
-            serde_json::from_str(&text).map_err(|error| format!("凭据格式错误: {error}"))?;
+            serde_json::from_str(&text).map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
 
-        let player = doc.get("player").ok_or("凭据缺少 player 字段")?;
+        let player = doc
+            .get("player")
+            .ok_or_else(|| Error::invalid("凭据缺少 player 字段"))?;
         let username = player
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or("凭据缺少玩家名")?
+            .ok_or_else(|| Error::invalid("凭据缺少玩家名"))?
             .to_string();
         let uuid = player
             .get("uuid")
@@ -59,11 +63,11 @@ impl Credentials {
         let token = doc
             .get("session")
             .and_then(|s| s.get("minecraft_token"))
-            .ok_or("该账户没有 Minecraft 令牌，请重新登录")?;
+            .ok_or_else(|| Error::missing("该账户没有 Minecraft 令牌，请重新登录"))?;
         let access_token = token
             .get("access_token")
             .and_then(|v| v.as_str())
-            .ok_or("令牌缺少 access_token")?
+            .ok_or_else(|| Error::invalid("令牌缺少 access_token"))?
             .to_string();
 
         Ok(Credentials {
@@ -138,7 +142,7 @@ pub fn prepare(
     version_dir_name: &str,
     creds: &Credentials,
     options: &Options,
-) -> Result<Launch, String> {
+) -> Result<Launch> {
     prepare_inner(root, version_dir_name, creds, options, None)
 }
 
@@ -153,7 +157,7 @@ pub fn prepare_with_java(
     options: &Options,
     java: PathBuf,
     java_major: u32,
-) -> Result<Launch, String> {
+) -> Result<Launch> {
     prepare_inner(
         root,
         version_dir_name,
@@ -169,7 +173,7 @@ fn prepare_inner(
     creds: &Credentials,
     options: &Options,
     java_override: Option<(PathBuf, u32)>,
-) -> Result<Launch, String> {
+) -> Result<Launch> {
     let merged = merge_chain(root, version_dir_name)?;
     // The profile's own `javaVersion` wins; older metadata gets the legacy rules.
     // The JSON id is the better fallback than the folder name: a folder may be
@@ -181,7 +185,7 @@ fn prepare_inner(
     let runtimes = options
         .runtimes
         .clone()
-        .ok_or_else(|| "没有配置 Java 运行时目录".to_string())?;
+        .ok_or_else(|| Error::internal("没有配置 Java 运行时目录"))?;
     let version_dir = root.join("versions").join(version_dir_name);
     // A finished AOT training run stores the exact JVM build it used. Launching
     // with a different JVM would make the cache silently unusable, so the cache
@@ -205,10 +209,10 @@ fn prepare_inner(
         selection.unsigned_jar.clone()
     } else {
         client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
-            format!(
+            Error::missing(format!(
                 "缺少客户端 jar：{}（重新安装这个版本）",
                 version_dir.display()
-            )
+            ))
         })?
     };
 
@@ -228,7 +232,9 @@ fn prepare_inner(
         }
     }
     if missing > 0 {
-        return Err(format!("{missing} 个依赖文件缺失（重新安装这个版本）"));
+        return Err(Error::missing(format!(
+            "{missing} 个依赖文件缺失（重新安装这个版本）"
+        )));
     }
     classpath.push(client_jar);
 
@@ -405,8 +411,10 @@ pub fn spawn_game(
         let _maintenance = crate::task::read();
         let prepared = match prepare(&root, &version_dir, &credentials, &options) {
             Ok(prepared) => prepared,
-            Err(reason) => {
-                let _ = sender.send(GameEvent::Failed { reason });
+            Err(error) => {
+                let _ = sender.send(GameEvent::Failed {
+                    reason: error.to_string(),
+                });
                 return;
             }
         };
@@ -468,11 +476,11 @@ pub fn aot_status(
     version_dir: &Path,
     version_dir_name: &str,
     runtimes: &Path,
-) -> Option<Result<String, String>> {
+) -> Option<Result<String>> {
     match aot_lookup(version_dir, version_dir_name, runtimes) {
         AotLookup::Absent => None,
         AotLookup::Ready(selection) => Some(Ok(format!("Java {}", selection.java_major))),
-        AotLookup::Broken(reason) => Some(Err(reason)),
+        AotLookup::Broken(reason) => Some(Err(Error::invalid(reason))),
     }
 }
 
@@ -727,7 +735,7 @@ pub struct References {
 /// declared classifier (not just this OS's) and the Maven-derived path for
 /// libraries without a `downloads` block. A cleaner may only delete what this
 /// set leaves out, so being generous here is what makes the sweep safe.
-pub fn references(root: &Path, version_dir_name: &str) -> Result<References, String> {
+pub fn references(root: &Path, version_dir_name: &str) -> Result<References> {
     let merged = merge_chain(root, version_dir_name)?;
     let libraries_dir = root.join("libraries");
     let mut libraries = Vec::new();
@@ -905,22 +913,22 @@ fn substitute(text: &str, vars: &HashMap<&str, String>) -> String {
 /// hand-edited or corrupted JSON, not a format limit.
 const MAX_CHAIN_DEPTH: usize = 8;
 
-fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>, String> {
+fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>> {
     let mut chain: Vec<RawVersion> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut current = version_dir_name.to_string();
     loop {
         if !seen.insert(current.clone()) {
-            return Err(format!("版本链有环：{} 又继承回自己", current));
+            return Err(Error::invalid(format!("版本链有环：{} 又继承回自己", current)));
         }
         let path = root
             .join("versions")
             .join(&current)
             .join(format!("{current}.json"));
         let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("读取 {} 失败: {error}", path.display()))?;
+            .map_err(|error| Error::io(format!("读取 {}", path.display()), error))?;
         let mut version: RawVersion = serde_json::from_str(&text)
-            .map_err(|error| format!("解析 {} 失败: {error}", path.display()))?;
+            .map_err(|error| Error::invalid(format!("解析 {} 失败: {error}", path.display())))?;
         if version.id.is_empty() {
             version.id = current.clone();
         }
@@ -931,9 +939,9 @@ fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>, St
                 // Refuse a chain longer than the format ever needs instead of
                 // silently launching the 8th profile without its parent.
                 if chain.len() >= MAX_CHAIN_DEPTH {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "版本链超过 {MAX_CHAIN_DEPTH} 层：{parent} 没有读取（检查 inheritsFrom）"
-                    ));
+                    )));
                 }
                 current = parent;
             }
@@ -943,9 +951,11 @@ fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawVersion>, St
     Ok(chain)
 }
 
-fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged, String> {
+fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged> {
     let chain = load_chain(root, version_dir_name)?;
-    let child = chain.first().ok_or("版本链为空")?;
+    let child = chain
+        .first()
+        .ok_or_else(|| Error::invalid("版本链为空"))?;
     let mut merged = Merged {
         id: child.id.clone(),
         version_type: child
@@ -996,7 +1006,7 @@ fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged, String> {
     }
 
     if merged.main_class.is_empty() {
-        return Err("版本 JSON 没有 mainClass".to_string());
+        return Err(Error::invalid("版本 JSON 没有 mainClass"));
     }
     // `java_version` stays 0 when no profile in the chain declares one: the
     // caller derives it from the version id instead (see [`required_java`]), which
@@ -1065,13 +1075,13 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
 /// An exact version wins; otherwise the smallest acceptable one is used, and the
 /// result is probed once so a half-unpacked runtime fails with a message instead
 /// of a confusing game crash.
-pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), String> {
+pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32)> {
     let installed = crate::java::installed(runtimes);
     if installed.is_empty() {
-        return Err(format!(
+        return Err(Error::missing(format!(
             "还没有下载 Java {required}：先去 Java 运行时界面装一个（{}）",
             runtimes.display()
-        ));
+        )));
     }
 
     let pick = installed
@@ -1090,25 +1100,25 @@ pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32), Strin
             .map(|(major, _)| format!("Java {major}"))
             .collect::<Vec<_>>()
             .join("、");
-        return Err(if required <= 8 {
+        return Err(Error::missing(if required <= 8 {
             format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
         } else {
             format!(
                 "这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）"
             )
-        });
+        }));
     };
 
     match probe_java(path) {
         Some(probed) if probed == *major => Ok((path.clone(), probed)),
-        Some(probed) => Err(format!(
+        Some(probed) => Err(Error::invalid(format!(
             "{} 报告自己是 Java {probed}，但目录写着 Java {major}（按 v 重新下载）",
             path.display()
-        )),
-        None => Err(format!(
+        ))),
+        None => Err(Error::invalid(format!(
             "{} 跑不起来（按 v 重新下载 Java {major}）",
             path.display()
-        )),
+        ))),
     }
 }
 
@@ -1288,7 +1298,7 @@ mod tests {
         let broken = aot_status(&version_dir, "1.8.9", &runtimes)
             .unwrap()
             .unwrap_err();
-        assert!(broken.contains("1.8.9.unsigned.jar"), "{broken}");
+        assert!(broken.to_string().contains("1.8.9.unsigned.jar"), "{broken}");
 
         // A cache trained by a runtime that has since been removed is equally
         // unusable, and the log names that runtime.
@@ -1301,7 +1311,7 @@ mod tests {
         let missing = aot_status(&version_dir, "1.8.9", &runtimes)
             .unwrap()
             .unwrap_err();
-        assert!(missing.contains("25.0.5+8"), "{missing}");
+        assert!(missing.to_string().contains("25.0.5+8"), "{missing}");
     }
 
     #[test]
@@ -1387,8 +1397,8 @@ mod tests {
         let runtimes = tmp.path().join("运行时");
         // Nothing installed: the error says what to do, not "install Java on PATH".
         let error = find_java(&runtimes, 21).unwrap_err();
-        assert!(error.contains("Java 运行时界面"), "{error}");
-        assert!(!error.contains("JAVA_HOME"), "{error}");
+        assert!(error.to_string().contains("Java 运行时界面"), "{error}");
+        assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
 
         managed_runtime(tmp.path(), 8);
         managed_runtime(tmp.path(), 21);
@@ -1399,9 +1409,9 @@ mod tests {
         assert_eq!(find_java(&runtimes, 17).unwrap().1, 21);
         // A 25 profile has nothing to run on, and the message lists what exists.
         let error = find_java(&runtimes, 25).unwrap_err();
-        assert!(error.contains("Java 25"), "{error}");
-        assert!(error.contains("Java 8"), "{error}");
-        assert!(error.contains("Java 21"), "{error}");
+        assert!(error.to_string().contains("Java 25"), "{error}");
+        assert!(error.to_string().contains("Java 8"), "{error}");
+        assert!(error.to_string().contains("Java 21"), "{error}");
     }
 
     #[test]
@@ -1826,7 +1836,7 @@ mod tests {
             &options,
         )
         .expect_err("must refuse");
-        assert!(error.contains("依赖文件缺失"), "{error}");
+        assert!(error.to_string().contains("依赖文件缺失"), "{error}");
     }
 
     #[test]
@@ -1845,7 +1855,7 @@ mod tests {
             &options,
         )
         .expect_err("must refuse");
-        assert!(error.contains("客户端 jar"), "{error}");
+        assert!(error.to_string().contains("客户端 jar"), "{error}");
     }
 
     #[test]
@@ -1909,9 +1919,9 @@ mod tests {
             &options,
         )
         .expect_err("Java 8 cannot run a 21 profile");
-        assert!(error.contains("Java 21"), "{error}");
-        assert!(error.contains("Java 8"), "{error}");
-        assert!(error.contains("Java 运行时界面"), "{error}");
+        assert!(error.to_string().contains("Java 21"), "{error}");
+        assert!(error.to_string().contains("Java 8"), "{error}");
+        assert!(error.to_string().contains("Java 运行时界面"), "{error}");
     }
 
     #[test]
@@ -1939,7 +1949,7 @@ mod tests {
         // A file without a Minecraft token must say so, not fall back silently.
         std::fs::write(&path, r#"{"player":{"name":"Steve"}}"#).unwrap();
         let error = Credentials::from_account_file(&path).unwrap_err();
-        assert!(error.contains("重新登录"), "{error}");
+        assert!(error.to_string().contains("重新登录"), "{error}");
     }
 
     #[test]
@@ -1956,7 +1966,7 @@ mod tests {
             serde_json::json!({"id": "b", "inheritsFrom": "a", "mainClass": "B"}),
         );
         let error = load_chain(tmp.path(), "a").unwrap_err();
-        assert!(error.contains("有环"), "{error}");
+        assert!(error.to_string().contains("有环"), "{error}");
     }
 
     #[test]
@@ -1972,7 +1982,7 @@ mod tests {
             write_version(tmp.path(), &id, body);
         }
         let error = load_chain(tmp.path(), "v0").unwrap_err();
-        assert!(error.contains("超过"), "{error}");
+        assert!(error.to_string().contains("超过"), "{error}");
     }
 
     #[test]

@@ -838,7 +838,7 @@ impl App {
                 self.log(format!("刷新失败（{reason}），使用已保存的令牌"));
                 let fallback = match &pending {
                     Some(file) => launch::Credentials::from_account_file(file),
-                    None => Err("没有账户文件".to_string()),
+                    None => Err(crate::error::Error::invalid("没有账户文件")),
                 };
                 match fallback {
                     Ok(credentials) => self.start_game(credentials),

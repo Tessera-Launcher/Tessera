@@ -9,6 +9,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use minecraft_auth::java::JavaAuthManager;
 
+use crate::error::{Error, Result};
+
 /// What the worker reports.
 #[derive(Debug)]
 pub enum SessionEvent {
@@ -34,23 +36,23 @@ pub fn spawn_refresh(account_file: PathBuf) -> Receiver<SessionEvent> {
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|error| format!("无法创建异步运行时: {error}"))
+            .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))
             .and_then(|runtime| runtime.block_on(run(account_file, sender.clone())));
-        if let Err(reason) = outcome {
+        if let Err(error) = outcome {
             let _ = sender.send(SessionEvent::Failed {
                 username: String::new(),
-                reason,
+                reason: error.to_string(),
             });
         }
     });
     receiver
 }
 
-async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), String> {
+async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> {
     let text =
-        std::fs::read_to_string(&account_file).map_err(|error| format!("读取凭据失败: {error}"))?;
+        std::fs::read_to_string(&account_file).map_err(|error| Error::io("读取凭据失败", error))?;
     let mut document: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| format!("凭据格式错误: {error}"))?;
+        serde_json::from_str(&text).map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
 
     let username = document
         .get("player")
@@ -61,7 +63,7 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
     let session = document
         .get("session")
         .cloned()
-        .ok_or("凭据缺少 session 字段")?;
+        .ok_or_else(|| Error::invalid("凭据缺少 session 字段"))?;
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
@@ -69,12 +71,12 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
         .connect_timeout(std::time::Duration::from_secs(10))
         .read_timeout(std::time::Duration::from_secs(60))
         .build()
-        .map_err(|error| format!("无法创建 HTTP 客户端: {error}"))?;
+        .map_err(|error| Error::internal(format!("无法创建 HTTP 客户端: {error}")))?;
 
     // The saved document carries its own application config, so no identity has
     // to be supplied again.
     let manager = JavaAuthManager::from_json(client, &session)
-        .map_err(|error| format!("凭据不可用: {error}"))?;
+        .map_err(|error| Error::invalid(format!("凭据不可用: {error}")))?;
 
     // `minecraft_token` refreshes only when the cached token is expired, so a
     // still-valid session costs no network at all.
@@ -99,7 +101,7 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
     let refreshed = manager
         .to_json()
         .await
-        .map_err(|error| format!("序列化会话失败: {error}"))?;
+        .map_err(|error| Error::internal(format!("序列化会话失败: {error}")))?;
 
     // Refresh tokens rotate, so a changed document has to be persisted before the
     // caller launches; an unchanged one means the cached token was still valid.
@@ -135,13 +137,12 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<(), 
 }
 
 /// Replace a credential file without ever leaving a truncated one behind.
-fn write_atomic(path: &Path, document: &serde_json::Value) -> Result<(), String> {
+fn write_atomic(path: &Path, document: &serde_json::Value) -> Result<()> {
     let body =
-        serde_json::to_vec_pretty(document).map_err(|error| format!("序列化凭据失败: {error}"))?;
+        serde_json::to_vec_pretty(document).map_err(|error| Error::internal(format!("序列化凭据失败: {error}")))?;
     // Same private, atomic write the login flow uses: a rotated refresh token is
     // just as sensitive as a fresh one.
-    crate::accounts::write_private(path, &body)
-        .map_err(|error| format!("写入凭据失败: {error}"))?;
+    crate::accounts::write_private(path, &body).map_err(|error| Error::io("写入凭据失败", error))?;
     Ok(())
 }
 

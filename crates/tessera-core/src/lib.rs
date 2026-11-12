@@ -11,6 +11,7 @@ pub mod app_ids;
 pub mod audio;
 pub mod cleanup;
 pub mod discover;
+pub mod error;
 pub mod fastmenu;
 pub mod input;
 pub mod install;

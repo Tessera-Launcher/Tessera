@@ -19,6 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::java;
+use crate::error::{Error, Result};
 use crate::launch;
 
 /// How long to keep the game at the main menu before requesting a clean exit.
@@ -113,7 +114,7 @@ pub fn spawn(
         if let Err(reason) = train(&root, &runtimes, &options, &proxy, &version, &sender) {
             let _ = sender.send(Event::Failed {
                 version: version.clone(),
-                reason,
+                reason: reason.user_message(),
             });
         }
     });
@@ -127,7 +128,7 @@ fn train(
     proxy: &str,
     version: &str,
     sender: &Sender<Event>,
-) -> Result<(), String> {
+) -> Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
         let _ = sender.send(Event::Skipped {
@@ -165,7 +166,7 @@ fn train(
     let _ = fs::remove_file(&game_log);
     if let Some(parent) = class_log.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建 {}: {error}", parent.display()))?;
+            .map_err(|error| Error::io(format!("无法创建 {}", parent.display()), error))?;
     }
 
     let original_jar = version_dir.join(format!("{version}.jar"));
@@ -173,7 +174,7 @@ fn train(
     make_unsigned_jar(&original_jar, &unsigned_jar)?;
     let agent = version_dir.join(format!("{version}.aot-agent.jar"));
     fs::write(&agent, PRELOADER)
-        .map_err(|error| format!("无法写入 {}: {error}", agent.display()))?;
+        .map_err(|error| Error::io(format!("无法写入 {}", agent.display()), error))?;
 
     let credentials = launch::Credentials::offline("Player");
     let prepared = launch::prepare_with_java(
@@ -186,10 +187,10 @@ fn train(
     )?;
     let mut args = prepared.command.args.clone();
     if !swap_client_jar(&mut args, &original_jar, &unsigned_jar) {
-        return Err(format!(
+        return Err(Error::invalid(format!(
             "启动 classpath 里没有 {}，无法换成去签名副本",
             original_jar.display()
-        ));
+        )));
     }
     let total = classpath_classes(&args);
     let _ = sender.send(Event::Progress {
@@ -211,7 +212,7 @@ fn train(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| format!("无法启动 AOT 训练：{error}"))?;
+        .map_err(|error| Error::process(format!("无法启动 AOT 训练：{error}")))?;
 
     let started = Instant::now();
     let mut last_report = Instant::now();
@@ -249,7 +250,9 @@ fn train(
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {}
-            Err(error) => return Err(format!("无法等待 AOT 训练进程：{error}")),
+            Err(error) => {
+                return Err(Error::process(format!("无法等待 AOT 训练进程：{error}")))
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -266,7 +269,7 @@ fn train(
     let _ = fs::remove_file(&class_log);
 
     if !cache.is_file() || cache.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
-        return Err("训练结束但没有生成 AOT 缓存（游戏可能没有正常退出）".to_string());
+        return Err(Error::process("训练结束但没有生成 AOT 缓存（游戏可能没有正常退出）"));
     }
     let meta = serde_json::json!({
         "java_major": java.major,
@@ -277,11 +280,11 @@ fn train(
     let tmp = meta_path.with_extension("json.tmp");
     fs::write(
         &tmp,
-        serde_json::to_vec(&meta).map_err(|error| error.to_string())?,
+        serde_json::to_vec(&meta).map_err(|error| Error::internal(error.to_string()))?,
     )
-    .map_err(|error| format!("无法写入 {}: {error}", tmp.display()))?;
+    .map_err(|error| Error::io(format!("无法写入 {}", tmp.display()), error))?;
     fs::rename(&tmp, &meta_path)
-        .map_err(|error| format!("无法写入 {}: {error}", meta_path.display()))?;
+        .map_err(|error| Error::io(format!("无法写入 {}", meta_path.display()), error))?;
 
     let _ = sender.send(Event::Finished {
         version: version.to_string(),
@@ -445,7 +448,7 @@ fn terminate(child: &mut Child) {
     let _ = child.kill();
 }
 
-fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
@@ -456,9 +459,11 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("等待 AOT 缓存组装超时".to_string());
+                return Err(Error::process("等待 AOT 缓存组装超时"));
             }
-            Err(error) => return Err(format!("无法等待 AOT 训练进程：{error}")),
+            Err(error) => {
+                return Err(Error::process(format!("无法等待 AOT 训练进程：{error}")))
+            }
         }
     }
 }
@@ -469,23 +474,23 @@ const PRELOADER: &[u8] = include_bytes!("../assets/aot-preloader.jar");
 
 /// Copy the client jar without its signature files, so its classes are eligible
 /// for the AOT cache.
-fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<(), String> {
+fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
     let file = File::open(source)
-        .map_err(|error| format!("无法读取客户端 jar {}: {error}", source.display()))?;
+        .map_err(|error| Error::io(format!("无法读取客户端 jar {}", source.display()), error))?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|error| format!("无法解析客户端 jar: {error}"))?;
+        zip::ZipArchive::new(file).map_err(|error| Error::invalid(format!("无法解析客户端 jar: {error}")))?;
     let tmp = destination.with_extension("jar.tmp");
     let _ = fs::remove_file(&tmp);
     let output =
-        File::create(&tmp).map_err(|error| format!("无法写入 {}: {error}", tmp.display()))?;
+        File::create(&tmp).map_err(|error| Error::io(format!("无法写入 {}", tmp.display()), error))?;
     let mut writer = zip::ZipWriter::new(output);
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
-            .map_err(|error| format!("无法读取 jar 条目: {error}"))?;
+            .map_err(|error| Error::invalid(format!("无法读取 jar 条目: {error}")))?;
         let name = entry
             .name()
-            .map_err(|error| format!("无法读取 jar 条目名: {error}"))?
+            .map_err(|error| Error::invalid(format!("无法读取 jar 条目名: {error}")))?
             .to_string();
         if is_signature_entry(&name) {
             continue;
@@ -495,23 +500,23 @@ fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<(), String> {
         if entry.is_dir() {
             writer
                 .add_directory(&name, options)
-                .map_err(|error| format!("无法写入 jar 目录 {name}: {error}"))?;
+                .map_err(|error| Error::invalid(format!("无法写入 jar 目录 {name}: {error}")))?;
         } else {
             writer
                 .start_file(&name, options)
-                .map_err(|error| format!("无法写入 jar 条目 {name}: {error}"))?;
+                .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
             io::copy(&mut entry, &mut writer)
-                .map_err(|error| format!("无法复制 jar 条目 {name}: {error}"))?;
+                .map_err(|error| Error::invalid(format!("无法复制 jar 条目 {name}: {error}")))?;
         }
     }
     writer
         .finish()
-        .map_err(|error| format!("无法完成 {}: {error}", tmp.display()))?;
+        .map_err(|error| Error::invalid(format!("无法完成 {}: {error}", tmp.display())))?;
     if destination.exists() {
         let _ = fs::remove_file(destination);
     }
     fs::rename(&tmp, destination)
-        .map_err(|error| format!("无法重命名 {}: {error}", destination.display()))?;
+        .map_err(|error| Error::io(format!("无法重命名 {}", destination.display()), error))?;
     Ok(())
 }
 

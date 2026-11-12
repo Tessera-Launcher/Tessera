@@ -10,6 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use mdt::manifest::{self, ManifestData};
+use crate::error::{Error, Result};
 use mdt::{MdtClient, MdtError, Mirror as MdtMirror, ModLoader, ProgressReporter};
 
 /// Which source files come from.
@@ -146,7 +147,7 @@ pub fn spawn_versions(
             let versions = client
                 .versions()
                 .await
-                .map_err(|error| format!("获取版本列表失败: {error}"))?;
+                .map_err(|error| Error::network(format!("获取版本列表失败: {error}")))?;
             let listed: Vec<RemoteVersion> = versions
                 .into_iter()
                 .map(|entry| RemoteVersion {
@@ -163,7 +164,7 @@ pub fn spawn_versions(
                 })
                 .collect();
             let _ = sender.send(InstallEvent::Versions(listed));
-            Ok::<(), String>(())
+            Ok::<(), Error>(())
         })
     })
 }
@@ -256,7 +257,7 @@ fn installer_java(
     version: &str,
     loader: Loader,
     sender: &Sender<InstallEvent>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<PathBuf>> {
     if !matches!(loader, Loader::Forge | Loader::NeoForge) {
         return Ok(None);
     }
@@ -293,29 +294,36 @@ async fn resolve_loader_version(
     client: &MdtClient,
     loader: ModLoader,
     mc_version: &str,
-) -> Result<String, String> {
+) -> Result<String> {
     let data: ManifestData = manifest::fetch_all_manifests(client.downloader(), client.mirror())
         .await
-        .map_err(|error| format!("获取 {} 版本列表失败: {error}", loader.display_name()))?;
+        .map_err(|error| {
+            Error::network(format!("获取 {} 版本列表失败: {error}", loader.display_name()))
+        })?;
     let versions = manifest::loader_versions_from_data(loader, mc_version, &data);
     versions
         .first()
         .cloned()
-        .ok_or_else(|| format!("{} 没有适用于 {mc_version} 的版本", loader.display_name()))
+        .ok_or_else(|| {
+            Error::missing(format!(
+                "{} 没有适用于 {mc_version} 的版本",
+                loader.display_name()
+            ))
+        })
 }
 
 /// Turn an [`MdtError`] into something a user can act on.
-fn describe(error: &MdtError) -> String {
+fn describe(error: &MdtError) -> Error {
     match error {
         MdtError::VersionNotFound(version) => {
-            format!("镜像里没有版本 {version}（换一个镜像或检查拼写）")
+            Error::missing(format!("镜像里没有版本 {version}（换一个镜像或检查拼写）"))
         }
-        MdtError::PartialDownloadFailed(failed) => format!(
+        MdtError::PartialDownloadFailed(failed) => Error::network(format!(
             "{} 个文件下载失败，最后一个是 {}",
             failed.len(),
             failed.last().map_or_else(String::new, |f| f.url.clone())
-        ),
-        other => other.to_string(),
+        )),
+        other => Error::network(other.to_string()),
     }
 }
 
@@ -325,7 +333,7 @@ fn build_client(
     asset_concurrency: usize,
     java: Option<&Path>,
     sender: Sender<InstallEvent>,
-) -> Result<MdtClient, String> {
+) -> Result<MdtClient> {
     let builder = MdtClient::builder()
         .mirror(source.to_mdt())
         .root_dir(root)
@@ -338,25 +346,25 @@ fn build_client(
     };
     builder
         .build()
-        .map_err(|error| format!("无法创建下载客户端：{error}"))
+        .map_err(|error| Error::internal(format!("无法创建下载客户端：{error}")))
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, String> {
+fn runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| format!("无法创建异步运行时: {error}"))
+        .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))
 }
 
 fn spawn_worker<F>(work: F) -> Receiver<InstallEvent>
 where
-    F: FnOnce(Sender<InstallEvent>) -> Result<(), String> + Send + 'static,
+    F: FnOnce(Sender<InstallEvent>) -> Result<()> + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let fallback = sender.clone();
-        if let Err(message) = work(sender) {
-            let _ = fallback.send(InstallEvent::Failed(message));
+        if let Err(error) = work(sender) {
+            let _ = fallback.send(InstallEvent::Failed(error.user_message()));
         }
     });
     receiver
@@ -579,14 +587,15 @@ mod tests {
         // back to whatever `java` happens to be on PATH.
         let error = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
             .expect_err("no managed runtime, no Forge");
-        assert!(error.contains("Java 17"), "{error}");
-        assert!(error.contains("Java 运行时界面"), "{error}");
+        assert_eq!(error.kind(), crate::error::Kind::Missing);
+        assert!(error.to_string().contains("Java 17"), "{error}");
+        assert!(error.to_string().contains("Java 运行时界面"), "{error}");
 
         // Java 8 exists but 1.20.1 wants 17.
         managed_runtime(&runtimes, 8);
         let error = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
             .expect_err("Java 8 cannot run the 1.20.1 installer");
-        assert!(error.contains("Java 8"), "{error}");
+        assert!(error.to_string().contains("Java 8"), "{error}");
 
         managed_runtime(&runtimes, 17);
         let java = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
@@ -665,7 +674,8 @@ mod tests {
     #[test]
     fn errors_are_explained_in_user_terms() {
         let message = describe(&MdtError::VersionNotFound("9.9.9".into()));
-        assert!(message.contains("9.9.9"), "{message}");
-        assert!(message.contains("镜像"), "{message}");
+        assert_eq!(message.kind(), crate::error::Kind::Missing);
+        assert!(message.to_string().contains("9.9.9"), "{message}");
+        assert!(message.to_string().contains("镜像"), "{message}");
     }
 }

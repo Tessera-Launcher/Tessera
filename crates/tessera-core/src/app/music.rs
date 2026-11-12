@@ -204,7 +204,8 @@ impl App {
                 self.music.library = Some(library);
                 self.load_track_duration();
             }
-            Err(message) => {
+            Err(error) => {
+                let message = error.to_string();
                 self.status = message.clone();
                 self.music.message = Some(message);
             }
