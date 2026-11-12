@@ -48,9 +48,15 @@ impl Launcher {
         cx.notify();
     }
 
-    /// Run the effects the state machine queued, and drain worker reports.
+    /// Run the effects the state machine queued.
+    ///
+    /// Worker reports reach the state machine through [`tasks::Tasks`], which
+    /// calls back into this method after delivering them, so effects queued by
+    /// a report (an AOT training run after an install, a retried refresh) start
+    /// without waiting for the next key press.
     pub(crate) fn step(&mut self, cx: &mut Context<Self>) {
         if self.state.should_quit {
+            self.tasks.stop();
             cx.quit();
             return;
         }
@@ -61,11 +67,13 @@ impl Launcher {
             match effect {
                 Effect::RefreshSession(file) => {
                     if self.tasks.running(TaskKind::Session) {
-                        // One refresh at a time; put it back for the next tick.
+                        // One refresh at a time. The request stays queued and is
+                        // picked up by the `step` the running worker's bridge
+                        // calls when its channel closes.
                         self.state.request(Effect::RefreshSession(file));
                     } else {
                         let rx = session::spawn_refresh(file);
-                        self.tasks.add(TaskKind::Session, rx, deliver_session);
+                        self.tasks.watch(TaskKind::Session, rx, deliver_session, session_done);
                     }
                 }
                 Effect::Login(identity) => {
@@ -74,7 +82,7 @@ impl Launcher {
                         identity,
                         self.state.accounts_dir.clone(),
                     );
-                    self.tasks.add(TaskKind::Login, rx, deliver_login);
+                    self.tasks.watch(TaskKind::Login, rx, deliver_login, login_done);
                 }
                 Effect::FetchVersions => {
                     let rx = install::spawn_versions(
@@ -85,7 +93,7 @@ impl Launcher {
                     // The picker's list and an actual install have separate
                     // kinds: opening the picker must never steal a running
                     // install's events.
-                    self.tasks.add(TaskKind::Versions, rx, deliver_install);
+                    self.tasks.watch(TaskKind::Versions, rx, deliver_install, install_done);
                 }
                 Effect::Install { version, loader } => {
                     let rx = install::spawn_install(
@@ -96,7 +104,7 @@ impl Launcher {
                         version,
                         loader,
                     );
-                    self.tasks.add(TaskKind::Install, rx, deliver_install);
+                    self.tasks.watch(TaskKind::Install, rx, deliver_install, install_done);
                 }
                 Effect::Launch { dir, credentials } => {
                     let rx = launch::spawn_game(
@@ -105,15 +113,15 @@ impl Launcher {
                         credentials,
                         self.state.launch_options.clone(),
                     );
-                    self.tasks.add(TaskKind::Game, rx, deliver_game);
+                    self.tasks.watch(TaskKind::Game, rx, deliver_game, game_done);
                 }
                 Effect::FetchJavaList => {
                     let rx = java::spawn_list();
-                    self.tasks.add(TaskKind::JavaList, rx, deliver_java);
+                    self.tasks.watch(TaskKind::JavaList, rx, deliver_java, java_done);
                 }
                 Effect::InstallJava { runtime, urls } => {
                     let rx = java::spawn_install(self.state.runtimes.clone(), runtime, urls);
-                    self.tasks.add(TaskKind::JavaInstall, rx, deliver_java);
+                    self.tasks.watch(TaskKind::JavaInstall, rx, deliver_java, java_done);
                 }
                 Effect::Sweep(installed) => {
                     // Walking the shared library tree stats thousands of files.
@@ -122,7 +130,7 @@ impl Launcher {
                         self.state.cache.clone(),
                         installed,
                     );
-                    self.tasks.add(TaskKind::Sweep, rx, deliver_sweep);
+                    self.tasks.watch(TaskKind::Sweep, rx, deliver_sweep, sweep_done);
                 }
                 Effect::TrainAot(version) => {
                     let rx = aot::spawn(
@@ -132,7 +140,7 @@ impl Launcher {
                         self.state.settings.github_proxy.clone(),
                         version,
                     );
-                    self.tasks.add(TaskKind::Aot, rx, deliver_aot);
+                    self.tasks.watch(TaskKind::Aot, rx, deliver_aot, aot_done);
                 }
                 Effect::Music(command) => {
                     self.send_audio(command, cx);
@@ -142,7 +150,7 @@ impl Launcher {
                     std::thread::spawn(move || {
                         let _ = sender.send(copy_to_clipboard(&text));
                     });
-                    self.tasks.add(TaskKind::Clipboard, receiver, deliver_clipboard);
+                    self.tasks.watch(TaskKind::Clipboard, receiver, deliver_clipboard, clipboard_done);
                 }
                 Effect::OpenBrowser(url) => match open_browser(&url) {
                     Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
@@ -151,124 +159,140 @@ impl Launcher {
             }
         }
 
-        // The speed readout is sampled per tick, so it only ages while an
-        // install is running.
-        let installing = self.tasks.running(TaskKind::Install);
-        if self.tasks.poll(&mut self.state) {
+        if self.flush_log() {
             changed = true;
         }
-        if installing && self.state.tick() {
-            changed = true;
-        }
-
-        // The log pane is the memory copy; this is the one that outlives the
-        // window. A burst goes out as one write.
-        if !self.state.pending_log.is_empty() {
-            let lines = std::mem::take(&mut self.state.pending_log);
-            if let Some(file) = self.log_file.as_mut() {
-                if let Err(error) = file.write_lines(&lines) {
-                    self.log_file = None;
-                    eprintln!("日志文件写入失败：{error}");
-                }
-            }
-        }
-
         if changed {
             cx.notify();
         }
     }
 
-    pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(80))
-                .await;
-            if this.update(cx, |this, cx| this.step(cx)).is_err() {
-                break;
+    /// Move the log pane's queued lines into `data/日志/tessera.log`.
+    ///
+    /// Returns true when a write failed, which is the only state change the
+    /// caller has to repaint for.
+    pub(crate) fn flush_log(&mut self) -> bool {
+        if self.state.pending_log.is_empty() {
+            return false;
+        }
+        let lines = std::mem::take(&mut self.state.pending_log);
+        let Some(file) = self.log_file.as_mut() else {
+            return false;
+        };
+        match file.write_lines(&lines) {
+            Ok(()) => false,
+            Err(error) => {
+                self.log_file = None;
+                eprintln!("日志文件写入失败：{error}");
+                self.state.log(format!("日志文件写入失败：{error}"));
+                true
             }
-        })
-        .detach();
+        }
+    }
+
+    /// The window is up: there is no periodic loop any more. Every wakeup is
+    /// either a key event or a worker report pushed in by its bridge.
+    pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
+        self.tasks.start(cx);
+        self.step(cx);
     }
 }
 
 // ---- worker reports → state machine ----
 //
-// One function per event type. The bool says whether the report is terminal for
-// its worker: the task registry uses it to tell a clean finish (terminal report,
-// then the channel closes) from a worker that died silently.
+// `deliver_*` applies one report. `*_done` says whether that report is terminal
+// for its worker: the task registry uses it to tell a clean finish (terminal
+// report, then the channel closes) from a worker that died silently.
 
-fn deliver_session(app: &mut State, event: session::SessionEvent) -> bool {
-    let terminal = matches!(
-        event,
-        session::SessionEvent::Ready { .. }
-            | session::SessionEvent::NeedsSignIn { .. }
-            | session::SessionEvent::Failed { .. }
-    );
-    app.handle_session_event(event);
-    terminal
+fn session_done(_: &session::SessionEvent) -> bool {
+    // Exactly one report per refresh, so any of them ends the worker.
+    true
 }
 
-fn deliver_login(app: &mut State, event: LoginEvent) -> bool {
-    let terminal = matches!(event, LoginEvent::Succeeded { .. } | LoginEvent::Failed(_));
-    app.handle_login_event(event);
-    terminal
+fn login_done(event: &LoginEvent) -> bool {
+    matches!(event, LoginEvent::Succeeded { .. } | LoginEvent::Failed(_))
 }
 
-fn deliver_install(app: &mut State, event: InstallEvent) -> bool {
+fn install_done(event: &InstallEvent) -> bool {
     // `Versions` ends the picker's list request; `Finished`/`Failed` end an
-    // install. An install never sends `Versions`, so one predicate covers both.
-    let terminal = matches!(
+    // install. An install never sends `Versions`, so one rule covers both.
+    matches!(
         event,
         InstallEvent::Versions(_) | InstallEvent::Finished { .. } | InstallEvent::Failed(_)
-    );
-    app.handle_install_event(event);
-    terminal
+    )
 }
 
-fn deliver_java(app: &mut State, event: java::Event) -> bool {
-    let terminal = matches!(
+fn java_done(event: &java::Event) -> bool {
+    matches!(
         event,
         java::Event::Listed(_) | java::Event::Installed { .. } | java::Event::Failed(_)
-    );
-    app.handle_java_event(event);
-    terminal
+    )
 }
 
-fn deliver_sweep(app: &mut State, sweep: cleanup::Sweep) -> bool {
-    app.handle_sweep(sweep);
+fn sweep_done(_: &cleanup::Sweep) -> bool {
     true
 }
 
-fn deliver_aot(app: &mut State, event: aot::Event) -> bool {
-    let terminal = matches!(
+fn aot_done(event: &aot::Event) -> bool {
+    matches!(
         event,
         aot::Event::Finished { .. } | aot::Event::Skipped { .. } | aot::Event::Failed { .. }
-    );
-    app.handle_aot_event(event);
-    terminal
+    )
 }
 
-fn deliver_game(app: &mut State, event: launch::GameEvent) -> bool {
-    let terminal = matches!(
+fn game_done(event: &launch::GameEvent) -> bool {
+    matches!(
         event,
         launch::GameEvent::Failed { .. } | launch::GameEvent::Exited { .. }
-    );
-    app.handle_game_event(event);
-    terminal
+    )
 }
 
-fn deliver_clipboard(app: &mut State, result: Result<String, String>) -> bool {
-    match result {
-        Ok(tool) => app.log(format!("已复制（{tool}）")),
-        Err(error) => app.log(error),
-    }
+fn clipboard_done(_: &Result<String, String>) -> bool {
     true
 }
 
-fn deliver_music(app: &mut State, event: audio::Event) -> bool {
+fn music_done(_: &audio::Event) -> bool {
     // The audio worker lives as long as the window; nothing it reports is final.
-    app.handle_music_event(event);
     false
+}
+
+fn deliver_session(launcher: &mut Launcher, event: session::SessionEvent) {
+    launcher.state.handle_session_event(event);
+}
+
+fn deliver_login(launcher: &mut Launcher, event: LoginEvent) {
+    launcher.state.handle_login_event(event);
+}
+
+fn deliver_install(launcher: &mut Launcher, event: InstallEvent) {
+    launcher.state.handle_install_event(event);
+}
+
+fn deliver_java(launcher: &mut Launcher, event: java::Event) {
+    launcher.state.handle_java_event(event);
+}
+
+fn deliver_sweep(launcher: &mut Launcher, sweep: cleanup::Sweep) {
+    launcher.state.handle_sweep(sweep);
+}
+
+fn deliver_aot(launcher: &mut Launcher, event: aot::Event) {
+    launcher.state.handle_aot_event(event);
+}
+
+fn deliver_game(launcher: &mut Launcher, event: launch::GameEvent) {
+    launcher.state.handle_game_event(event);
+}
+
+fn deliver_clipboard(launcher: &mut Launcher, result: Result<String, String>) {
+    match result {
+        Ok(tool) => launcher.state.log(format!("已复制（{tool}）")),
+        Err(error) => launcher.state.log(error),
+    }
+}
+
+fn deliver_music(launcher: &mut Launcher, event: audio::Event) {
+    launcher.state.handle_music_event(event);
 }
 
 impl Launcher {
@@ -279,7 +303,7 @@ impl Launcher {
     fn send_audio(&mut self, command: audio::Command, cx: &mut Context<Self>) {
         if self.music_audio.is_none() {
             let (commands, events) = audio::spawn();
-            self.tasks.add(TaskKind::Music, events, deliver_music);
+            self.tasks.watch(TaskKind::Music, events, deliver_music, music_done);
             self.music_audio = Some(commands);
         }
         let Some(commands) = &self.music_audio else {

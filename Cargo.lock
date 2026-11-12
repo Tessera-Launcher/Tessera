@@ -7084,6 +7084,7 @@ dependencies = [
 name = "tessera-gui"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "gpui-kit",
  "reqwest",
  "tessera-core",
