@@ -15,8 +15,10 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 /// What the state machine asks the worker to do.
@@ -46,10 +48,95 @@ pub enum Event {
     Finished,
     /// The device or the file could not be used; the transport should stop.
     Failed(String),
+    /// The stream reported an error that does not stop playback. Repeated
+    /// identical reports are collapsed by the worker.
+    DeviceWarning(String),
 }
 
 /// How often the worker reports its position while a track plays.
 const TICK: Duration = Duration::from_millis(120);
+
+/// How long an identical stream warning is suppressed after it was reported.
+///
+/// ALSA's `pulse` plugin returns `-EIO` from `snd_pcm_avail_delay()` while the
+/// server has no timing information yet — a documented plugin bug
+/// (alsa-project/alsa-plugins#65) that fires right after the PCM is configured
+/// and resolves by itself. cpal keeps the stream running through it, so it is a
+/// warning, not a failure; without this filter rodio prints it on every poll.
+const WARNING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Collapses repeats of the same stream error.
+#[derive(Default)]
+struct WarningFilter {
+    last: Option<(String, Instant)>,
+}
+
+impl WarningFilter {
+    /// Whether this message is new enough to report. `now` is a parameter so the
+    /// interval can be tested without sleeping.
+    fn accept(&mut self, message: &str, now: Instant) -> bool {
+        if let Some((previous, at)) = self.last.as_ref() {
+            if previous == message && now.duration_since(*at) < WARNING_INTERVAL {
+                return false;
+            }
+        }
+        self.last = Some((message.to_string(), now));
+        true
+    }
+}
+
+/// Open the default sink with our own stream-error callback.
+///
+/// rodio's default callback writes every error to stderr, which is how a
+/// transient ALSA hiccup ended up looking like a crash in the terminal. This one
+/// routes the message to the UI log instead, at most once per
+/// [`WARNING_INTERVAL`] per distinct message.
+fn open_device(events: &Sender<Event>) -> Result<MixerDeviceSink, String> {
+    let filter: Arc<Mutex<WarningFilter>> = Arc::new(Mutex::new(WarningFilter::default()));
+    let reporter = events.clone();
+    let callback = move |error: rodio::CpalError| {
+        let message = error.to_string();
+        let accepted = filter
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .accept(&message, Instant::now());
+        if accepted {
+            let _ = reporter.send(Event::DeviceWarning(format!(
+                "音频流警告（播放继续）：{message}"
+            )));
+        }
+    };
+    let first = DeviceSinkBuilder::from_default_device()
+        .map_err(|error| error.to_string())?
+        .with_error_callback(callback.clone())
+        .open_sink_or_fallback();
+    if let Ok(sink) = first {
+        return Ok(sink);
+    }
+    let first_error = first.expect_err("checked above");
+    // Same fallback rodio's own `open_default_sink` performs: a box whose default
+    // output is unusable often has a second device that works.
+    if let Ok(devices) = rodio::cpal::default_host().output_devices() {
+        for device in devices {
+            let usable = device
+                .description()
+                .map(|description| description.driver().is_some_and(|driver| driver != "null"))
+                .unwrap_or(false);
+            if !usable {
+                continue;
+            }
+            if let Ok(builder) = DeviceSinkBuilder::from_device(device) {
+                if let Ok(sink) = builder
+                    .with_error_callback(callback.clone())
+                    .open_sink_or_fallback()
+                {
+                    return Ok(sink);
+                }
+            }
+        }
+    }
+    Err(first_error.to_string())
+}
 
 /// Start the worker thread.
 pub fn spawn() -> (Sender<Command>, Receiver<Event>) {
@@ -78,7 +165,7 @@ fn run(commands: Receiver<Command>, events: Sender<Event>) {
                 start,
             }) => {
                 if device.is_none() {
-                    match DeviceSinkBuilder::open_default_sink() {
+                    match open_device(&events) {
                         Ok(opened) => {
                             let created = Player::connect_new(opened.mixer());
                             created.set_volume(volume);
@@ -179,5 +266,31 @@ fn run(commands: Receiver<Command>, events: Sender<Event>) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_same_stream_error_is_reported_once_per_interval() {
+        let mut filter = WarningFilter::default();
+        let now = Instant::now();
+        assert!(filter.accept("avail_delay: EIO", now));
+        assert!(!filter.accept("avail_delay: EIO", now + WARNING_INTERVAL / 2));
+        assert!(!filter.accept(
+            "avail_delay: EIO",
+            now + WARNING_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(filter.accept("avail_delay: EIO", now + WARNING_INTERVAL));
+    }
+
+    #[test]
+    fn a_different_error_is_reported_immediately() {
+        let mut filter = WarningFilter::default();
+        let now = Instant::now();
+        assert!(filter.accept("first", now));
+        assert!(filter.accept("second", now));
     }
 }

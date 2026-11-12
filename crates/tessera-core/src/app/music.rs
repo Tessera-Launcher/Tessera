@@ -478,6 +478,13 @@ impl App {
                 self.log(message);
                 true
             }
+            crate::audio::Event::DeviceWarning(message) => {
+                // Playback continues: the stream reported a transient backend
+                // error (ALSA's pulse plugin is the usual source). Record it once
+                // and leave the transport alone.
+                self.log(message);
+                true
+            }
         }
     }
 

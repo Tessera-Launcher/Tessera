@@ -3556,6 +3556,25 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     }
 
     #[test]
+    fn a_transient_device_warning_is_logged_without_stopping_playback() {
+        let root = music_home();
+        let mut app = music_app(root.path());
+        app.open_music();
+        app.music_play_pause();
+        assert!(app.music.playing);
+
+        let warning = "音频流警告（播放继续）：ALSA function 'snd_pcm_avail_delay' failed";
+        assert!(app.handle_music_event(crate::audio::Event::DeviceWarning(
+            warning.to_string()
+        )));
+
+        // The transport keeps running: this is not `Failed`.
+        assert!(app.music.playing);
+        assert!(app.log.iter().any(|line| line.contains("snd_pcm_avail_delay")));
+        assert!(!app.status.contains("音频流警告"));
+    }
+
+    #[test]
     fn sequential_order_wraps_to_the_next_track() {
         let root = music_home();
         let mut app = music_app(root.path());
