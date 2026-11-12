@@ -1,4 +1,4 @@
-package java.applet;
+package tessera.legacy;
 
 public interface AudioClip {
     void play();

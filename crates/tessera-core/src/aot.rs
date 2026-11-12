@@ -32,6 +32,11 @@ use crate::launch;
 /// extra seconds let lazy font/gui classes load too, which is exactly the class
 /// set the cache is for.
 const MENU_DWELL: Duration = Duration::from_secs(10);
+/// Lines that mean the game reached its menu.
+///
+/// Modern versions log "Sound engine started"; the applet-era ones print
+/// "OpenAL initialized" and no log file at all.
+const MENU_MARKERS: [&str; 2] = ["Sound engine started", "OpenAL initialized"];
 /// Hard cap for reaching that menu. Big vanilla packs are slow, but this is only
 /// vanilla.
 const START_TIMEOUT: Duration = Duration::from_secs(8 * 60);
@@ -196,10 +201,30 @@ fn train(
     let mut child = Command::new(&prepared.command.exe)
         .args(&args)
         .current_dir(&prepared.command.cwd)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| Error::process(format!("无法启动 AOT 训练：{error}")))?;
+    // The game's own log file is the marker source for modern versions, but
+    // 1.0–1.5.2 do not write one at all: their progress only shows up on
+    // stdout, which used to be discarded.
+    let menu_line = Arc::new(AtomicBool::new(false));
+    if let Some(stdout) = child.stdout.take() {
+        let menu_line = menu_line.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stdout);
+            // Keep draining to EOF even after the marker: an unread pipe fills
+            // up and the game would block in the middle of drawing its menu.
+            for line in reader.lines().map_while(|line| line.ok()) {
+                if !menu_line.load(Ordering::Relaxed)
+                    && MENU_MARKERS.iter().any(|marker| line.contains(marker))
+                {
+                    menu_line.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+    }
 
     let started = Instant::now();
     let mut last_report = Instant::now();
@@ -213,7 +238,10 @@ fn train(
             terminate(&mut child);
             return Err(Error::process("启动器退出，AOT 训练已取消"));
         }
-        if menu_seen.is_none() && game_log_tail.contains(&game_log, "Sound engine started") {
+        if menu_seen.is_none()
+            && (menu_line.load(Ordering::Relaxed)
+                || game_log_tail.contains(&game_log, "Sound engine started"))
+        {
             menu_seen = Some(Instant::now());
         }
         let loaded = class_log_tail.count(&class_log);

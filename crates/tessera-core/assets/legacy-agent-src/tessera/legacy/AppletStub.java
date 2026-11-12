@@ -1,8 +1,7 @@
-package java.applet;
+package tessera.legacy;
 
 import java.net.URL;
 
-/** Minimal AppletStub for versions whose client was distributed as an applet. */
 public interface AppletStub {
     boolean isActive();
     URL getDocumentBase();

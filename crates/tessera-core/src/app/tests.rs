@@ -2013,20 +2013,19 @@ fn only_vanilla_versions_can_be_trained() {
 }
 
 #[test]
-fn a_launchwrapper_version_has_nothing_to_train() {
+fn a_launchwrapper_version_can_be_trained_too() {
     let mut old = version("1.5.2");
     old.java = Some(8);
     old.main_class = Some(crate::launch::LAUNCHWRAPPER.to_string());
     let mut app = App::new("/mc", "/acc", vec![old], Vec::new());
     app.start_aot_training();
-    assert!(app.aot.training.is_none());
+    assert_eq!(app.aot.training.as_deref(), Some("1.5.2"));
     assert!(
-        !app.effects()
+        app.effects()
             .iter()
-            .any(|effect| matches!(effect, Effect::TrainAot(_))),
-        "training it would just launch a game that cannot start on Java 28"
+            .any(|effect| matches!(effect, Effect::TrainAot(version) if version == "1.5.2")),
+        "the agent keeps these versions archivable"
     );
-    assert!(app.status.contains("无法训练 AOT"), "{}", app.status);
 }
 
 #[test]

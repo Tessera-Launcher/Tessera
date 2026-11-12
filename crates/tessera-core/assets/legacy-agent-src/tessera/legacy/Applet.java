@@ -1,16 +1,15 @@
-package java.applet;
+package tessera.legacy;
 
 import java.awt.Image;
 import java.awt.Panel;
 import java.net.URL;
 
 /**
- * The Applet base class, for JDKs that no longer ship java.applet.
+ * Stand-in for `java.applet.Applet`, which JDK 28 removed.
  *
- * Minecraft 1.5.2 and older ship a `MinecraftApplet extends Applet`, and even
- * their standalone `main` builds an `Applet` subclass as the stub. The API
- * surface they use is small: construction, `setStub`, `getParameter`,
- * `getDocumentBase`, `getCodeBase`, and the lifecycle methods.
+ * The agent renames every `java/applet/Applet` reference in the game's class
+ * files to this class, so `MinecraftApplet` extends it. It is a `Panel` and
+ * implements the handful of methods the game calls.
  */
 public class Applet extends Panel {
     private AppletStub stub;

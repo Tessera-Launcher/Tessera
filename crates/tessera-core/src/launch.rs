@@ -242,23 +242,22 @@ fn prepare_inner(
     // which Java 9+ no longer is. A legacy profile gets one that still is; the
     // jar has to be on the class path for `-Djava.system.class.loader` to find
     // it at startup.
-    let legacy_loader = (kind == JavaKind::Legacy && java_major >= 9)
-        .then(|| version_dir.join(format!("{version_dir_name}.legacy-loader.jar")));
-    if let Some(loader) = &legacy_loader {
-        crate::fsutil::write_atomic(loader, LEGACY_LOADER, false).map_err(|error| {
-            Error::io(format!("无法写入 {}", loader.display()), error)
-        })?;
-        classpath.push(loader.clone());
-    }
-    // JDK 28 dropped `java.applet`, and up to 1.5.2 the game is an applet even
-    // when started from its own `main`. Patching the package back into
-    // java.desktop is the only way to load those classes; the stub implements
-    // exactly the surface the game calls.
-    let applet_stub = (kind == JavaKind::Legacy && java_major > APPLET_ERA_MAX_JAVA)
-        .then(|| version_dir.join(format!("{version_dir_name}.applet-stub.jar")));
-    if let Some(stub) = &applet_stub {
-        crate::fsutil::write_atomic(stub, APPLET_STUB, false)
-            .map_err(|error| Error::io(format!("无法写入 {}", stub.display()), error))?;
+    // LaunchWrapper cannot start on Java 9+ and the applet package is gone from
+    // 28, so legacy profiles launch through this agent instead: it provides a
+    // main that calls the game directly and rewrites the `java.applet`
+    // references in the game's own class files. Both work without a custom
+    // class loader or a patched module, which is what keeps the classes
+    // eligible for an AOT cache.
+    let legacy_agent = (kind == JavaKind::Legacy)
+        .then(|| version_dir.join(format!("{version_dir_name}.legacy-agent.jar")));
+    if let Some(agent) = &legacy_agent {
+        // Only when the bytes differ: the AOT cache validates every class path
+        // entry by size and timestamp, and a rewritten jar makes a perfectly
+        // good cache look stale on the next launch.
+        ensure_asset(agent, LEGACY_AGENT)?;
+        // On the class path too: the AOT cache is keyed by the class path, and
+        // training and launch have to agree on it.
+        classpath.push(agent.clone());
     }
 
     let natives = find_natives(&version_dir, version_dir_name, &merged.parents);
@@ -352,16 +351,15 @@ fn prepare_inner(
         args.push(classpath_string);
     }
 
-    if legacy_loader.is_some() {
-        args.push(format!("-Djava.system.class.loader={LEGACY_LOADER_CLASS}"));
+    if let Some(agent) = &legacy_agent {
+        args.push(format!("-javaagent:{}", agent.display()));
     }
-    if let Some(stub) = &applet_stub {
-        args.push("--patch-module".to_string());
-        args.push(format!("java.desktop={}", stub.display()));
-        args.push("--add-exports".to_string());
-        args.push("java.desktop/java.applet=ALL-UNNAMED".to_string());
-    }
-    args.push(merged.main_class.clone());
+    let main_class = if legacy_agent.is_some() {
+        LEGACY_MAIN.to_string()
+    } else {
+        merged.main_class.clone()
+    };
+    args.push(main_class.clone());
 
     if merged.game_args.is_empty() {
         // 1.5 and older: one whitespace-separated string.
@@ -407,7 +405,7 @@ fn prepare_inner(
         required_major: required,
         classpath_entries: classpath.len(),
         natives,
-        main_class: merged.main_class,
+        main_class,
     })
 }
 
@@ -1101,24 +1099,14 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
 /// The main class LaunchWrapper installs run on.
 pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
 
-/// The newest JDK that still ships `java.applet`.
+/// The entry point the legacy agent installs.
 ///
-/// Minecraft up to 1.5.2 launches through `MinecraftApplet`, which extends
-/// `java.applet.Applet`. JDK 28 removed the package, so those versions need
-/// [`APPLET_STUB`] patched into `java.desktop` before they can start there.
-pub const APPLET_ERA_MAX_JAVA: u32 = 25;
-
-/// The class in `assets/legacy-loader.jar` that replaces the system loader.
-const LEGACY_LOADER_CLASS: &str = "tessera.legacy.CastSafeLoader";
-/// Source and class file live in `assets/legacy-loader.java` / `.jar`.
-const LEGACY_LOADER: &[u8] = include_bytes!("../assets/legacy-loader.jar");
-
-/// A minimal `java.applet` for JDKs that dropped the package.
-///
-/// `--patch-module java.desktop=` puts it back, and `--add-exports` lets the
-/// game (an unnamed module) extend it. Sources live in
-/// `assets/applet-stub-src/`; the surface is what 1.0–1.5.2 actually call.
-const APPLET_STUB: &[u8] = include_bytes!("../assets/applet-stub.jar");
+/// It replaces `net.minecraft.launchwrapper.Launch`, whose first line casts the
+/// system class loader to `URLClassLoader` and thereby fails on Java 9+, and it
+/// calls the game's own `main`, which works on every JVM.
+pub const LEGACY_MAIN: &str = "tessera.legacy.Main";
+/// The agent jar, its class name and the sources ship in `assets/`.
+const LEGACY_AGENT: &[u8] = include_bytes!("../assets/legacy-agent.jar");
 
 /// Which Java rule a profile follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1127,9 +1115,9 @@ pub enum JavaKind {
     /// first.
     Vanilla,
     /// Minecraft that boots through LaunchWrapper with no loader on top, i.e.
-    /// up to 1.5.2. It takes the newest runtime like vanilla, but needs two
-    /// compatibility shims: a system class loader the wrapper can cast, and —
-    /// past [`APPLET_ERA_MAX_JAVA`] — the `java.applet` package put back.
+    /// up to 1.5.2. It takes the newest runtime like vanilla; a java agent
+    /// replaces the wrapper's entry point and renames the `java.applet`
+    /// references JDK 28 no longer resolves.
     Legacy,
     /// Forge and friends: the profile's pin, exactly.
     Loader,
@@ -1175,6 +1163,15 @@ pub fn pick_major(installed: &[u32], required: u32, kind: JavaKind) -> Option<u3
                     .min()
             }),
     }
+}
+
+/// Write an embedded asset next to the version, but only if it changed.
+fn ensure_asset(path: &Path, bytes: &[u8]) -> Result<()> {
+    if std::fs::read(path).is_ok_and(|current| current == bytes) {
+        return Ok(());
+    }
+    crate::fsutil::write_atomic(path, bytes, false)
+        .map_err(|error| Error::io(format!("无法写入 {}", path.display()), error))
 }
 
 /// Whether this profile boots through LaunchWrapper.
@@ -1572,7 +1569,7 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_launch_carries_the_cast_safe_class_loader() {
+    fn a_legacy_launch_goes_through_the_agent() {
         let tmp = tempfile::tempdir().unwrap();
         fixture(tmp.path());
         let runtimes = managed_runtime(tmp.path(), 25);
@@ -1595,42 +1592,37 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(launch.java_major, 25);
+        let args = &launch.command.args;
+        let agent = version_dir.join("1.5.2.legacy-agent.jar");
+        assert!(agent.is_file(), "the agent is written next to the version");
+        // The wrapper's own main class cannot start on Java 9+, so the agent
+        // supplies the entry point and the class files' applet references.
+        assert_eq!(launch.main_class, LEGACY_MAIN);
+        assert!(args.iter().any(|arg| arg == &format!("-javaagent:{}", agent.display())));
+        assert!(args.last().is_some_and(|arg| arg == LEGACY_MAIN) || args.iter().any(|arg| arg == LEGACY_MAIN));
+        // The agent is on the class path too, so training and launch share the
+        // same class path (the AOT cache is keyed by it).
         assert!(
-            launch
-                .command
-                .args
-                .iter()
-                .any(|arg| arg == "-Djava.system.class.loader=tessera.legacy.CastSafeLoader"),
-            "{:?}",
-            launch.command.args
+            args.iter()
+                .any(|arg| arg.split(':').any(|entry| entry == agent.display().to_string())),
+            "{args:?}"
         );
-        assert!(version_dir.join("1.5.2.legacy-loader.jar").is_file());
-        // 25 still ships java.applet, so nothing is patched.
-        assert!(!launch
-            .command
-            .args
+        // No module patching and no system class loader: both would keep the
+        // game's classes out of an AOT cache.
+        assert!(!args.iter().any(|arg| arg == "--patch-module"));
+        assert!(!args
             .iter()
-            .any(|arg| arg == "--patch-module"));
+            .any(|arg| arg.starts_with("-Djava.system.class.loader")));
     }
 
     #[test]
-    fn a_legacy_launch_on_28_patches_java_applet_back_in() {
+    fn a_vanilla_launch_does_not_carry_the_legacy_agent() {
         let tmp = tempfile::tempdir().unwrap();
         fixture(tmp.path());
         let runtimes = managed_runtime(tmp.path(), 28);
-        let version_dir = tmp.path().join("versions/1.5.2");
-        std::fs::create_dir_all(&version_dir).unwrap();
-        std::fs::write(
-            version_dir.join("1.5.2.json"),
-            r#"{"id":"1.5.2","mainClass":"net.minecraft.launchwrapper.Launch","minecraftArguments":"${auth_player_name} --gameDir ${game_directory}","libraries":[]}"#,
-        )
-        .unwrap();
-        std::fs::write(version_dir.join("1.5.2.jar"), b"jar").unwrap();
-
         let launch = prepare(
             tmp.path(),
-            "1.5.2",
+            "1.8.9",
             &Credentials::offline("Tester"),
             &Options {
                 runtimes: Some(runtimes),
@@ -1638,23 +1630,15 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(launch.java_major, 28);
-        let args = &launch.command.args;
-        let stub = version_dir.join("1.5.2.applet-stub.jar");
-        assert!(stub.is_file(), "the stub is written next to the version");
-        let patch = args.iter().position(|arg| arg == "--patch-module");
-        assert_eq!(
-            patch.map(|at| args[at + 1].as_str()),
-            Some(format!("java.desktop={}", stub.display()).as_str())
+        assert!(
+            !launch
+                .command
+                .args
+                .iter()
+                .any(|arg| arg.starts_with("-javaagent:") || arg == LEGACY_MAIN),
+            "{:?}",
+            launch.command.args
         );
-        assert!(args
-            .iter()
-            .any(|arg| arg == "java.desktop/java.applet=ALL-UNNAMED"));
-        // Both shims are present, and both precede the main class.
-        assert!(args
-            .iter()
-            .any(|arg| arg == "-Djava.system.class.loader=tessera.legacy.CastSafeLoader"));
-        assert!(patch.unwrap() < args.iter().position(|arg| arg == "net.minecraft.launchwrapper.Launch").unwrap());
     }
 
     #[test]
