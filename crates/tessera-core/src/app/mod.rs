@@ -347,15 +347,6 @@ impl App {
         }
     }
 
-    /// Number of versions hidden because a loader profile inherits from them.
-    pub fn hidden_base_count(&self) -> usize {
-        if self.show_base_versions {
-            0
-        } else {
-            self.all_versions.iter().filter(|v| v.is_base_only).count()
-        }
-    }
-
     /// Show or hide loader bases (`h`).
     pub fn toggle_base_versions(&mut self) {
         self.show_base_versions = !self.show_base_versions;
@@ -389,16 +380,6 @@ impl App {
         if !self.versions.is_empty() {
             self.selected = (self.selected + self.versions.len() - 1) % self.versions.len();
         }
-    }
-
-    /// Move the selection without wrapping around.
-    pub fn select_by(&mut self, delta: i32) {
-        self.uninstall_confirm = None;
-        if self.versions.is_empty() {
-            return;
-        }
-        let last = self.versions.len() - 1;
-        self.selected = (self.selected as i32 + delta).clamp(0, last as i32) as usize;
     }
 
     pub fn select_first(&mut self) {
@@ -1223,7 +1204,6 @@ mod tests {
             1,
             "the base is no longer hidden now that nothing inherits it"
         );
-        assert_eq!(app.hidden_base_count(), 0);
     }
 
     #[test]
@@ -1495,7 +1475,7 @@ mod tests {
         assert!(app.uninstall_confirm().is_none());
 
         app.request_uninstall();
-        app.select_by(1);
+        app.select_prev();
         assert!(app.uninstall_confirm().is_none());
     }
 
@@ -2359,7 +2339,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         RemoteVersion {
             id: id.to_string(),
             kind: kind.to_string(),
-            released: "2024-01-01T00:00:00+00:00".to_string(),
         }
     }
 
@@ -3192,12 +3171,10 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         );
         assert_eq!(app.versions.len(), 1, "only the loader install is listed");
         assert_eq!(app.versions[0].id, "26.3+Fabric0.20.1");
-        assert_eq!(app.hidden_base_count(), 1);
 
         app.toggle_base_versions();
         assert_eq!(app.versions.len(), 2);
         assert!(app.show_base_versions);
-        assert_eq!(app.hidden_base_count(), 0);
 
         app.toggle_base_versions();
         assert_eq!(app.versions.len(), 1, "hidden again");
@@ -3241,7 +3218,6 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.reload();
         assert_eq!(app.versions.len(), 1, "the base is hidden after reload");
         assert_eq!(app.versions[0].id, "26.3+Fabric0.20.1");
-        assert_eq!(app.hidden_base_count(), 1);
     }
 
     // ---- music ----

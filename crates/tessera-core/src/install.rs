@@ -109,7 +109,6 @@ impl Loader {
 pub struct RemoteVersion {
     pub id: String,
     pub kind: String,
-    pub released: String,
 }
 
 /// What the worker reports.
@@ -160,7 +159,6 @@ pub fn spawn_versions(
                         mdt::VersionType::Other => "-",
                     }
                     .to_string(),
-                    released: entry.release_time,
                 })
                 .collect();
             let _ = sender.send(InstallEvent::Versions(listed));

@@ -216,7 +216,6 @@ mod tests {
         RemoteVersion {
             id: id.to_string(),
             kind: kind.to_string(),
-            released: "2025-01-01T00:00:00+00:00".to_string(),
         }
     }
 

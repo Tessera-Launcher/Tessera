@@ -189,15 +189,6 @@ impl DownloadUi {
         (self.fraction() * 100.0).round() as u16
     }
 
-    /// `0.0..=1.0` for the AOT training bar.
-    pub fn aot_fraction(&self) -> f64 {
-        if self.aot_total == 0 {
-            0.0
-        } else {
-            (self.aot_loaded as f64 / self.aot_total as f64).clamp(0.0, 1.0)
-        }
-    }
-
     pub fn picked_version(&self) -> Option<&RemoteVersion> {
         self.visible.get(self.picked).map(|&index| &self.all[index])
     }
@@ -553,11 +544,6 @@ impl App {
         self.download.filter = filter;
         self.download.apply_filter();
         self.status = format!("下载：{} 版本", filter.label());
-    }
-
-    /// `f`: the next kind filter.
-    pub fn cycle_download_filter(&mut self) {
-        self.set_download_filter(self.download.filter.next());
     }
 
     /// A text field changed the custom client id on the login screen.

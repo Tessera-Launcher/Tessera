@@ -66,7 +66,6 @@ pub struct Track {
     /// `唱片`, `主世界`, `创造模式`, `下界 · 绯红森林`… — where the track sits.
     pub group: String,
     /// SHA-1 naming the object.
-    pub hash: String,
     /// Size as the index declares it.
     pub size: u64,
     /// Where the object should be on disk.
@@ -172,7 +171,6 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library> {
             name: name.clone(),
             title: title(name),
             group: group(kind, name),
-            hash: hash.to_string(),
             size,
             present: path.is_file(),
             path,

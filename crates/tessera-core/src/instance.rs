@@ -11,7 +11,7 @@
 //! enough).
 
 use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{Error, Result};
 
@@ -20,14 +20,6 @@ use crate::error::{Error, Result};
 pub struct InstanceLock {
     /// Never read; the lock lives on the open handle.
     _file: File,
-    path: PathBuf,
-}
-
-impl InstanceLock {
-    /// The file the lock lives on, for messages.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 /// Take the lock for `data_root`.
@@ -47,7 +39,7 @@ pub fn acquire(data_root: &Path) -> Result<InstanceLock> {
         .map_err(|error| Error::io(format!("无法打开 {}", path.display()), error))?;
 
     if try_lock(&file) {
-        Ok(InstanceLock { _file: file, path })
+        Ok(InstanceLock { _file: file })
     } else {
         Err(Error::busy(format!(
             "另一个 Tessera 正在使用 {}",
@@ -128,8 +120,8 @@ mod tests {
     fn acquiring_creates_the_data_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("data");
-        let lock = acquire(&root).expect("lock");
-        assert!(lock.path().is_file());
+        acquire(&root).expect("lock");
+        assert!(root.join("instance.lock").is_file());
         assert!(root.is_dir());
     }
 }

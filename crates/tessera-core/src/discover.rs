@@ -52,14 +52,6 @@ pub struct LocalVersion {
 }
 
 impl LocalVersion {
-    /// Short label for the loader column: `Fabric 0.15.11`, `Forge 47.2.0`, …
-    ///
-    /// Loader profiles are named `<mc>+<Loader><version>`, so the suffix after
-    /// `+` is already the display form; vanilla versions have no `+`.
-    pub fn loader_label(&self) -> Option<&str> {
-        self.id.split_once('+').map(|(_, loader)| loader)
-    }
-
     /// The vanilla version this profile belongs to.
     pub fn base_version(&self) -> &str {
         match &self.inherits {
@@ -241,8 +233,7 @@ mod tests {
         assert_eq!(versions[0].id, "1.8.9", "releaseTime sorts first");
         assert_eq!(versions[0].java, Some(8));
         assert!(versions[0].has_jar);
-        assert_eq!(versions[0].loader_label(), None);
-        assert_eq!(versions[1].loader_label(), Some("Fabric0.15.11"));
+        assert!(versions[1].id.contains('+'));
         assert_eq!(versions[1].base_version(), "1.20.1");
         assert!(!versions[1].has_jar);
     }
