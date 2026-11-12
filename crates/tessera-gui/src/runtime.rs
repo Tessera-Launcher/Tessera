@@ -34,11 +34,7 @@ impl Launcher {
         if self.state.screen == Screen::Main && matches!(code, Key::PageUp | Key::PageDown) {
             // The log pane scrolls in the front-end (it owns the ScrollHandle),
             // so these keys are translated here instead of in the state machine.
-            let step = px(if code == Key::PageUp { 80.0 } else { -80.0 });
-            let current = self.log_scroll.offset().y;
-            let max = self.log_scroll.max_offset().y;
-            self.log_scroll
-                .set_offset(point(px(0.0), (current + step).clamp(-max, px(0.0))));
+            self.log.page(if code == Key::PageUp { 80.0 } else { -80.0 });
             cx.notify();
             return;
         }

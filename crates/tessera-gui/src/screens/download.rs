@@ -303,14 +303,7 @@ impl Launcher {
     }
 
     fn activity_log(&mut self) -> impl IntoElement {
-        log_pane(
-            "install-log",
-            "活动",
-            &self.state.log,
-            &self.install_scroll,
-            &mut self.install_follow,
-            &mut self.install_offset_seen,
-        )
+        log_pane("install-log", "活动", &self.state.log, &mut self.install_log)
     }
 
     fn download_progress(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

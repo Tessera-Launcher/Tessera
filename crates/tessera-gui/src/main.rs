@@ -17,6 +17,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue}
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, gui_key, open_browser};
+use crate::widgets::LogView;
 use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
     TaskKind, VersionFilter,
@@ -61,20 +62,12 @@ struct Launcher {
     blocked: bool,
     /// Every background worker's channel, drained in one place.
     tasks: tasks::Tasks,
-    /// Explicit handles so the scrollbars can track the same offset the plain
-    /// `overflow_y_scroll` path uses, without the extra `ScrollBounce` layer.
-    log_scroll: ScrollHandle,
+    /// The home screen's log pane (scroll handle, follow state).
+    log: LogView,
+    /// The download screen's scrollbar.
     download_scroll: ScrollHandle,
-    /// The install screen's activity pane, with its own follow state.
-    install_scroll: ScrollHandle,
-    install_follow: bool,
-    install_offset_seen: Pixels,
-    /// Whether the log pane sticks to the newest line. Cleared when the user
-    /// scrolls up to read older lines, restored when they return to the bottom.
-    log_follow: bool,
-    /// The log offset seen last frame, so a user-driven move can be told apart
-    /// from the pane growing under an unchanged offset.
-    log_offset_seen: Pixels,
+    /// The install screen's activity pane.
+    install_log: LogView,
     /// The download cursor last seen, so keyboard movement can scroll it into
     /// view without fighting the user's own wheel/drag scrolling.
     download_cursor_seen: usize,
@@ -216,13 +209,9 @@ impl Launcher {
             _instance: instance,
             blocked,
             tasks: tasks::Tasks::new(),
-            log_scroll: ScrollHandle::default(),
+            log: LogView::default(),
             download_scroll: ScrollHandle::default(),
-            install_scroll: ScrollHandle::default(),
-            install_follow: true,
-            install_offset_seen: px(0.0),
-            log_follow: true,
-            log_offset_seen: px(0.0),
+            install_log: LogView::default(),
             download_cursor_seen: 0,
             log_file,
             focus_handle,

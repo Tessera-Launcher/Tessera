@@ -212,14 +212,7 @@ impl Launcher {
     }
 
     fn log_panel(&mut self) -> impl IntoElement {
-        log_pane(
-            "log",
-            "日志",
-            &self.state.log,
-            &self.log_scroll,
-            &mut self.log_follow,
-            &mut self.log_offset_seen,
-        )
+        log_pane("log", "日志", &self.state.log, &mut self.log)
     }
 
     pub(crate) fn main_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

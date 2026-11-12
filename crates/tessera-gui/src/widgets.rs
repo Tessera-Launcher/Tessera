@@ -7,36 +7,70 @@ use super::*;
 // ---- shared widgets ----
 
 
-/// The scrolling log pane shared by the home screen and the install screen.
+/// One auto-following log pane's scrolling state.
 ///
 /// Follows the newest line while it is pinned to the bottom; scrolling up stops
-/// that, returning to the bottom re-arms it.
+/// that, returning to the bottom re-arms it. The two panes that use it (home
+/// and install) each own one instead of three loose fields.
+pub(crate) struct LogView {
+    pub(crate) scroll: ScrollHandle,
+    follow: bool,
+    seen: Pixels,
+}
+
+impl Default for LogView {
+    fn default() -> Self {
+        Self {
+            scroll: ScrollHandle::default(),
+            follow: true,
+            seen: px(0.0),
+        }
+    }
+}
+
+impl LogView {
+    /// Update the follow state for this frame.
+    ///
+    /// GPUI stores the offset as a negative distance from the top, so it is
+    /// flipped before comparing with the (positive) maximum.
+    fn track(&mut self) {
+        let offset = -self.scroll.offset().y;
+        let max = self.scroll.max_offset().y;
+        let at_bottom = offset >= max - px(2.0);
+        if at_bottom {
+            self.follow = true;
+        } else if offset < self.seen {
+            // Only an upward move is the user's doing; our own scroll to the
+            // bottom must not switch following off again.
+            self.follow = false;
+        }
+        self.seen = offset;
+        if self.follow {
+            // Re-assert every frame: the new content height is only known after
+            // this frame's layout, so checking the previous max would scroll one
+            // frame late.
+            self.scroll.scroll_to_bottom();
+        }
+    }
+
+    /// Move the viewport by `delta` pixels, clamped to the pane (PageUp/Down).
+    pub(crate) fn page(&self, delta: f32) {
+        let current = self.scroll.offset().y;
+        let max = self.scroll.max_offset().y;
+        self.scroll
+            .set_offset(point(px(0.0), (current + px(delta)).clamp(-max, px(0.0))));
+    }
+}
+
+/// The scrolling log pane shared by the home screen and the install screen.
 pub(crate) fn log_pane(
     id: &str,
     title: &str,
     lines: &VecDeque<String>,
-    scroll: &ScrollHandle,
-    follow: &mut bool,
-    seen: &mut Pixels,
+    view: &mut LogView,
 ) -> impl IntoElement {
-    // GPUI stores the offset as a negative distance from the top, so flip it
-    // before comparing with the (positive) maximum.
-    let offset = -scroll.offset().y;
-    let max = scroll.max_offset().y;
-    let at_bottom = offset >= max - px(2.0);
-    if at_bottom {
-        *follow = true;
-    } else if offset < *seen {
-        // Only an upward move is the user's doing; our own scroll to the bottom
-        // must not switch following off again.
-        *follow = false;
-    }
-    *seen = offset;
-    if *follow {
-        // Re-assert every frame: the new content height is only known after this
-        // frame's layout, so checking the previous max would scroll one frame late.
-        scroll.scroll_to_bottom();
-    }
+    view.track();
+    let scroll = &view.scroll;
 
     let mut body = div()
         .id(id.to_string())
