@@ -104,33 +104,10 @@ pub fn save(
 
 /// Replace `path` with `body` atomically, readable only by its owner.
 ///
-/// The temporary file is created with `0600` *before* anything is written, so
-/// the token is never briefly world-readable; the rename then makes the swap
-/// atomic. Used for account files by both the login flow and session refresh.
+/// Used for account files by both the login flow and session refresh; see
+/// [`crate::fsutil::write_atomic`] for the mechanics.
 pub fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
-    let temp = path.with_extension("json.tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temp)?;
-    file.write_all(body)?;
-    file.flush()?;
-    drop(file);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // `mode()` only applies when the file is created; a leftover temp file
-        // from an earlier crash keeps whatever mode it had.
-        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&temp, path)?;
-    Ok(())
+    crate::fsutil::write_atomic(path, body, true)
 }
 
 /// Keep a credential directory closed to everyone but its owner (Unix only).

@@ -13,6 +13,7 @@ pub mod cleanup;
 pub mod discover;
 pub mod error;
 pub mod fastmenu;
+pub mod fsutil;
 pub mod http;
 pub mod input;
 pub mod instance;

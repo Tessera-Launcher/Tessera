@@ -268,13 +268,8 @@ fn train(
         "unsigned_jar": unsigned_jar.file_name().and_then(|name| name.to_str()),
         "agent": agent.file_name().and_then(|name| name.to_str()),
     });
-    let tmp = meta_path.with_extension("json.tmp");
-    fs::write(
-        &tmp,
-        serde_json::to_vec(&meta).map_err(|error| Error::internal(error.to_string()))?,
-    )
-    .map_err(|error| Error::io(format!("无法写入 {}", tmp.display()), error))?;
-    fs::rename(&tmp, &meta_path)
+    let body = serde_json::to_vec(&meta).map_err(|error| Error::internal(error.to_string()))?;
+    crate::fsutil::write_atomic(&meta_path, &body, false)
         .map_err(|error| Error::io(format!("无法写入 {}", meta_path.display()), error))?;
 
     let _ = sender.send(Event::Finished {

@@ -161,10 +161,7 @@ impl Settings {
 pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
     let body = toml::to_string_pretty(settings)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let temp = path.with_extension("toml.tmp");
-    std::fs::write(&temp, body)?;
-    std::fs::rename(&temp, path)?;
-    Ok(())
+    crate::fsutil::write_atomic(path, body.as_bytes(), false)
 }
 
 #[cfg(test)]
