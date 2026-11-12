@@ -1,1 +1,3 @@
 /target
+# The vendored crates are independent workspaces with their own target dirs.
+/vendor/*/target
