@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 
-use super::*;
 use super::aot_cache::aot_cache;
 use super::build::is_1_8;
 use super::java::parse_java_major;
@@ -12,6 +11,7 @@ use super::manifest::{
     MAX_CHAIN_DEPTH,
 };
 use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
+use super::*;
 
 #[test]
 fn offline_credentials_are_stable_and_legacy() {
@@ -67,14 +67,19 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
         r#"{"java_major":8,"java_version":"8.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
     )
     .unwrap();
-    let ready = aot_status(&version_dir, "1.8.9", &runtimes).unwrap().unwrap();
+    let ready = aot_status(&version_dir, "1.8.9", &runtimes)
+        .unwrap()
+        .unwrap();
     assert!(ready.contains("Java 8"), "{ready}");
 
     std::fs::remove_file(&unsigned).unwrap();
     let broken = aot_status(&version_dir, "1.8.9", &runtimes)
         .unwrap()
         .unwrap_err();
-    assert!(broken.to_string().contains("1.8.9.unsigned.jar"), "{broken}");
+    assert!(
+        broken.to_string().contains("1.8.9.unsigned.jar"),
+        "{broken}"
+    );
 
     // A cache trained by a runtime that has since been removed is equally
     // unusable, and the log names that runtime.
@@ -264,13 +269,19 @@ fn a_legacy_launch_goes_through_the_agent() {
     // The wrapper's own main class cannot start on Java 9+, so the agent
     // supplies the entry point and the class files' applet references.
     assert_eq!(launch.main_class, LEGACY_MAIN);
-    assert!(args.iter().any(|arg| arg == &format!("-javaagent:{}", agent.display())));
-    assert!(args.last().is_some_and(|arg| arg == LEGACY_MAIN) || args.iter().any(|arg| arg == LEGACY_MAIN));
+    assert!(args
+        .iter()
+        .any(|arg| arg == &format!("-javaagent:{}", agent.display())));
+    assert!(
+        args.last().is_some_and(|arg| arg == LEGACY_MAIN)
+            || args.iter().any(|arg| arg == LEGACY_MAIN)
+    );
     // The agent is on the class path too, so training and launch share the
     // same class path (the AOT cache is keyed by it).
     assert!(
-        args.iter()
-            .any(|arg| arg.split(':').any(|entry| entry == agent.display().to_string())),
+        args.iter().any(|arg| arg
+            .split(':')
+            .any(|entry| entry == agent.display().to_string())),
         "{args:?}"
     );
     // No module patching and no system class loader: both would keep the
@@ -304,7 +315,13 @@ fn a_vanilla_1_8_launch_disables_the_broken_netty_epoll_transport() {
         ..Default::default()
     };
 
-    let launch = prepare(tmp.path(), "1.8.9", &Credentials::offline("Tester"), &options).unwrap();
+    let launch = prepare(
+        tmp.path(),
+        "1.8.9",
+        &Credentials::offline("Tester"),
+        &options,
+    )
+    .unwrap();
     let arg = launch
         .command
         .args

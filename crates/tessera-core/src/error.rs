@@ -198,7 +198,9 @@ mod tests {
     #[test]
     fn a_transient_failure_tells_the_user_to_try_again() {
         assert!(Error::network("超时").user_message().contains("可以重试"));
-        assert!(!Error::missing("没有版本").user_message().contains("可以重试"));
+        assert!(!Error::missing("没有版本")
+            .user_message()
+            .contains("可以重试"));
     }
 
     #[test]

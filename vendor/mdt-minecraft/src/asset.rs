@@ -109,7 +109,14 @@ impl AssetRegistry {
 
         let registry = AssetRegistry::new(index, root, minecraft_version);
         registry
-            .sync_labeled(downloader, concurrency, mirror, urls, reporter, Some(minecraft_version))
+            .sync_labeled(
+                downloader,
+                concurrency,
+                mirror,
+                urls,
+                reporter,
+                Some(minecraft_version),
+            )
             .await?;
 
         if !needs_virtual {
@@ -425,7 +432,6 @@ async fn fetch_index_file(
         .mount_with_reporter(reporter)
         .await
 }
-
 
 /// Give every asset task a human-readable label so the launcher log can show one
 /// `Downloaded <logical name> by Minecraft <version>` line per downloaded object.

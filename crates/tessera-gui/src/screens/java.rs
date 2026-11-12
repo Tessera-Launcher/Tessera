@@ -4,7 +4,11 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
-    pub(crate) fn java_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn java_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let proxy = if self.state.java.source == java::Source::Github {
             Some(self.ensure_proxy(window, cx))
         } else {
@@ -19,16 +23,12 @@ impl Launcher {
             .p_2()
             .overflow_y_scroll();
         if java.runtimes.is_empty() {
-            runtimes = runtimes.child(
-                div()
-                    .p_3()
-                    .text_sm()
-                    .text_color(rgb(DIM))
-                    .child(match java.stage {
-                        JavaStage::Loading => "正在查询 Adoptium…",
-                        _ => "没有可下载的运行时",
-                    }),
-            );
+            runtimes = runtimes.child(div().p_3().text_sm().text_color(rgb(DIM)).child(
+                match java.stage {
+                    JavaStage::Loading => "正在查询 Adoptium…",
+                    _ => "没有可下载的运行时",
+                },
+            ));
         }
         for (index, runtime) in java.runtimes.iter().enumerate() {
             let selected = index == java.selected;
@@ -48,15 +48,17 @@ impl Launcher {
                     .py_1()
                     .rounded_sm()
                     .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
-                    .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
-                        this.state.java.selected = index;
-                        // Double click installs, like Enter in the state machine.
-                        if event.click_count() > 1 {
-                            this.state.handle_java_key(Key::Enter, Modifiers::NONE);
-                        }
-                        // `refresh` also runs the effect the key just queued.
-                        this.refresh(cx);
-                    }))
+                    .on_click(cx.listener(
+                        move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
+                            this.state.java.selected = index;
+                            // Double click installs, like Enter in the state machine.
+                            if event.click_count() > 1 {
+                                this.state.handle_java_key(Key::Enter, Modifiers::NONE);
+                            }
+                            // `refresh` also runs the effect the key just queued.
+                            this.refresh(cx);
+                        },
+                    ))
                     .child(
                         div()
                             .w(px(8.0))
@@ -106,7 +108,13 @@ impl Launcher {
                             .text_color(rgb(TEXT))
                             .child(format!("Java {}", runtime.major)),
                     )
-                    .child(div().flex_1().text_xs().text_color(rgb(DIM)).child(runtime.version.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(rgb(DIM))
+                            .child(runtime.version.clone()),
+                    )
                     .children((!runtime.managed).then(|| chip("手装", DIM))),
             );
         }
@@ -129,18 +137,13 @@ impl Launcher {
             progress = progress
                 .child(div().text_xs().text_color(rgb(TEXT)).child(text))
                 .child(
-                    div()
-                        .w_full()
-                        .h(px(8.0))
-                        .rounded_sm()
-                        .bg(rgb(ROW))
-                        .child(
-                            div()
-                                .h_full()
-                                .rounded_sm()
-                                .bg(rgb(ACCENT))
-                                .w(relative(fraction.max(0.001))),
-                        ),
+                    div().w_full().h(px(8.0)).rounded_sm().bg(rgb(ROW)).child(
+                        div()
+                            .h_full()
+                            .rounded_sm()
+                            .bg(rgb(ACCENT))
+                            .w(relative(fraction.max(0.001))),
+                    ),
                 );
         }
         if let Some(message) = &java.message {
@@ -195,14 +198,22 @@ impl Launcher {
                         this.state.handle_java_key(Key::Enter, Modifiers::NONE);
                         this.refresh(cx);
                     }))
-                    .child(button(&format!("全部更新 ({updates})"), cx, |this: &mut Launcher, cx| {
-                        this.state.handle_java_key(Key::Char('u'), Modifiers::NONE);
-                        this.refresh(cx);
-                    }))
-                    .child(button(&format!("换源（{source}）"), cx, |this: &mut Launcher, cx| {
-                        this.state.handle_java_key(Key::Char('s'), Modifiers::NONE);
-                        this.refresh(cx);
-                    }))
+                    .child(button(
+                        &format!("全部更新 ({updates})"),
+                        cx,
+                        |this: &mut Launcher, cx| {
+                            this.state.handle_java_key(Key::Char('u'), Modifiers::NONE);
+                            this.refresh(cx);
+                        },
+                    ))
+                    .child(button(
+                        &format!("换源（{source}）"),
+                        cx,
+                        |this: &mut Launcher, cx| {
+                            this.state.handle_java_key(Key::Char('s'), Modifiers::NONE);
+                            this.refresh(cx);
+                        },
+                    ))
                     .children(busy.then(|| chip("下载中", SNAPSHOT))),
             )
     }

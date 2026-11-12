@@ -150,15 +150,17 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
             .map(|(major, _)| format!("Java {major}"))
             .collect::<Vec<_>>()
             .join("、");
-        return Err(Error::missing(if kind == JavaKind::Vanilla || kind == JavaKind::Legacy {
-            format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
-        } else if required <= 8 {
-            format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
-        } else {
-            format!(
+        return Err(Error::missing(
+            if kind == JavaKind::Vanilla || kind == JavaKind::Legacy {
+                format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
+            } else if required <= 8 {
+                format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
+            } else {
+                format!(
                 "这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）"
             )
-        }));
+            },
+        ));
     };
 
     match probe_java(path) {

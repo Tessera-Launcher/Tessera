@@ -4,7 +4,11 @@
 use std::path::{Path, PathBuf};
 
 /// Where the natives were extracted, if this version needs them.
-pub(super) fn find_natives(version_dir: &Path, version_id: &str, parents: &[String]) -> Option<PathBuf> {
+pub(super) fn find_natives(
+    version_dir: &Path,
+    version_id: &str,
+    parents: &[String],
+) -> Option<PathBuf> {
     let mut candidates = vec![version_dir.join(format!("{version_id}-natives"))];
     let versions = version_dir.parent();
     for parent in parents {

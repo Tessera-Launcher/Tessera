@@ -31,8 +31,8 @@ mod tests;
 
 pub use aot_cache::aot_status;
 pub use java::{
-    find_java, java_is_acceptable, java_kind, pick_major, probe_java, required_java,
-    uses_launchwrapper, JavaKind, LAUNCHWRAPPER, LEGACY_MAIN, parse_java_major,
+    find_java, java_is_acceptable, java_kind, parse_java_major, pick_major, probe_java,
+    required_java, uses_launchwrapper, JavaKind, LAUNCHWRAPPER, LEGACY_MAIN,
 };
 pub use manifest::{references, References};
 
@@ -67,8 +67,8 @@ impl Credentials {
     pub fn from_account_file(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|error| Error::io(format!("读取凭据 {}", path.display()), error))?;
-        let doc: serde_json::Value =
-            serde_json::from_str(&text).map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
+        let doc: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
 
         let player = doc
             .get("player")
@@ -190,7 +190,6 @@ pub fn prepare_with_java(
         Some((java, java_major)),
     )
 }
-
 
 /// What a background launch reports.
 #[derive(Debug)]

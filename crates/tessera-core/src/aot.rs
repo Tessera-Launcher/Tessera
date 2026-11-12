@@ -22,8 +22,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::java;
 use crate::error::{Error, Result};
+use crate::java;
 use crate::launch;
 
 /// How long to keep the game at the main menu before requesting a clean exit.
@@ -274,9 +274,7 @@ fn train(
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {}
-            Err(error) => {
-                return Err(Error::process(format!("无法等待 AOT 训练进程：{error}")))
-            }
+            Err(error) => return Err(Error::process(format!("无法等待 AOT 训练进程：{error}"))),
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -293,7 +291,9 @@ fn train(
     let _ = fs::remove_file(&class_log);
 
     if !cache.is_file() || cache.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
-        return Err(Error::process("训练结束但没有生成 AOT 缓存（游戏可能没有正常退出）"));
+        return Err(Error::process(
+            "训练结束但没有生成 AOT 缓存（游戏可能没有正常退出）",
+        ));
     }
     let meta = serde_json::json!({
         "java_major": java.major,
@@ -485,9 +485,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration, cancel: &AtomicBool) -> R
                 let _ = child.wait();
                 return Err(Error::process("等待 AOT 缓存组装超时"));
             }
-            Err(error) => {
-                return Err(Error::process(format!("无法等待 AOT 训练进程：{error}")))
-            }
+            Err(error) => return Err(Error::process(format!("无法等待 AOT 训练进程：{error}"))),
         }
     }
 }
@@ -542,11 +540,9 @@ fn is_sealed(path: &Path) -> bool {
     };
     let mut text = String::new();
     manifest.read_to_string(&mut text).is_ok()
-        && text.lines().any(|line| {
-            line.trim()
-                .to_ascii_lowercase()
-                .starts_with("sealed:")
-        })
+        && text
+            .lines()
+            .any(|line| line.trim().to_ascii_lowercase().starts_with("sealed:"))
 }
 
 /// Copy the client jar without its signature files, so its classes are eligible
@@ -558,12 +554,12 @@ fn is_sealed(path: &Path) -> bool {
 fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
     let file = File::open(source)
         .map_err(|error| Error::io(format!("无法读取客户端 jar {}", source.display()), error))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|error| Error::invalid(format!("无法解析客户端 jar: {error}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| Error::invalid(format!("无法解析客户端 jar: {error}")))?;
     let tmp = destination.with_extension("jar.tmp");
     let _ = fs::remove_file(&tmp);
-    let output =
-        File::create(&tmp).map_err(|error| Error::io(format!("无法写入 {}", tmp.display()), error))?;
+    let output = File::create(&tmp)
+        .map_err(|error| Error::io(format!("无法写入 {}", tmp.display()), error))?;
     let mut writer = zip::ZipWriter::new(output);
     for index in 0..archive.len() {
         let mut entry = archive
@@ -585,12 +581,7 @@ fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
                 .map_err(|error| Error::invalid(format!("无法读取 {name}: {error}")))?;
             let body: String = text
                 .lines()
-                .filter(|line| {
-                    !line
-                        .trim()
-                        .to_ascii_lowercase()
-                        .starts_with("sealed:")
-                })
+                .filter(|line| !line.trim().to_ascii_lowercase().starts_with("sealed:"))
                 .map(|line| format!("{line}\n"))
                 .collect();
             writer
@@ -721,10 +712,8 @@ mod tests {
             let mut zip = zip::ZipWriter::new(File::create(&jar).unwrap());
             let options = zip::write::SimpleFileOptions::default();
             zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
-            zip.write_all(
-                b"Manifest-Version: 1.0\r\nCreated-By: 1.6\r\nSealed: true\r\n",
-            )
-            .unwrap();
+            zip.write_all(b"Manifest-Version: 1.0\r\nCreated-By: 1.6\r\nSealed: true\r\n")
+                .unwrap();
             zip.start_file("org/lwjgl/opengl/GL11.class", options)
                 .unwrap();
             zip.write_all(b"x").unwrap();
@@ -734,14 +723,22 @@ mod tests {
 
         let mut args = vec![
             "-cp".to_string(),
-            format!("{}:{}", jar.display(), tmp.path().join("other.jar").display()),
+            format!(
+                "{}:{}",
+                jar.display(),
+                tmp.path().join("other.jar").display()
+            ),
         ];
         assert_eq!(unseal_classpath(&mut args).unwrap(), 1);
         assert!(!is_sealed(&jar), "the manifest no longer seals the package");
         // The class path still points at the same file, and the class survived.
         assert_eq!(
             args[1],
-            format!("{}:{}", jar.display(), tmp.path().join("other.jar").display())
+            format!(
+                "{}:{}",
+                jar.display(),
+                tmp.path().join("other.jar").display()
+            )
         );
         let mut archive = zip::ZipArchive::new(File::open(&jar).unwrap()).unwrap();
         assert!(archive.by_name("org/lwjgl/opengl/GL11.class").is_ok());

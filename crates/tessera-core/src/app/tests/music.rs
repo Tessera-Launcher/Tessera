@@ -284,13 +284,14 @@ fn a_transient_device_warning_is_logged_without_stopping_playback() {
     assert!(app.music.playing);
 
     let warning = "音频流警告（播放继续）：ALSA function 'snd_pcm_avail_delay' failed";
-    assert!(app.handle_music_event(crate::audio::Event::DeviceWarning(
-        warning.to_string()
-    )));
+    assert!(app.handle_music_event(crate::audio::Event::DeviceWarning(warning.to_string())));
 
     // The transport keeps running: this is not `Failed`.
     assert!(app.music.playing);
-    assert!(app.log.iter().any(|line| line.contains("snd_pcm_avail_delay")));
+    assert!(app
+        .log
+        .iter()
+        .any(|line| line.contains("snd_pcm_avail_delay")));
     assert!(!app.status.contains("音频流警告"));
 }
 

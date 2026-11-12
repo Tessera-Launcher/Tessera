@@ -80,8 +80,7 @@ fn try_lock(file: &File) -> bool {
             &mut overlapped,
         )
     };
-    ok != 0
-        || unsafe { windows_sys::Win32::Foundation::GetLastError() } != ERROR_LOCK_VIOLATION
+    ok != 0 || unsafe { windows_sys::Win32::Foundation::GetLastError() } != ERROR_LOCK_VIOLATION
     // Any other failure is treated as "locked": refusing to start is safer than
     // running two instances against one data directory.
 }

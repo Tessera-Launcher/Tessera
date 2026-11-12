@@ -23,13 +23,13 @@ use tessera_core::app::{
     TaskKind, UiRequest, VersionFilter,
 };
 use tessera_core::input::{Key, Modifiers};
-use tessera_core::version::VersionKind;
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};
+use tessera_core::version::VersionKind;
 use tessera_core::{
-    accounts, aot, audio, cleanup, discover, instance, java, logfile, music, paths::Paths,
-    session, version_tree::RowKind,
+    accounts, aot, audio, cleanup, discover, instance, java, logfile, music, paths::Paths, session,
+    version_tree::RowKind,
 };
 
 const ACCENT: u32 = 0x6c_d6_7a;
@@ -126,9 +126,7 @@ impl Launcher {
         let instance = match instance::acquire(data.root()) {
             Ok(lock) => Some(lock),
             Err(error) => {
-                startup_notes.push(format!(
-                    "{error}：这个窗口只能退出，关闭另一个后再启动"
-                ));
+                startup_notes.push(format!("{error}：这个窗口只能退出，关闭另一个后再启动"));
                 None
             }
         };

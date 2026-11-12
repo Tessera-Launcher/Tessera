@@ -154,7 +154,11 @@ impl App {
         self.music.selected = previous
             .as_deref()
             .and_then(|dir| self.music.versions.iter().position(|name| name == dir))
-            .unwrap_or_else(|| self.music.selected.min(self.music.versions.len().saturating_sub(1)));
+            .unwrap_or_else(|| {
+                self.music
+                    .selected
+                    .min(self.music.versions.len().saturating_sub(1))
+            });
         self.screen = Screen::Music;
 
         let moved = previous.as_deref() != self.music.selected_version();

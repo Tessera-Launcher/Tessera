@@ -100,9 +100,11 @@ impl Launcher {
                             .text_color(rgb(if picked { TEXT } else { DIM }))
                             .child(page.label()),
                     )
-                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                        this.navigate(page, cx);
-                    })),
+                    .on_click(
+                        cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                            this.navigate(page, cx);
+                        }),
+                    ),
             );
         }
 

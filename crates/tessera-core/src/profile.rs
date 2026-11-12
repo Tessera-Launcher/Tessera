@@ -87,7 +87,10 @@ mod tests {
         assert_eq!(profile.java, Some(21));
         assert_eq!(profile.inherits.as_deref(), Some("26.3"));
         assert_eq!(profile.main_class.as_deref(), Some("net.fabricmc.Knot"));
-        assert_eq!(profile.release_time.as_deref(), Some("2026-01-02T03:04:05Z"));
+        assert_eq!(
+            profile.release_time.as_deref(),
+            Some("2026-01-02T03:04:05Z")
+        );
     }
 
     #[test]

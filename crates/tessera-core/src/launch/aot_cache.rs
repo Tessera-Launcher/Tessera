@@ -20,7 +20,11 @@ pub(super) struct AotSelection {
     pub(super) agent: PathBuf,
 }
 
-pub(super) fn aot_cache(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Option<AotSelection> {
+pub(super) fn aot_cache(
+    version_dir: &Path,
+    version_dir_name: &str,
+    runtimes: &Path,
+) -> Option<AotSelection> {
     match aot_lookup(version_dir, version_dir_name, runtimes) {
         AotLookup::Ready(selection) => Some(selection),
         AotLookup::Absent | AotLookup::Broken(_) => None,

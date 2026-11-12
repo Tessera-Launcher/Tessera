@@ -200,8 +200,7 @@ impl MdtClient {
     ) -> Result<VanillaInstall, MdtError> {
         self.reporter
             .status(&format!("Updating {} index", self.mirror.label()));
-        self.reporter
-            .status(&format!("读取 {version} 的版本清单…"));
+        self.reporter.status(&format!("读取 {version} 的版本清单…"));
         let (text, version_json) =
             manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, version).await?;
         let urls = ManifestUrls::try_new(&self.mirror)?;

@@ -127,7 +127,10 @@ mod tests {
     fn release_ids_parse_and_qualifiers_are_ignored() {
         assert_eq!(McVersion::parse("1.20.1"), Some(McVersion::new(1, 20, 1)));
         assert_eq!(McVersion::parse("1.21"), Some(McVersion::new(1, 21, 0)));
-        assert_eq!(McVersion::parse("1.21.9-pre9"), Some(McVersion::new(1, 21, 9)));
+        assert_eq!(
+            McVersion::parse("1.21.9-pre9"),
+            Some(McVersion::new(1, 21, 9))
+        );
         assert_eq!(
             McVersion::parse("26.4-snapshot-7"),
             Some(McVersion::new(26, 4, 0))

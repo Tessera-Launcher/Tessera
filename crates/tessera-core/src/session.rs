@@ -50,8 +50,8 @@ pub fn spawn_refresh(account_file: PathBuf) -> Receiver<SessionEvent> {
 async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> {
     let text =
         std::fs::read_to_string(&account_file).map_err(|error| Error::io("读取凭据失败", error))?;
-    let mut document: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
+    let mut document: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
 
     let username = document
         .get("player")
@@ -137,11 +137,12 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> 
 
 /// Replace a credential file without ever leaving a truncated one behind.
 fn write_atomic(path: &Path, document: &serde_json::Value) -> Result<()> {
-    let body =
-        serde_json::to_vec_pretty(document).map_err(|error| Error::internal(format!("序列化凭据失败: {error}")))?;
+    let body = serde_json::to_vec_pretty(document)
+        .map_err(|error| Error::internal(format!("序列化凭据失败: {error}")))?;
     // Same private, atomic write the login flow uses: a rotated refresh token is
     // just as sensitive as a fresh one.
-    crate::accounts::write_private(path, &body).map_err(|error| Error::io("写入凭据失败", error))?;
+    crate::accounts::write_private(path, &body)
+        .map_err(|error| Error::io("写入凭据失败", error))?;
     Ok(())
 }
 

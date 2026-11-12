@@ -49,17 +49,23 @@ fn java_effect(app: &App) -> Option<(crate::java::Runtime, Vec<String>)> {
 }
 
 fn copy_effect(app: &App) -> Option<String> {
-    app.ui_requests().iter().rev().find_map(|request| match request {
-        UiRequest::Copy(text) => Some(text.clone()),
-        _ => None,
-    })
+    app.ui_requests()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            UiRequest::Copy(text) => Some(text.clone()),
+            _ => None,
+        })
 }
 
 fn browser_effect(app: &App) -> Option<String> {
-    app.ui_requests().iter().rev().find_map(|request| match request {
-        UiRequest::OpenBrowser(url) => Some(url.clone()),
-        _ => None,
-    })
+    app.ui_requests()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            UiRequest::OpenBrowser(url) => Some(url.clone()),
+            _ => None,
+        })
 }
 
 fn has_fetch_versions(app: &App) -> bool {
@@ -135,7 +141,6 @@ fn the_selected_directory_follows_the_versions_folder() {
     assert_eq!(app().selected_dir(), Some(PathBuf::from("/mc/versions/a")));
 }
 
-
 fn write_version(root: &Path, id: &str, json: &str) {
     let dir = root.join("versions").join(id);
     std::fs::create_dir_all(&dir).unwrap();
@@ -193,14 +198,13 @@ fn select(app: &mut App, id: &str) {
     app.uninstall_confirm = None;
 }
 
-
 mod account_manager;
-mod picker;
 mod java_runtimes;
 mod loader_bases;
 mod login_overlay;
 mod music;
 mod page_state;
+mod picker;
 mod session_refresh;
 mod uninstall;
 

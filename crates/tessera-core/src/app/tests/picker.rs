@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// A picker whose "全部" list contains a real snapshot cycle.
 fn tree_picker() -> App {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
@@ -177,7 +176,6 @@ fn mixed_picker() -> App {
     ]));
     app
 }
-
 
 #[test]
 fn typing_in_the_search_box_filters_the_versions() {
@@ -581,11 +579,10 @@ fn a_second_training_run_is_refused_while_one_is_in_flight() {
     app.take_effects();
     app.start_aot_training();
     assert_eq!(app.status, "已有 AOT 训练在进行");
-    assert!(
-        !app.effects()
-            .iter()
-            .any(|effect| matches!(effect, Effect::TrainAot(_)))
-    );
+    assert!(!app
+        .effects()
+        .iter()
+        .any(|effect| matches!(effect, Effect::TrainAot(_))));
 }
 
 #[test]

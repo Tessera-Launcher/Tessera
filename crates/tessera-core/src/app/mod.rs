@@ -395,10 +395,7 @@ impl App {
         if version.aot {
             return Some(28);
         }
-        let kind = launch::java_kind(
-            version.inherits.is_some(),
-            version.main_class.as_deref(),
-        );
+        let kind = launch::java_kind(version.inherits.is_some(), version.main_class.as_deref());
         if kind == launch::JavaKind::Loader {
             return version.java;
         }
@@ -447,9 +444,7 @@ impl App {
         };
         if version.inherits.is_some() {
             self.status = "只有原版版本可以训练 AOT".to_string();
-            self.log(
-                "Mod Loader 用自定义类加载器加载游戏，那些类进不了 AOT 缓存，所以不训练",
-            );
+            self.log("Mod Loader 用自定义类加载器加载游戏，那些类进不了 AOT 缓存，所以不训练");
             return;
         }
         if !version.has_profile || !version.has_jar {

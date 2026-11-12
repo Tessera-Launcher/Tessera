@@ -87,8 +87,7 @@ async fn install_modern(
         req.java.as_deref(),
     )
     .await?;
-    req.reporter
-        .status("Forge 官方安装器已完成，检查版本文件…");
+    req.reporter.status("Forge 官方安装器已完成，检查版本文件…");
 
     // Verify: the official installer should produce a version JSON. Modern installers reuse the
     // vanilla client JAR via `inheritsFrom`, so only the JSON is required.

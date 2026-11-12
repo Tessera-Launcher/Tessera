@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn opening_the_manager_selects_the_active_account() {
     let (_tmp, mut app) = with_accounts();

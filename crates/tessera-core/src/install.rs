@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-use mdt::manifest::{self, ManifestData};
 use crate::error::{Error, Result};
+use mdt::manifest::{self, ManifestData};
 use mdt::{MdtClient, MdtError, Mirror as MdtMirror, ModLoader, ProgressReporter};
 
 /// Which source files come from.
@@ -262,7 +262,8 @@ fn installer_java(
     // otherwise the version number decides (see `launch::required_java`).
     let declared = declared_java(root, version);
     let required = crate::launch::required_java(version, declared);
-    let (java, major) = crate::launch::find_java(runtimes, required, crate::launch::JavaKind::Loader)?;
+    let (java, major) =
+        crate::launch::find_java(runtimes, required, crate::launch::JavaKind::Loader)?;
     let _ = sender.send(InstallEvent::Log(format!(
         "{} 的官方安装器使用 Java {major}（{}）",
         loader.label(),
@@ -285,18 +286,18 @@ async fn resolve_loader_version(
     let data: ManifestData = manifest::fetch_all_manifests(client.downloader(), client.mirror())
         .await
         .map_err(|error| {
-            Error::network(format!("获取 {} 版本列表失败: {error}", loader.display_name()))
-        })?;
-    let versions = manifest::loader_versions_from_data(loader, mc_version, &data);
-    versions
-        .first()
-        .cloned()
-        .ok_or_else(|| {
-            Error::missing(format!(
-                "{} 没有适用于 {mc_version} 的版本",
+            Error::network(format!(
+                "获取 {} 版本列表失败: {error}",
                 loader.display_name()
             ))
-        })
+        })?;
+    let versions = manifest::loader_versions_from_data(loader, mc_version, &data);
+    versions.first().cloned().ok_or_else(|| {
+        Error::missing(format!(
+            "{} 没有适用于 {mc_version} 的版本",
+            loader.display_name()
+        ))
+    })
 }
 
 /// Turn an [`MdtError`] into something a user can act on.

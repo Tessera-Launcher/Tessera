@@ -292,7 +292,10 @@ pub(super) fn rules_allow(rules: &Option<Vec<Rule>>, features: &HashMap<&str, bo
 }
 
 /// A game/jvm argument entry: a string, or `{rules, value}`.
-pub(super) fn resolve_argument(raw: &serde_json::Value, features: &HashMap<&str, bool>) -> Option<String> {
+pub(super) fn resolve_argument(
+    raw: &serde_json::Value,
+    features: &HashMap<&str, bool>,
+) -> Option<String> {
     if let Some(text) = raw.as_str() {
         return Some(text.to_string());
     }
@@ -364,7 +367,10 @@ pub(super) fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawV
     let mut current = version_dir_name.to_string();
     loop {
         if !seen.insert(current.clone()) {
-            return Err(Error::invalid(format!("版本链有环：{} 又继承回自己", current)));
+            return Err(Error::invalid(format!(
+                "版本链有环：{} 又继承回自己",
+                current
+            )));
         }
         let path = root
             .join("versions")
@@ -398,9 +404,7 @@ pub(super) fn load_chain(root: &Path, version_dir_name: &str) -> Result<Vec<RawV
 
 pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged> {
     let chain = load_chain(root, version_dir_name)?;
-    let child = chain
-        .first()
-        .ok_or_else(|| Error::invalid("版本链为空"))?;
+    let child = chain.first().ok_or_else(|| Error::invalid("版本链为空"))?;
     let mut merged = Merged {
         id: child.id.clone(),
         version_type: child
@@ -460,7 +464,11 @@ pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged>
 }
 
 /// The client jar for a profile: its own name, a parent's name, or any jar.
-pub(super) fn client_jar(version_dir: &Path, version_id: &str, parents: &[String]) -> Option<PathBuf> {
+pub(super) fn client_jar(
+    version_dir: &Path,
+    version_id: &str,
+    parents: &[String],
+) -> Option<PathBuf> {
     let mut candidates = vec![version_dir.join(format!("{version_id}.jar"))];
     let versions = version_dir.parent();
     for parent in parents {

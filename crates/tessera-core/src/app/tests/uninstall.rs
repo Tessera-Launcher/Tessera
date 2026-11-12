@@ -179,7 +179,9 @@ fn a_dead_install_worker_fails_the_progress_screen_instead_of_hanging() {
     assert_eq!(app.download.stage, DownloadStage::Failed);
     assert!(app.download.error.is_some());
     assert!(
-        app.log.iter().any(|line| line.contains("安装后台任务意外结束")),
+        app.log
+            .iter()
+            .any(|line| line.contains("安装后台任务意外结束")),
         "{:?}",
         app.log
     );

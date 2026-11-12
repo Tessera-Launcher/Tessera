@@ -6,7 +6,6 @@ use super::*;
 
 // ---- shared widgets ----
 
-
 /// One auto-following log pane's scrolling state.
 ///
 /// Follows the newest line while it is pinned to the bottom; scrolling up stops
@@ -89,20 +88,13 @@ pub(crate) fn log_pane(
     }
     // The scrollbar belongs to a non-scrolling shell around the list: as a child
     // of the scrolling element it would scroll away with the content.
-    let shell = div()
-        .relative()
-        .size_full()
-        .child(body)
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .child(
-                    Scrollbar::vertical(scroll)
-                        .mode(ScrollbarMode::Always)
-                        .viewport_from_layout(),
-                ),
-        );
+    let shell = div().relative().size_full().child(body).child(
+        div().absolute().inset_0().child(
+            Scrollbar::vertical(scroll)
+                .mode(ScrollbarMode::Always)
+                .viewport_from_layout(),
+        ),
+    );
     panel(title, shell, true)
 }
 
@@ -227,11 +219,11 @@ pub(crate) fn choice_row(
         .py_1()
         .rounded_sm()
         .bg(rgb(ROW))
-        .on_click(cx.listener(
-            move |this: &mut Launcher, _event, _window, cx| {
+        .on_click(
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                 action(this, cx);
-            },
-        ))
+            }),
+        )
         .child(
             div()
                 .text_sm()
@@ -253,11 +245,11 @@ pub(crate) fn button(
         .rounded_sm()
         .bg(rgb(ROW))
         .text_color(rgb(ACCENT))
-        .on_click(cx.listener(
-            move |this: &mut Launcher, _event, _window, cx| {
+        .on_click(
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                 action(this, cx);
-            },
-        ))
+            }),
+        )
         .child(label.to_string())
 }
 
@@ -274,10 +266,10 @@ pub(crate) fn primary_button(
         .bg(rgb(ACCENT))
         .text_color(rgb(0x0b_0d_10))
         .font_weight(FontWeight::SEMIBOLD)
-        .on_click(cx.listener(
-            move |this: &mut Launcher, _event, _window, cx| {
+        .on_click(
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                 action(this, cx);
-            },
-        ))
+            }),
+        )
         .child(label.to_string())
 }

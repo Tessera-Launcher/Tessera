@@ -129,10 +129,16 @@ impl Settings {
             notes.push("memory_mb 为 0，已用默认值".to_string());
         } else if self.memory_mb > Settings::MAX_MEMORY_MB {
             self.memory_mb = Settings::MAX_MEMORY_MB;
-            notes.push(format!("memory_mb 过大，已限制为 {}", Settings::MAX_MEMORY_MB));
+            notes.push(format!(
+                "memory_mb 过大，已限制为 {}",
+                Settings::MAX_MEMORY_MB
+            ));
         } else if self.memory_mb < Settings::MIN_MEMORY_MB {
             self.memory_mb = Settings::MIN_MEMORY_MB;
-            notes.push(format!("memory_mb 过小，已提高到 {}", Settings::MIN_MEMORY_MB));
+            notes.push(format!(
+                "memory_mb 过小，已提高到 {}",
+                Settings::MIN_MEMORY_MB
+            ));
         }
         for (label, value) in [
             ("window_width", &mut self.window_width),

@@ -34,7 +34,8 @@ impl Launcher {
         if self.state.screen == Screen::Main && matches!(code, Key::PageUp | Key::PageDown) {
             // The log pane scrolls in the front-end (it owns the ScrollHandle),
             // so these keys are translated here instead of in the state machine.
-            self.log.page(if code == Key::PageUp { 80.0 } else { -80.0 });
+            self.log
+                .page(if code == Key::PageUp { 80.0 } else { -80.0 });
             cx.notify();
             return;
         }
@@ -89,8 +90,12 @@ impl Launcher {
                     std::thread::spawn(move || {
                         let _ = sender.send(copy_to_clipboard(&text));
                     });
-                    self.tasks
-                        .watch(TaskKind::Clipboard, receiver, deliver_clipboard, clipboard_done);
+                    self.tasks.watch(
+                        TaskKind::Clipboard,
+                        receiver,
+                        deliver_clipboard,
+                        clipboard_done,
+                    );
                 }
                 UiRequest::OpenBrowser(url) => match open_browser(&url) {
                     Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
@@ -111,7 +116,8 @@ impl Launcher {
                         self.state.request(Effect::RefreshSession(file));
                     } else {
                         let rx = session::spawn_refresh(file);
-                        self.tasks.watch(TaskKind::Session, rx, deliver_session, session_done);
+                        self.tasks
+                            .watch(TaskKind::Session, rx, deliver_session, session_done);
                     }
                 }
                 Effect::Login(identity) => {
@@ -120,7 +126,8 @@ impl Launcher {
                         identity,
                         self.state.accounts_dir.clone(),
                     );
-                    self.tasks.watch(TaskKind::Login, rx, deliver_login, login_done);
+                    self.tasks
+                        .watch(TaskKind::Login, rx, deliver_login, login_done);
                 }
                 Effect::FetchVersions => {
                     let rx = install::spawn_versions(
@@ -131,7 +138,8 @@ impl Launcher {
                     // The picker's list and an actual install have separate
                     // kinds: opening the picker must never steal a running
                     // install's events.
-                    self.tasks.watch(TaskKind::Versions, rx, deliver_install, install_done);
+                    self.tasks
+                        .watch(TaskKind::Versions, rx, deliver_install, install_done);
                 }
                 Effect::Install { version, loader } => {
                     let rx = install::spawn_install(
@@ -142,7 +150,8 @@ impl Launcher {
                         version,
                         loader,
                     );
-                    self.tasks.watch(TaskKind::Install, rx, deliver_install, install_done);
+                    self.tasks
+                        .watch(TaskKind::Install, rx, deliver_install, install_done);
                 }
                 Effect::Launch { dir, credentials } => {
                     let rx = launch::spawn_game(
@@ -151,15 +160,18 @@ impl Launcher {
                         credentials,
                         self.state.launch_options.clone(),
                     );
-                    self.tasks.watch(TaskKind::Game, rx, deliver_game, game_done);
+                    self.tasks
+                        .watch(TaskKind::Game, rx, deliver_game, game_done);
                 }
                 Effect::FetchJavaList => {
                     let rx = java::spawn_list();
-                    self.tasks.watch(TaskKind::JavaList, rx, deliver_java, java_done);
+                    self.tasks
+                        .watch(TaskKind::JavaList, rx, deliver_java, java_done);
                 }
                 Effect::InstallJava { runtime, urls } => {
                     let rx = java::spawn_install(self.state.runtimes.clone(), runtime, urls);
-                    self.tasks.watch(TaskKind::JavaInstall, rx, deliver_java, java_done);
+                    self.tasks
+                        .watch(TaskKind::JavaInstall, rx, deliver_java, java_done);
                 }
                 Effect::Sweep(installed) => {
                     // Walking the shared library tree stats thousands of files.
@@ -168,7 +180,8 @@ impl Launcher {
                         self.state.cache.clone(),
                         installed,
                     );
-                    self.tasks.watch(TaskKind::Sweep, rx, deliver_sweep, sweep_done);
+                    self.tasks
+                        .watch(TaskKind::Sweep, rx, deliver_sweep, sweep_done);
                 }
                 Effect::TrainAot(version) => {
                     let cancel = self.tasks.stop_flag();
@@ -377,7 +390,8 @@ impl Launcher {
     fn send_audio(&mut self, command: audio::Command, cx: &mut Context<Self>) {
         if self.music_audio.is_none() {
             let (commands, events) = audio::spawn();
-            self.tasks.watch(TaskKind::Music, events, deliver_music, music_done);
+            self.tasks
+                .watch(TaskKind::Music, events, deliver_music, music_done);
             self.music_audio = Some(commands);
         }
         let Some(commands) = &self.music_audio else {

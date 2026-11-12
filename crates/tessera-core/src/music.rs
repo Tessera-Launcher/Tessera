@@ -121,12 +121,18 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library> {
         )),
         _ => Error::io(format!("读取资源索引 {}", index_path.display()), error),
     })?;
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|error| Error::invalid(format!("资源索引 {} 解析失败：{error}", index_path.display())))?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        Error::invalid(format!(
+            "资源索引 {} 解析失败：{error}",
+            index_path.display()
+        ))
+    })?;
     let objects = json
         .get("objects")
         .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| Error::invalid(format!("资源索引 {} 里没有 objects", index_path.display())))?;
+        .ok_or_else(|| {
+            Error::invalid(format!("资源索引 {} 里没有 objects", index_path.display()))
+        })?;
 
     // Legacy indexes (< 1.7) are also copied out under their own names; when the
     // game reads those, that copy is the one that exists.
@@ -210,7 +216,9 @@ fn asset_index(game: &Path, version: &str) -> Result<String> {
     for _ in 0..16 {
         let path = game.join("versions").join(&dir).join(format!("{dir}.json"));
         let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => Error::missing(format!("版本 {dir} 没有 {} ", path.display())),
+            std::io::ErrorKind::NotFound => {
+                Error::missing(format!("版本 {dir} 没有 {} ", path.display()))
+            }
             _ => Error::io(format!("读取 {}", path.display()), error),
         })?;
         let json: serde_json::Value = serde_json::from_str(&text)
@@ -243,7 +251,9 @@ fn asset_index(game: &Path, version: &str) -> Result<String> {
             }
         }
     }
-    Err(Error::invalid(format!("版本 {version} 的继承链成环，找不到资源索引")))
+    Err(Error::invalid(format!(
+        "版本 {version} 的继承链成环，找不到资源索引"
+    )))
 }
 
 /// `minecraft/sounds/records/one_more_day.ogg` → `One More Day`.

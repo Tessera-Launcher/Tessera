@@ -173,11 +173,13 @@ fn bridge<T: Send + 'static>(
         }
     }
 
-    let _ = wake.unbounded_send(Box::new(move |this: &mut Launcher, cx: &mut Context<Launcher>| {
-        this.tasks.finish(kind);
-        if !finished {
-            this.state.handle_task_gone(kind);
-        }
-        this.step(cx);
-    }));
+    let _ = wake.unbounded_send(Box::new(
+        move |this: &mut Launcher, cx: &mut Context<Launcher>| {
+            this.tasks.finish(kind);
+            if !finished {
+                this.state.handle_task_gone(kind);
+            }
+            this.step(cx);
+        },
+    ));
 }

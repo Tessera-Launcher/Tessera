@@ -282,10 +282,8 @@ pub async fn install_from_profile(
     req: &InstallRequest,
     urls: &ManifestUrls,
 ) -> Result<InstalledVersion, MdtError> {
-    req.reporter.status(&format!(
-        "获取 {} 加载器配置…",
-        req.loader.display_name()
-    ));
+    req.reporter
+        .status(&format!("获取 {} 加载器配置…", req.loader.display_name()));
     let (text, used_url) =
         fetch_profile_json(downloader, profile_urls, req.reporter.as_ref()).await?;
     let mut profile: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
@@ -404,12 +402,14 @@ pub async fn install_legacy_forge(
     // the installer (i.e. us) to fetch the library list from `versionInfo`.
     let profile_path = unpack.join("install_profile.json");
     let profile = if profile_path.is_file() {
-        let text = crate::io::read_to_string(&profile_path).await.map_err(|e| {
-            MdtError::IoError(e).context(format!(
-                "installer is missing install_profile.json at {}",
-                profile_path.display()
-            ))
-        })?;
+        let text = crate::io::read_to_string(&profile_path)
+            .await
+            .map_err(|e| {
+                MdtError::IoError(e).context(format!(
+                    "installer is missing install_profile.json at {}",
+                    profile_path.display()
+                ))
+            })?;
         Some(
             serde_json::from_str::<serde_json::Value>(&text)
                 .map_err(|e| MdtError::JsonParseError(e).context("parsing install_profile.json"))?,
@@ -520,7 +520,8 @@ async fn deploy_legacy_profile(
         .or_else(|| {
             libraries.iter().find_map(|library| {
                 let name = library.get("name")?.as_str()?;
-                name.starts_with("net.minecraftforge:forge:").then(|| name.to_string())
+                name.starts_with("net.minecraftforge:forge:")
+                    .then(|| name.to_string())
             })
         });
     let forge_name = forge_name.ok_or_else(|| {
@@ -605,7 +606,12 @@ async fn deploy_legacy_profile(
             mirror,
             urls,
             reporter,
-            Some(version_info.get("id").and_then(serde_json::Value::as_str).unwrap_or("Forge")),
+            Some(
+                version_info
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Forge"),
+            ),
             None,
         )
         .await?;
@@ -1175,9 +1181,9 @@ mod tests {
 
         let libs = libraries_dir(&root);
         assert_eq!(
-            std::fs::read(
-                libs.join("net/minecraftforge/forge/1.12.2-14.23.0.2486/forge-1.12.2-14.23.0.2486.jar")
-            )
+            std::fs::read(libs.join(
+                "net/minecraftforge/forge/1.12.2-14.23.0.2486/forge-1.12.2-14.23.0.2486.jar"
+            ))
             .unwrap(),
             b"universal"
         );

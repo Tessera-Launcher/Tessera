@@ -507,8 +507,7 @@ fn install(
     let top = single_entry(&unpacked)
         .map_err(|error| Error::invalid(format!("解包结果异常：{error}")))?;
     if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .map_err(|error| Error::io("无法替换旧运行时", error))?;
+        fs::remove_dir_all(&dir).map_err(|error| Error::io("无法替换旧运行时", error))?;
     }
     fs::create_dir_all(dir.parent().unwrap_or(&dir)).ok();
     fs::rename(&top, &dir)
@@ -581,9 +580,8 @@ fn fetch_to(
         return Err(Error::network(format!("HTTP {}", response.status())));
     }
     let total = response.content_length().unwrap_or(expected_size);
-    let mut file =
-        File::create(path)
-            .map_err(|error| Error::io(format!("无法写入 {}", path.display()), error))?;
+    let mut file = File::create(path)
+        .map_err(|error| Error::io(format!("无法写入 {}", path.display()), error))?;
     let mut done = 0u64;
     let started = Instant::now();
     let mut since = Instant::now();

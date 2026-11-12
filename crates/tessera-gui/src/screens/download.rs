@@ -4,7 +4,11 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
-    pub(crate) fn download_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn download_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         match self.state.download.stage {
             DownloadStage::Picking | DownloadStage::LoadingVersions => {
                 self.download_picker(window, cx).into_any_element()
@@ -31,10 +35,12 @@ impl Launcher {
                     .bg(rgb(if picked { ACCENT } else { ROW }))
                     .text_color(rgb(if picked { 0x0b_0d_10 } else { DIM }))
                     .text_xs()
-                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                        this.state.set_download_filter(filter);
-                        this.refresh(cx);
-                    }))
+                    .on_click(
+                        cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                            this.state.set_download_filter(filter);
+                            this.refresh(cx);
+                        }),
+                    )
                     .child(filter.label()),
             );
         }
@@ -71,16 +77,12 @@ impl Launcher {
             .overflow_y_scroll();
 
         if download.rows.is_empty() {
-            versions = versions.child(
-                div()
-                    .p_3()
-                    .text_sm()
-                    .text_color(rgb(DIM))
-                    .child(match download.stage {
-                        DownloadStage::LoadingVersions => "正在取版本列表…",
-                        _ => "没有可安装的版本",
-                    }),
-            );
+            versions = versions.child(div().p_3().text_sm().text_color(rgb(DIM)).child(
+                match download.stage {
+                    DownloadStage::LoadingVersions => "正在取版本列表…",
+                    _ => "没有可安装的版本",
+                },
+            ));
         }
 
         let total_rows = download.rows.len();
@@ -107,11 +109,7 @@ impl Launcher {
         let start = first.saturating_sub(OVERSCAN);
         let end = (first + VISIBLE_ROWS + OVERSCAN).min(total_rows);
         if start > 0 {
-            versions = versions.child(
-                div()
-                    .h(px(start as f32 * ROW_HEIGHT))
-                    .flex_shrink_0(),
-            );
+            versions = versions.child(div().h(px(start as f32 * ROW_HEIGHT)).flex_shrink_0());
         }
         for drawn in start..end {
             let row = &download.rows[drawn];
@@ -134,11 +132,13 @@ impl Launcher {
                             .flex_shrink_0()
                             .rounded_sm()
                             .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
-                            .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                                this.state.download.picked = index;
-                                this.state.download.refresh_loaders();
-                                this.refresh(cx);
-                            }))
+                            .on_click(cx.listener(
+                                move |this: &mut Launcher, _event, _window, cx| {
+                                    this.state.download.picked = index;
+                                    this.state.download.refresh_loaders();
+                                    this.refresh(cx);
+                                },
+                            ))
                             .child(
                                 div()
                                     .w(px(8.0))
@@ -180,11 +180,13 @@ impl Launcher {
                             .flex_shrink_0()
                             .rounded_sm()
                             .bg(rgb(PANEL))
-                            .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                                this.state.download.picked = first;
-                                this.state.toggle_row(drawn);
-                                this.refresh(cx);
-                            }))
+                            .on_click(cx.listener(
+                                move |this: &mut Launcher, _event, _window, cx| {
+                                    this.state.download.picked = first;
+                                    this.state.toggle_row(drawn);
+                                    this.refresh(cx);
+                                },
+                            ))
                             .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(SNAPSHOT)))
                             .child(div().flex_1().text_sm().text_color(rgb(DIM)).child(label)),
                     );
@@ -206,14 +208,11 @@ impl Launcher {
             .min_h(px(0.0))
             .child(versions)
             .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(
-                        Scrollbar::vertical(&self.download_scroll)
-                            .mode(ScrollbarMode::Always)
-                            .viewport_from_layout(),
-                    ),
+                div().absolute().inset_0().child(
+                    Scrollbar::vertical(&self.download_scroll)
+                        .mode(ScrollbarMode::Always)
+                        .viewport_from_layout(),
+                ),
             );
 
         let mut loaders = div().v_flex().gap_1().p_2();
@@ -230,10 +229,12 @@ impl Launcher {
                     .py_1()
                     .rounded_sm()
                     .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
-                    .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                        this.state.download.loader_pick = index;
-                        this.refresh(cx);
-                    }))
+                    .on_click(
+                        cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                            this.state.download.loader_pick = index;
+                            this.refresh(cx);
+                        }),
+                    )
                     .child(
                         div()
                             .w(px(6.0))
@@ -281,29 +282,35 @@ impl Launcher {
                             .child(versions_shell),
                         true,
                     ))
-                    .child(
-                        div()
-                            .v_flex()
-                            .w(px(260.0))
-                            .gap_2()
-                            .child(panel("安装内容", loaders, true)),
-                    ),
+                    .child(div().v_flex().w(px(260.0)).gap_2().child(panel(
+                        "安装内容",
+                        loaders,
+                        true,
+                    ))),
             )
             .child(
-                footer_bar(&format!("选中：{picked} · 下载源 {}", self.state.source_label()))
-                    .child(primary_button("安装", cx, |this: &mut Launcher, cx| {
-                        this.state.start_install();
-                        this.refresh(cx);
-                    }))
-                    .child(button("换源", cx, |this: &mut Launcher, cx| {
-                        this.state.toggle_source();
-                        this.refresh(cx);
-                    })),
+                footer_bar(&format!(
+                    "选中：{picked} · 下载源 {}",
+                    self.state.source_label()
+                ))
+                .child(primary_button("安装", cx, |this: &mut Launcher, cx| {
+                    this.state.start_install();
+                    this.refresh(cx);
+                }))
+                .child(button("换源", cx, |this: &mut Launcher, cx| {
+                    this.state.toggle_source();
+                    this.refresh(cx);
+                })),
             )
     }
 
     fn activity_log(&mut self) -> impl IntoElement {
-        log_pane("install-log", "活动", &self.state.log, &mut self.install_log)
+        log_pane(
+            "install-log",
+            "活动",
+            &self.state.log,
+            &mut self.install_log,
+        )
     }
 
     fn download_progress(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -318,25 +325,20 @@ impl Launcher {
             .overflow_y_scroll();
 
         body = body
+            .child(div().text_sm().text_color(rgb(TEXT)).child(format!(
+                "{}%   {} / {} 个文件",
+                download.percent(),
+                download.done,
+                download.total
+            )))
             .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(TEXT))
-                    .child(format!("{}%   {} / {} 个文件", download.percent(), download.done, download.total)),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .h(px(10.0))
-                    .rounded_sm()
-                    .bg(rgb(ROW))
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded_sm()
-                            .bg(rgb(ACCENT))
-                            .w(relative(fraction.max(0.001))),
-                    ),
+                div().w_full().h(px(10.0)).rounded_sm().bg(rgb(ROW)).child(
+                    div()
+                        .h_full()
+                        .rounded_sm()
+                        .bg(rgb(ACCENT))
+                        .w(relative(fraction.max(0.001))),
+                ),
             );
 
         if download.speed > 0.0 {
@@ -357,15 +359,10 @@ impl Launcher {
             body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
         }
         if let Some((version, loader)) = &download.installed {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(ACCENT))
-                    .child(match loader {
-                        Some(loader) => format!("安装完成：{version} · {loader}"),
-                        None => format!("安装完成：{version}"),
-                    }),
-            );
+            body = body.child(div().text_sm().text_color(rgb(ACCENT)).child(match loader {
+                Some(loader) => format!("安装完成：{version} · {loader}"),
+                None => format!("安装完成：{version}"),
+            }));
         }
 
         let title = "安装";
@@ -377,11 +374,15 @@ impl Launcher {
             .child(screen_title(title))
             .child(self.activity_log())
             .child(panel_fit("进度", body))
-            .child(footer_bar(&self.state.status).child(button("返回", cx, |this: &mut Launcher, cx| {
-                this.state.close_download();
-                this.state.reload();
-                this.refresh(cx);
-            })))
+            .child(footer_bar(&self.state.status).child(button(
+                "返回",
+                cx,
+                |this: &mut Launcher, cx| {
+                    this.state.close_download();
+                    this.state.reload();
+                    this.refresh(cx);
+                },
+            )))
     }
 
     /// The download search box, created once.
@@ -389,9 +390,8 @@ impl Launcher {
         if let Some(state) = &self.search {
             return state.clone();
         }
-        let state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("搜索版本 id，例如 1.21 / snapshot")
-        });
+        let state = cx
+            .new(|cx| InputState::new(window, cx).placeholder("搜索版本 id，例如 1.21 / snapshot"));
         self.search_sub = Some(cx.subscribe(
             &state,
             |this: &mut Launcher, state, event: &InputEvent, cx| {

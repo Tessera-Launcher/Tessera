@@ -1,7 +1,7 @@
 //! Switching sidebar pages must preserve each page's own state.
 
-use super::*;
 use super::music::{music_app, music_home};
+use super::*;
 
 #[test]
 fn leaving_and_returning_keeps_the_download_picker_where_it_was() {
@@ -62,7 +62,10 @@ fn leaving_and_returning_keeps_the_music_transport_and_cursor() {
     assert!(app.music.playing, "the transport keeps running");
     assert_eq!(app.music.position, std::time::Duration::from_secs(30));
     assert_eq!(app.music.cursor, 1);
-    assert_eq!(app.music.selected_track().map(|track| track.title.clone()), title);
+    assert_eq!(
+        app.music.selected_track().map(|track| track.title.clone()),
+        title
+    );
     assert!(app.music.library.is_some());
     // Reopening must not stop the queue it was playing.
     assert!(!app
@@ -139,7 +142,6 @@ fn account_label_distinguishes_signed_out_and_in() {
         "Steve (2) · 官方启动器"
     );
 }
-
 
 #[test]
 fn vanilla_versions_are_labelled_with_the_newest_runtime() {

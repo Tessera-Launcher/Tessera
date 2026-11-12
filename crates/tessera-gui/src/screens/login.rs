@@ -4,7 +4,11 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
-    pub(crate) fn login_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn login_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut body = div().v_flex().gap_2().p_3();
         let hint: String;
 
@@ -12,7 +16,11 @@ impl Launcher {
             LoginStep::Choose => {
                 let chosen = self.state.login.choice;
                 for (index, title, subtitle) in [
-                    (0usize, "官方启动器", "用 Minecraft 官方启动器的应用身份登录"),
+                    (
+                        0usize,
+                        "官方启动器",
+                        "用 Minecraft 官方启动器的应用身份登录",
+                    ),
                     (1, "自定义 app id", "其他启动器的 Azure 客户端 id"),
                     (2, "现有凭据…", "读 azure_app_ids.toml 里的 app id"),
                 ] {
@@ -70,15 +78,14 @@ impl Launcher {
                             .child("填一个 Azure 应用的 client id（Graph 权限只用于拿皮肤）。"),
                     )
                     .child(Input::new(&input).appearance(false).text_sm())
-                    .child(
-                        div()
-                            .h_flex()
-                            .gap_2()
-                            .child(primary_button("开始登录", cx, |this: &mut Launcher, cx| {
-                                this.state.confirm_login_app_id();
-                                this.refresh(cx);
-                            })),
-                    );
+                    .child(div().h_flex().gap_2().child(primary_button(
+                        "开始登录",
+                        cx,
+                        |this: &mut Launcher, cx| {
+                            this.state.confirm_login_app_id();
+                            this.refresh(cx);
+                        },
+                    )));
                 hint = "Enter 或「开始登录」提交".to_string();
             }
             LoginStep::Waiting { user_code, url } => {
@@ -133,7 +140,10 @@ impl Launcher {
                 });
                 hint = "在浏览器里确认后，这里会自动完成".to_string();
             }
-            LoginStep::Done { player, application } => {
+            LoginStep::Done {
+                player,
+                application,
+            } => {
                 body = body.child(
                     div()
                         .text_sm()
@@ -161,10 +171,12 @@ impl Launcher {
             .gap_2()
             .child(screen_title("登录"))
             .child(panel("身份 / 等待授权", body, true))
-            .child(footer_bar(&hint).child(button("关闭", cx, |this: &mut Launcher, cx| {
-                this.state.close_login();
-                this.refresh(cx);
-            })))
+            .child(
+                footer_bar(&hint).child(button("关闭", cx, |this: &mut Launcher, cx| {
+                    this.state.close_login();
+                    this.refresh(cx);
+                })),
+            )
     }
 
     /// The custom-client-id field on the login screen, created once.

@@ -125,20 +125,26 @@ impl Launcher {
                         .py_1()
                         .rounded_sm()
                         .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
-                        .on_click(cx.listener(move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
-                            this.state.selected = index;
-                            // Two clicks on one row launch; one click only selects.
-                            if event.click_count() > 1 {
-                                this.state.request_launch();
-                            }
-                            this.refresh(cx);
-                        }))
+                        .on_click(cx.listener(
+                            move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
+                                this.state.selected = index;
+                                // Two clicks on one row launch; one click only selects.
+                                if event.click_count() > 1 {
+                                    this.state.request_launch();
+                                }
+                                this.refresh(cx);
+                            },
+                        ))
                         .child(
                             div()
                                 .w(px(8.0))
                                 .h(px(8.0))
                                 .rounded_full()
-                                .bg(rgb(if broken { BROKEN } else { Self::kind_color(version.kind) })),
+                                .bg(rgb(if broken {
+                                    BROKEN
+                                } else {
+                                    Self::kind_color(version.kind)
+                                })),
                         )
                         .child(
                             div()
@@ -199,7 +205,13 @@ impl Launcher {
                     .child(field("大小", size.unwrap_or_else(|| "计算中…".into())));
             }
             None => {
-                body = body.child(div().p_2().text_sm().text_color(rgb(DIM)).child("未选择版本"));
+                body = body.child(
+                    div()
+                        .p_2()
+                        .text_sm()
+                        .text_color(rgb(DIM))
+                        .child("未选择版本"),
+                );
             }
         }
         panel("详情", body, false)
@@ -240,10 +252,14 @@ impl Launcher {
                     // Training is voluntary: it costs a game start and a cache
                     // the size of the client, and has to be redone after a Java
                     // upgrade, so it never happens behind the player's back.
-                    .child(button("开始 AOT 训练", cx, |this: &mut Launcher, cx| {
-                        this.state.start_aot_training();
-                        this.refresh(cx);
-                    }))
+                    .child(button(
+                        "开始 AOT 训练",
+                        cx,
+                        |this: &mut Launcher, cx| {
+                            this.state.start_aot_training();
+                            this.refresh(cx);
+                        },
+                    ))
                     .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
                         this.state.request_launch();
                         this.refresh(cx);
@@ -275,15 +291,10 @@ impl Launcher {
                     .text_color(rgb(TEXT))
                     .child(format!("卸载 {dir}？")),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(DIM))
-                    .child(format!(
-                        "会删除 versions/{dir}（{}）",
-                        size.map_or_else(|| "正在计算".to_string(), discover::human_size)
-                    )),
-            );
+            .child(div().text_xs().text_color(rgb(DIM)).child(format!(
+                "会删除 versions/{dir}（{}）",
+                size.map_or_else(|| "正在计算".to_string(), discover::human_size)
+            )));
         if !dependents.is_empty() {
             body = body.child(
                 div()
@@ -296,10 +307,14 @@ impl Launcher {
             div()
                 .h_flex()
                 .gap_2()
-                .child(primary_button("确认卸载", cx, |this: &mut Launcher, cx| {
-                    this.state.request_uninstall();
-                    this.refresh(cx);
-                }))
+                .child(primary_button(
+                    "确认卸载",
+                    cx,
+                    |this: &mut Launcher, cx| {
+                        this.state.request_uninstall();
+                        this.refresh(cx);
+                    },
+                ))
                 .child(button("取消", cx, |this: &mut Launcher, cx| {
                     this.state.cancel_uninstall();
                     this.refresh(cx);
