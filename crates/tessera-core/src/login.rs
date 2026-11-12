@@ -7,7 +7,7 @@
 //! they are never sent to the UI.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 
 use minecraft_auth::java::JavaAuthManager;
 use minecraft_auth::AuthApplication;
@@ -67,21 +67,17 @@ pub fn spawn(
     identity: Identity,
     accounts_dir: PathBuf,
 ) -> Receiver<LoginEvent> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let outcome = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))
-            .and_then(|runtime| {
-                runtime.block_on(run(client, identity, accounts_dir, sender.clone()))
-            });
-        // A failure that never reached a callback still has to end the wait.
-        if let Err(error) = outcome {
-            let _ = sender.send(LoginEvent::Failed(error.to_string()));
-        }
-    });
-    receiver
+    crate::task::spawn_reporter(
+        "tessera-login",
+        |error| LoginEvent::Failed(error.to_string()),
+        move |sender| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))?
+                .block_on(run(client, identity, accounts_dir, sender))
+        },
+    )
 }
 
 async fn run(
@@ -199,7 +195,7 @@ mod tests {
     fn a_custom_identity_is_reported_through_the_channel_without_network() {
         // Only the channel plumbing is exercised; `spawn` is not called because it
         // would hit Microsoft. This pins the event shape the UI depends on.
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         sender
             .send(LoginEvent::DeviceCode {
                 user_code: "ABCD-EFGH".into(),

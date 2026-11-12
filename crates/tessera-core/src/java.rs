@@ -823,13 +823,11 @@ fn spawn<F>(work: F) -> Receiver<Event>
 where
     F: FnOnce(Sender<Event>) -> Result<()> + Send + 'static,
 {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        if let Err(message) = work(sender.clone()) {
-            let _ = sender.send(Event::Failed(message.user_message()));
-        }
-    });
-    receiver
+    crate::task::spawn_reporter(
+        "tessera-java",
+        |error| Event::Failed(error.user_message()),
+        work,
+    )
 }
 
 /// Keep log lines readable: show the host and the file name, not the whole URL.

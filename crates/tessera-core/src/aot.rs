@@ -16,7 +16,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -86,27 +86,22 @@ pub fn spawn(
     version: String,
     cancel: Arc<AtomicBool>,
 ) -> Receiver<Event> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        // Training launches the game, so the same protection as a normal launch
-        // applies: do not sweep libraries while the training JVM is using them.
-        let _maintenance = crate::task::read();
-        if let Err(reason) = train(
-            &root,
-            &runtimes,
-            &options,
-            &proxy,
-            &version,
-            &sender,
-            &cancel,
-        ) {
-            let _ = sender.send(Event::Failed {
-                version: version.clone(),
-                reason: reason.user_message(),
-            });
-        }
-    });
-    receiver
+    let failed_version = version.clone();
+    crate::task::spawn_reporter(
+        "tessera-aot",
+        move |error| Event::Failed {
+            version: failed_version,
+            reason: error.user_message(),
+        },
+        move |sender| {
+            // Training launches the game, so the same protection as a normal
+            // launch applies: do not sweep libraries while its JVM uses them.
+            let _maintenance = crate::task::read();
+            train(
+                &root, &runtimes, &options, &proxy, &version, &sender, &cancel,
+            )
+        },
+    )
 }
 
 fn train(

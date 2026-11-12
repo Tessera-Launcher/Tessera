@@ -6,7 +6,7 @@
 //! channel, which keeps every rendering decision in the UI layer.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use mdt::manifest::{self, ManifestData};
@@ -358,14 +358,11 @@ fn spawn_worker<F>(work: F) -> Receiver<InstallEvent>
 where
     F: FnOnce(Sender<InstallEvent>) -> Result<()> + Send + 'static,
 {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let fallback = sender.clone();
-        if let Err(error) = work(sender) {
-            let _ = fallback.send(InstallEvent::Failed(error.user_message()));
-        }
-    });
-    receiver
+    crate::task::spawn_reporter(
+        "tessera-install",
+        |error| InstallEvent::Failed(error.user_message()),
+        work,
+    )
 }
 
 /// Forwards MDT's progress callbacks to the UI channel.

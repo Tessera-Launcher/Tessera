@@ -5,7 +5,7 @@
 //! 和登录/下载一样跑在自己的线程上，结果通过 channel 回报。
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 
 use minecraft_auth::java::JavaAuthManager;
 
@@ -31,21 +31,20 @@ pub enum SessionEvent {
 
 /// Refresh (if needed) the session in `account_file`.
 pub fn spawn_refresh(account_file: PathBuf) -> Receiver<SessionEvent> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let outcome = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))
-            .and_then(|runtime| runtime.block_on(run(account_file, sender.clone())));
-        if let Err(error) = outcome {
-            let _ = sender.send(SessionEvent::Failed {
-                username: String::new(),
-                reason: error.to_string(),
-            });
-        }
-    });
-    receiver
+    crate::task::spawn_reporter(
+        "tessera-session",
+        |error| SessionEvent::Failed {
+            username: String::new(),
+            reason: error.to_string(),
+        },
+        move |sender| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))?
+                .block_on(run(account_file, sender))
+        },
+    )
 }
 
 async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> {
@@ -174,7 +173,7 @@ mod tests {
 
     #[test]
     fn events_carry_what_the_launcher_needs() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         sender
             .send(SessionEvent::Ready {
                 username: "Steve".into(),
