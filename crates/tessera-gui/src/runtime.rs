@@ -176,6 +176,21 @@ impl Launcher {
             }
         }
 
+        // The details pane wants the selected version's size; walking the tree
+        // is I/O, so it happens on a worker and the state machine only caches
+        // the answer.
+        if !self.tasks.running(TaskKind::Measure) {
+            if let Some(dir) = self.state.size_to_measure() {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let size = discover::dir_size(&dir);
+                    let _ = sender.send((dir, size));
+                });
+                self.tasks
+                    .watch(TaskKind::Measure, receiver, deliver_size, measure_done);
+            }
+        }
+
         if self.flush_log() {
             changed = true;
         }
@@ -323,6 +338,14 @@ fn deliver_clipboard(launcher: &mut Launcher, result: Result<String, String>) {
 
 fn deliver_music(launcher: &mut Launcher, event: audio::Event) {
     launcher.state.handle_music_event(event);
+}
+
+fn deliver_size(launcher: &mut Launcher, (dir, size): (std::path::PathBuf, u64)) {
+    launcher.state.set_measured_size(dir, size);
+}
+
+fn measure_done(_: &(std::path::PathBuf, u64)) -> bool {
+    true
 }
 
 impl Launcher {

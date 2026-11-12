@@ -114,6 +114,8 @@ pub enum TaskKind {
     Clipboard,
     /// The audio worker, which never reports a terminal event.
     Music,
+    /// Walking one version directory to report its size.
+    Measure,
 }
 
 impl TaskKind {
@@ -131,6 +133,7 @@ impl TaskKind {
             TaskKind::Game => "游戏进程",
             TaskKind::Clipboard => "剪贴板",
             TaskKind::Music => "音频",
+            TaskKind::Measure => "目录大小",
         }
     }
 }
@@ -491,25 +494,34 @@ impl App {
         Some(self.root.join("versions").join(&version.dir))
     }
 
-    /// Size of the selected version directory, measured at most once per
-    /// selection.
+    /// The selected version directory's size, once something has measured it.
     ///
-    /// Walking the tree is cheap for a vanilla install and not so cheap for a
-    /// version with a filled `mods/`; the renderer asks on every frame, so the
-    /// answer is cached by directory. Any change to what is on disk goes through
-    /// [`App::reload`] or [`App::uninstall`], which drop the cache.
-    pub fn selected_size(&mut self) -> u64 {
-        let Some(dir) = self.selected_dir() else {
-            return 0;
-        };
-        if let Some((cached, size)) = &self.size_cache {
-            if *cached == dir {
-                return *size;
-            }
+    /// The state machine never walks the tree itself: a version with a filled
+    /// `mods/` can hold tens of thousands of files, and the details pane asks on
+    /// every frame. The front-end measures off the UI thread and reports back
+    /// through [`App::set_measured_size`]. Any change to what is on disk goes
+    /// through [`App::reload`] or [`App::uninstall`], which drop the cache.
+    pub fn selected_size(&self) -> Option<u64> {
+        let dir = self.selected_dir()?;
+        match &self.size_cache {
+            Some((cached, size)) if *cached == dir => Some(*size),
+            _ => None,
         }
-        let size = discover::dir_size(&dir);
+    }
+
+    /// The directory the front-end should measure, when the cached answer is
+    /// stale or absent.
+    pub fn size_to_measure(&self) -> Option<PathBuf> {
+        let dir = self.selected_dir()?;
+        match &self.size_cache {
+            Some((cached, _)) if *cached == dir => None,
+            _ => Some(dir),
+        }
+    }
+
+    /// Record a measurement made off the UI thread.
+    pub fn set_measured_size(&mut self, dir: PathBuf, size: u64) {
         self.size_cache = Some((dir, size));
-        size
     }
 
     // ---- uninstalling ----
@@ -524,13 +536,12 @@ impl App {
 
     /// What a confirmation dialog needs: the version, what depends on it, and
     /// how much disk it occupies.
-    pub fn uninstall_plan(&mut self) -> Option<(String, Vec<String>, u64)> {
+    pub fn uninstall_plan(&mut self) -> Option<(String, Vec<String>, Option<u64>)> {
         // Only a pending question has a plan: without this the dialog renders on
         // every frame in which some version happens to be selected.
         self.uninstall_confirm.as_ref()?;
         let version = self.selected_version()?.clone();
-        // Measured on demand: the dialog is the only reader, and the details pane
-        // may not have run yet.
+        // Whatever the front-end last measured; `None` while it is still walking.
         let size = self.selected_size();
         let dependents = self.dependents_of(&version);
         Some((version.dir, dependents, size))
@@ -711,7 +722,8 @@ impl App {
             | TaskKind::Sweep
             | TaskKind::Aot
             | TaskKind::Clipboard
-            | TaskKind::Music => {}
+            | TaskKind::Music
+            | TaskKind::Measure => {}
         }
     }
 
@@ -1412,22 +1424,26 @@ mod tests {
     }
 
     #[test]
-    fn the_directory_size_is_measured_once_per_selection() {
+    fn a_size_is_only_reported_once_a_worker_measured_it() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_version(root, "1.20.1", r#"{"id":"1.20.1"}"#);
-        let extra = root.join("versions/1.20.1/mods/extra.jar");
-        std::fs::create_dir_all(extra.parent().unwrap()).unwrap();
 
         let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
-        let before = app.selected_size();
-        // A new file does not change the answer until the cache is dropped: the
-        // renderer must not walk the tree on every frame.
-        std::fs::write(&extra, b"four").unwrap();
-        assert_eq!(app.selected_size(), before, "cached between frames");
+        let dir = root.join("versions/1.20.1");
+        // Nothing walks the tree inside the state machine any more.
+        assert_eq!(app.selected_size(), None);
+        assert_eq!(app.size_to_measure(), Some(dir.clone()));
 
+        app.set_measured_size(dir.clone(), 4096);
+        assert_eq!(app.selected_size(), Some(4096));
+        // The cache answers, so the front-end has nothing to measure.
+        assert_eq!(app.size_to_measure(), None);
+
+        // Anything that can change what is on disk drops the cache.
         app.reload();
-        assert_eq!(app.selected_size(), before + 4, "a reload measures again");
+        assert_eq!(app.selected_size(), None);
+        assert_eq!(app.size_to_measure(), Some(dir));
     }
 
     #[test]

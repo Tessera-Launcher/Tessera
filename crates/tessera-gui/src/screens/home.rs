@@ -169,11 +169,7 @@ impl Launcher {
 
     fn details(&mut self) -> impl IntoElement {
         let mut body = div().v_flex().gap_1().p_2();
-        let size = if self.state.selected_version().is_some() {
-            Some(discover::human_size(self.state.selected_size()))
-        } else {
-            None
-        };
+        let size = self.state.selected_size().map(discover::human_size);
         match self.state.selected_version() {
             Some(version) => {
                 body = body
@@ -206,7 +202,7 @@ impl Launcher {
                         "客户端 jar",
                         if version.has_jar { "有" } else { "无" }.into(),
                     ))
-                    .child(field("大小", size.unwrap_or_else(|| "—".into())));
+                    .child(field("大小", size.unwrap_or_else(|| "计算中…".into())));
             }
             None => {
                 body = body.child(div().p_2().text_sm().text_color(rgb(DIM)).child("未选择版本"));
@@ -289,7 +285,10 @@ impl Launcher {
                 div()
                     .text_xs()
                     .text_color(rgb(DIM))
-                    .child(format!("会删除 versions/{dir}（{}）", discover::human_size(size))),
+                    .child(format!(
+                        "会删除 versions/{dir}（{}）",
+                        size.map_or_else(|| "正在计算".to_string(), discover::human_size)
+                    )),
             );
         if !dependents.is_empty() {
             body = body.child(
