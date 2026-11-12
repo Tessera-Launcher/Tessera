@@ -261,18 +261,24 @@ fn prepare_inner(
     }
 
     let natives = find_natives(&version_dir, version_dir_name, &merged.parents);
+    let natives_dir = natives
+        .clone()
+        .unwrap_or_else(|| version_dir.join("natives"));
+    // LWJGL 3.1/3.2 converts `java.library.path` to an ASCII C string before
+    // `dlopen`, so a data directory with non-ASCII characters (the default
+    // layout uses 游戏/凭据) makes `libglfw` fail to load with `(error = null)`.
+    // Point those versions at an ASCII-only mirror of the same directory.
+    let natives_dir = if lwjgl_needs_ascii_natives(&classpath) {
+        ascii_natives_mirror(&natives_dir).unwrap_or(natives_dir)
+    } else {
+        natives_dir
+    };
     // Absolute, because the game runs with the version directory as its cwd: a
     // relative `java.library.path` would be resolved against that directory and
     // the natives would land somewhere nobody looks.
-    let natives_string =
-        std::path::absolute(natives.as_deref().unwrap_or(&version_dir.join("natives")))
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| {
-                natives.as_ref().map_or_else(
-                    || version_dir.join("natives").display().to_string(),
-                    |path| path.display().to_string(),
-                )
-            });
+    let natives_string = std::path::absolute(&natives_dir)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| natives_dir.display().to_string());
     let separator = if cfg!(windows) { ";" } else { ":" };
     let classpath_string = classpath
         .iter()
@@ -1078,6 +1084,119 @@ fn find_natives(version_dir: &Path, version_id: &str, parents: &[String]) -> Opt
         }
     }
     candidates.into_iter().find(|path| path.is_dir())
+}
+
+/// Whether the class path contains LWJGL 3.1/3.2.
+///
+/// Those versions' Linux loader converts the path with `MemoryStack.ASCII`
+/// before `dlopen`; LWJGL 3.3+ uses UTF-8 and does not need the mirror.
+fn lwjgl_needs_ascii_natives(classpath: &[PathBuf]) -> bool {
+    classpath.iter().any(|entry| {
+        let entry = entry.to_string_lossy().replace('\\', "/");
+        entry.contains("/lwjgl/3.1.") || entry.contains("/lwjgl/3.2.")
+    })
+}
+
+/// A stable, ASCII-only path for a natives directory that lives under a
+/// non-ASCII one.
+///
+/// Unix gets a symlink, so the files stay where the installer put them. Windows
+/// gets an NTFS junction first (it needs no SeCreateSymbolicLinkPrivilege), then
+/// a symlink on Developer Mode, then a copy as the last resort.
+#[cfg(unix)]
+fn ascii_natives_mirror(natives: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::symlink;
+
+    if !natives.is_dir() || natives.as_os_str().is_ascii() {
+        return None;
+    }
+    let base = ascii_temp_dir()?;
+    let uid = unsafe { libc::geteuid() };
+    let dir = base.join(format!("tessera-natives-{uid}"));
+    std::fs::create_dir_all(&dir).ok()?;
+    let link = dir.join(short_path_hash(natives));
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let _ = std::fs::remove_file(&link);
+        }
+        // Never replace a real file or directory somebody else put here.
+        Ok(_) => return None,
+        Err(_) => {}
+    }
+    symlink(natives, &link).ok()?;
+    Some(link)
+}
+
+#[cfg(not(unix))]
+fn ascii_natives_mirror(natives: &Path) -> Option<PathBuf> {
+    if !natives.is_dir() || natives.as_os_str().is_ascii() {
+        return None;
+    }
+    let dir = ascii_temp_dir()?.join("tessera-natives");
+    std::fs::create_dir_all(&dir).ok()?;
+    let hash = short_path_hash(natives);
+
+    // A junction is the one directory link a normal Windows user may create:
+    // it does not need SeCreateSymbolicLinkPrivilege. Delete a stale one from
+    // an earlier launch first; `delete` is a no-op when it is not a junction.
+    let junction_path = dir.join(format!("{hash}-j"));
+    let _ = junction::delete(&junction_path);
+    if junction::create(natives, &junction_path).is_ok() {
+        return Some(junction_path);
+    }
+
+    // Developer Mode (or an elevated process) also allows a real symlink.
+    let symlink_path = dir.join(format!("{hash}-s"));
+    let _ = std::fs::remove_dir(&symlink_path);
+    if std::os::windows::fs::symlink_dir(natives, &symlink_path).is_ok() {
+        return Some(symlink_path);
+    }
+
+    // Last resort: copy. This still gives LWJGL an ASCII path on filesystems
+    // where neither a junction nor a symlink can be created.
+    let dest = dir.join(format!("{hash}-copy"));
+    if !dest.is_dir() {
+        std::fs::create_dir_all(&dest).ok()?;
+        for entry in std::fs::read_dir(natives).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_file() {
+                std::fs::copy(&path, dest.join(entry.file_name())).ok()?;
+            }
+        }
+    }
+    Some(dest)
+}
+
+/// A temp directory whose path is ASCII, so LWJGL can hand it to `dlopen`.
+fn ascii_temp_dir() -> Option<PathBuf> {
+    let mut candidates = vec![std::env::temp_dir()];
+    #[cfg(unix)]
+    {
+        candidates.push(PathBuf::from("/tmp"));
+        candidates.push(PathBuf::from("/var/tmp"));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(public) = std::env::var_os("PUBLIC") {
+            candidates.push(PathBuf::from(public).join("Tessera"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|dir| dir.as_os_str().is_ascii() && std::fs::create_dir_all(dir).is_ok())
+}
+
+/// A short hex name for a path, used only to keep mirrors apart.
+fn short_path_hash(path: &Path) -> String {
+    use sha1::Digest;
+
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(path.as_os_str().as_encoded_bytes());
+    hasher.finalize()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 // ===== Java discovery =====
@@ -2254,5 +2373,84 @@ mod tests {
             find_natives(&child, "1.12.2+Forge14.23.0.2486", &parents),
             Some(parent.join("1.12.2-natives"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lwjgl_32_natives_path_is_mirrored_when_the_data_directory_is_not_ascii() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("游戏");
+        write_version(
+            &root,
+            "1.16.5",
+            serde_json::json!({
+                "id": "1.16.5",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "assetIndex": { "id": "1.16" },
+                "javaVersion": { "majorVersion": 8 },
+                "arguments": { "jvm": ["-Djava.library.path=${natives_directory}"], "game": [] },
+                "libraries": [
+                    { "name": "org.lwjgl:lwjgl:3.2.2", "downloads": { "artifact": { "path": "org/lwjgl/lwjgl/3.2.2/lwjgl-3.2.2.jar" } } }
+                ]
+            }),
+        );
+        std::fs::write(root.join("versions/1.16.5/1.16.5.jar"), b"jar").unwrap();
+        let natives = root.join("versions/1.16.5/1.16.5-natives");
+        std::fs::create_dir_all(&natives).unwrap();
+        let library = root.join("libraries/org/lwjgl/lwjgl/3.2.2/lwjgl-3.2.2.jar");
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"jar").unwrap();
+
+        let options = Options {
+            runtimes: Some(managed_runtime(&root, 28)),
+            ..Options::default()
+        };
+        let launch = prepare(&root, "1.16.5", &Credentials::offline("Steve"), &options).unwrap();
+        let flag = launch
+            .command
+            .args
+            .iter()
+            .find(|arg| arg.starts_with("-Djava.library.path="))
+            .expect("a library path");
+        let path = Path::new(flag.trim_start_matches("-Djava.library.path="));
+        assert!(path.as_os_str().is_ascii(), "mirror is not ASCII: {path:?}");
+        assert_eq!(
+            std::fs::canonicalize(path).unwrap(),
+            std::fs::canonicalize(&natives).unwrap()
+        );
+    }
+
+    #[test]
+    fn only_lwjgl_31_and_32_need_the_ascii_natives_mirror() {
+        let path = |version: &str| {
+            vec![PathBuf::from(format!(
+                "libraries/org/lwjgl/lwjgl/{version}/lwjgl-{version}.jar"
+            ))]
+        };
+        assert!(lwjgl_needs_ascii_natives(&path("3.1.6")));
+        assert!(lwjgl_needs_ascii_natives(&path("3.2.2")));
+        assert!(!lwjgl_needs_ascii_natives(&path("2.9.4")));
+        assert!(!lwjgl_needs_ascii_natives(&path("3.3.3")));
+        assert!(!lwjgl_needs_ascii_natives(&path("3.4.3")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_ascii_natives_path_gets_an_ascii_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let natives = tmp.path().join("游戏").join("1.16.5-natives");
+        std::fs::create_dir_all(&natives).unwrap();
+        std::fs::write(natives.join("libglfw.so"), b"x").unwrap();
+
+        let mirror = ascii_natives_mirror(&natives).expect("a mirror");
+        assert!(mirror.as_os_str().is_ascii(), "{mirror:?}");
+        assert_eq!(std::fs::read_link(&mirror).unwrap(), natives);
+        assert_eq!(
+            std::fs::read(mirror.join("libglfw.so")).unwrap(),
+            b"x".to_vec()
+        );
+        // An ASCII natives path is left alone.
+        assert!(ascii_natives_mirror(tmp.path()).is_none());
     }
 }
