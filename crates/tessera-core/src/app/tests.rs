@@ -2026,7 +2026,7 @@ fn a_launchwrapper_version_has_nothing_to_train() {
             .any(|effect| matches!(effect, Effect::TrainAot(_))),
         "training it would just launch a game that cannot start on Java 28"
     );
-    assert!(app.status.contains("Java 8"), "{}", app.status);
+    assert!(app.status.contains("无法训练 AOT"), "{}", app.status);
 }
 
 #[test]
@@ -2978,12 +2978,13 @@ fn vanilla_versions_are_labelled_with_the_newest_runtime() {
     app.installed_java = vec![28, 17];
     assert_eq!(app.java_for(&selected), Some(28));
 
-    // Mojang's 1.5.2 profile has no parent but runs on LaunchWrapper, which
-    // only works on Java 8: it keeps the pin too.
+    // Mojang's 1.5.2 profile has no parent but needs java.applet, so it takes
+    // the newest runtime that still has it — never 28.
     let mut legacy = version("1.5.2");
     legacy.java = Some(8);
     legacy.main_class = Some(crate::launch::LAUNCHWRAPPER.to_string());
-    assert_eq!(app.java_for(&legacy), Some(8));
+    app.installed_java = vec![28, 25, 17];
+    assert_eq!(app.java_for(&legacy), Some(25));
 
     // A loader profile keeps the pin its JSON declares.
     let mut loader = version("1.8.9-forge-11.15.0.1656");

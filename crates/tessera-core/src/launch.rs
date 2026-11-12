@@ -195,18 +195,13 @@ fn prepare_inner(
     } else {
         None
     };
-    // Vanilla Minecraft has no upper bound on the JVM, but two kinds of profile
-    // still do: anything with a parent (Forge/Fabric/a hand-written
-    // `inheritsFrom`) brings its own class-loading layer, and Mojang's own 1.5.2
-    // profile runs on LaunchWrapper, whose 1.12 release casts the system class
-    // loader to `URLClassLoader` and dies on Java 9+. Both keep the old pin.
-    let vanilla = merged.parents.is_empty() && !uses_launchwrapper(Some(&merged.main_class));
+    let kind = java_kind(!merged.parents.is_empty(), Some(&merged.main_class));
     let (java, java_major) = if let Some(selection) = &aot {
         (selection.java.clone(), selection.java_major)
     } else if let Some(override_java) = java_override {
         override_java
     } else {
-        find_java(&runtimes, required, vanilla)?
+        find_java(&runtimes, required, kind)?
     };
     // A loader install copies the parent's client jar without renaming it, so the
     // jar next to a `26.3+Fabric…` profile is still `26.3.jar`. A trained
@@ -243,6 +238,18 @@ fn prepare_inner(
         )));
     }
     classpath.push(client_jar);
+    // LaunchWrapper 1.5/1.12 casts the system class loader to `URLClassLoader`,
+    // which Java 9+ no longer is. A legacy profile gets one that still is; the
+    // jar has to be on the class path for `-Djava.system.class.loader` to find
+    // it at startup.
+    let legacy_loader = (kind == JavaKind::Legacy && java_major >= 9)
+        .then(|| version_dir.join(format!("{version_dir_name}.legacy-loader.jar")));
+    if let Some(loader) = &legacy_loader {
+        crate::fsutil::write_atomic(loader, LEGACY_LOADER, false).map_err(|error| {
+            Error::io(format!("无法写入 {}", loader.display()), error)
+        })?;
+        classpath.push(loader.clone());
+    }
 
     let natives = find_natives(&version_dir, version_dir_name, &merged.parents);
     // Absolute, because the game runs with the version directory as its cwd: a
@@ -335,6 +342,9 @@ fn prepare_inner(
         args.push(classpath_string);
     }
 
+    if legacy_loader.is_some() {
+        args.push(format!("-Djava.system.class.loader={LEGACY_LOADER_CLASS}"));
+    }
     args.push(merged.main_class.clone());
 
     if merged.game_args.is_empty() {
@@ -1075,6 +1085,74 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
 /// The main class LaunchWrapper installs run on.
 pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
 
+/// The newest Java that still ships `java.applet`.
+///
+/// Minecraft up to 1.5.2 launches through `MinecraftApplet`, which extends
+/// `java.applet.Applet`; JDK 28 removed that package, so those versions cannot
+/// start there at all (the game class itself fails to resolve). JDK 25 still
+/// has it, which makes 25 the newest runtime worth offering them.
+pub const APPLET_ERA_MAX_JAVA: u32 = 25;
+
+/// The class in `assets/legacy-loader.jar` that replaces the system loader.
+const LEGACY_LOADER_CLASS: &str = "tessera.legacy.CastSafeLoader";
+/// Source and class file live in `assets/legacy-loader.java` / `.jar`.
+const LEGACY_LOADER: &[u8] = include_bytes!("../assets/legacy-loader.jar");
+
+/// Which Java rule a profile follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaKind {
+    /// Plain Minecraft: any runtime at or above the profile's minimum, newest
+    /// first.
+    Vanilla,
+    /// Minecraft that boots through LaunchWrapper with no loader on top, i.e.
+    /// 1.4.7–1.5.2. Its game class needs `java.applet`, so the newest usable
+    /// runtime is capped at [`APPLET_ERA_MAX_JAVA`].
+    Legacy,
+    /// Forge and friends: the profile's pin, exactly.
+    Loader,
+}
+
+/// Which rule this profile follows.
+pub fn java_kind(has_parent: bool, main_class: Option<&str>) -> JavaKind {
+    if has_parent {
+        JavaKind::Loader
+    } else if uses_launchwrapper(main_class) {
+        JavaKind::Legacy
+    } else {
+        JavaKind::Vanilla
+    }
+}
+
+/// The runtime major a launch would pick, without touching the disk.
+///
+/// [`find_java`] and the version list both go through this, so the "Java 28" on
+/// a row is the version that will actually start.
+pub fn pick_major(installed: &[u32], required: u32, kind: JavaKind) -> Option<u32> {
+    match kind {
+        JavaKind::Vanilla => installed
+            .iter()
+            .copied()
+            .filter(|major| *major >= required)
+            .max(),
+        JavaKind::Legacy => installed
+            .iter()
+            .copied()
+            .filter(|major| *major >= required && *major <= APPLET_ERA_MAX_JAVA)
+            .max(),
+        JavaKind::Loader => installed
+            .iter()
+            .copied()
+            .find(|major| *major == required)
+            .or_else(|| {
+                installed
+                    .iter()
+                    .copied()
+                    .filter(|major| java_is_acceptable(required, *major))
+                    .min()
+            }),
+    }
+}
+
 /// Whether this profile boots through LaunchWrapper.
 ///
 /// It matters for the Java choice: LaunchWrapper 1.12 casts the system class
@@ -1098,44 +1176,36 @@ pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
 /// * Vanilla takes the **newest** runtime that still satisfies the profile's
 ///   minimum. Minecraft itself has no upper bound — a 1.8.9 world runs on Java
 ///   28 — and the newest JVM is the one that can replay an AOT cache.
+/// * A legacy (LaunchWrapper, no loader) profile is capped at
+///   [`APPLET_ERA_MAX_JAVA`] because its game class extends `java.applet.Applet`.
 /// * A loader profile pins the range: Forge's launch wrapper only works on the
 ///   Java it was written for, so an exact match wins and the smallest acceptable
 ///   runtime stands in for a version that is not installed.
 ///
 /// The result is probed once so a half-unpacked runtime fails with a message
 /// instead of a confusing game crash.
-pub fn find_java(runtimes: &Path, required: u32, vanilla: bool) -> Result<(PathBuf, u32)> {
+pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(PathBuf, u32)> {
     let installed = crate::java::installed(runtimes);
     if installed.is_empty() {
-        return Err(Error::missing(if vanilla {
-            format!(
+        return Err(Error::missing(match kind {
+            JavaKind::Vanilla => format!(
                 "还没有下载 Java：原版统一跑最新的 Java（去 Java 运行时界面装 Java 28，{}）",
                 runtimes.display()
-            )
-        } else {
-            format!(
+            ),
+            JavaKind::Legacy => format!(
+                "还没有下载 Java：1.5.2 及更早的版本需要 java.applet，只能用 Java 8–{APPLET_ERA_MAX_JAVA}（{}）",
+                runtimes.display()
+            ),
+            JavaKind::Loader => format!(
                 "还没有下载 Java {required}：先去 Java 运行时界面装一个（{}）",
                 runtimes.display()
-            )
+            ),
         }));
     }
 
-    let pick = if vanilla {
-        installed
-            .iter()
-            .filter(|(major, _)| *major >= required)
-            .max_by_key(|(major, _)| *major)
-    } else {
-        installed
-            .iter()
-            .find(|(major, _)| *major == required)
-            .or_else(|| {
-                installed
-                    .iter()
-                    .filter(|(major, _)| java_is_acceptable(required, *major))
-                    .min_by_key(|(major, _)| *major)
-            })
-    };
+    let majors: Vec<u32> = installed.iter().map(|(major, _)| *major).collect();
+    let pick = pick_major(&majors, required, kind)
+        .and_then(|major| installed.iter().find(|(m, _)| *m == major));
 
     let Some((major, path)) = pick else {
         let seen = installed
@@ -1143,7 +1213,11 @@ pub fn find_java(runtimes: &Path, required: u32, vanilla: bool) -> Result<(PathB
             .map(|(major, _)| format!("Java {major}"))
             .collect::<Vec<_>>()
             .join("、");
-        return Err(Error::missing(if vanilla {
+        return Err(Error::missing(if kind == JavaKind::Legacy {
+            format!(
+                "这个版本的 Minecraft 需要 java.applet（Java 28 已移除），需要 Java 8–{APPLET_ERA_MAX_JAVA} 之一，现在只有 {seen}（去 Java 运行时界面装 Java {APPLET_ERA_MAX_JAVA} 或 8）"
+            )
+        } else if kind == JavaKind::Vanilla {
             format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
         } else if required <= 8 {
             format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
@@ -1415,7 +1489,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let runtimes = tmp.path().join("运行时");
         // Nothing installed: the error says what to do, not "install Java on PATH".
-        let error = find_java(&runtimes, 21, false).unwrap_err();
+        let error = find_java(&runtimes, 21, JavaKind::Loader).unwrap_err();
         assert!(error.to_string().contains("Java 运行时界面"), "{error}");
         assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
 
@@ -1423,11 +1497,11 @@ mod tests {
         managed_runtime(tmp.path(), 21);
 
         // Exact wins, 8 stays pinned, and a 17 profile takes the smallest newer one.
-        assert_eq!(find_java(&runtimes, 21, false).unwrap().1, 21);
-        assert_eq!(find_java(&runtimes, 8, false).unwrap().1, 8);
-        assert_eq!(find_java(&runtimes, 17, false).unwrap().1, 21);
+        assert_eq!(find_java(&runtimes, 21, JavaKind::Loader).unwrap().1, 21);
+        assert_eq!(find_java(&runtimes, 8, JavaKind::Loader).unwrap().1, 8);
+        assert_eq!(find_java(&runtimes, 17, JavaKind::Loader).unwrap().1, 21);
         // A 25 profile has nothing to run on, and the message lists what exists.
-        let error = find_java(&runtimes, 25, false).unwrap_err();
+        let error = find_java(&runtimes, 25, JavaKind::Loader).unwrap_err();
         assert!(error.to_string().contains("Java 25"), "{error}");
         assert!(error.to_string().contains("Java 8"), "{error}");
         assert!(error.to_string().contains("Java 21"), "{error}");
@@ -1443,24 +1517,80 @@ mod tests {
 
         // Vanilla: newest wins, even for a 1.8.9 profile that pins 8. This is
         // what lets one Java 28 runtime serve every unmodded version.
-        assert_eq!(find_java(&runtimes, 8, true).unwrap().1, 28);
-        assert_eq!(find_java(&runtimes, 17, true).unwrap().1, 28);
-        assert_eq!(find_java(&runtimes, 26, true).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 8, JavaKind::Vanilla).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 17, JavaKind::Vanilla).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 26, JavaKind::Vanilla).unwrap().1, 28);
         // A newer minimum than anything installed still fails, and says so.
-        let error = find_java(&runtimes, 30, true).unwrap_err();
+        let error = find_java(&runtimes, 30, JavaKind::Vanilla).unwrap_err();
         assert!(error.to_string().contains("30"), "{error}");
 
         // Loaders keep the old rule: exact 8 for a legacy profile, never 28.
-        assert_eq!(find_java(&runtimes, 8, false).unwrap().1, 8);
-        assert_eq!(find_java(&runtimes, 17, false).unwrap().1, 17);
-        assert_eq!(find_java(&runtimes, 21, false).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 8, JavaKind::Loader).unwrap().1, 8);
+        assert_eq!(find_java(&runtimes, 17, JavaKind::Loader).unwrap().1, 17);
+        assert_eq!(find_java(&runtimes, 21, JavaKind::Loader).unwrap().1, 28);
     }
 
     #[test]
     fn a_vanilla_launch_without_runtimes_suggests_the_newest_java() {
         let tmp = tempfile::tempdir().unwrap();
-        let error = find_java(&tmp.path().join("运行时"), 8, true).unwrap_err();
+        let error = find_java(&tmp.path().join("运行时"), 8, JavaKind::Vanilla).unwrap_err();
         assert!(error.to_string().contains("Java 28"), "{error}");
+    }
+
+    #[test]
+    fn an_applet_era_version_never_gets_java_28() {
+        let tmp = tempfile::tempdir().unwrap();
+        managed_runtime(tmp.path(), 8);
+        managed_runtime(tmp.path(), 25);
+        managed_runtime(tmp.path(), 28);
+        let runtimes = tmp.path().join("运行时");
+
+        // 1.5.2 boots MinecraftApplet, which extends java.applet.Applet: JDK 28
+        // dropped that package, so 25 is the newest runtime that can start it.
+        assert_eq!(find_java(&runtimes, 8, JavaKind::Legacy).unwrap().1, 25);
+        // Nothing at or below 25: the message names the reason, not just a number.
+        let only_new = tempfile::tempdir().unwrap();
+        managed_runtime(only_new.path(), 28);
+        let error = find_java(&only_new.path().join("运行时"), 8, JavaKind::Legacy).unwrap_err();
+        assert!(error.to_string().contains("java.applet"), "{error}");
+        assert!(error.to_string().contains("25"), "{error}");
+    }
+
+    #[test]
+    fn a_legacy_launch_carries_the_cast_safe_class_loader() {
+        let tmp = tempfile::tempdir().unwrap();
+        fixture(tmp.path());
+        let runtimes = managed_runtime(tmp.path(), 25);
+        let version_dir = tmp.path().join("versions/1.5.2");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("1.5.2.json"),
+            r#"{"id":"1.5.2","mainClass":"net.minecraft.launchwrapper.Launch","minecraftArguments":"${auth_player_name} --gameDir ${game_directory}","libraries":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(version_dir.join("1.5.2.jar"), b"jar").unwrap();
+
+        let launch = prepare(
+            tmp.path(),
+            "1.5.2",
+            &Credentials::offline("Tester"),
+            &Options {
+                runtimes: Some(runtimes),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(launch.java_major, 25);
+        assert!(
+            launch
+                .command
+                .args
+                .iter()
+                .any(|arg| arg == "-Djava.system.class.loader=tessera.legacy.CastSafeLoader"),
+            "{:?}",
+            launch.command.args
+        );
+        assert!(version_dir.join("1.5.2.legacy-loader.jar").is_file());
     }
 
     #[test]

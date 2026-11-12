@@ -386,25 +386,23 @@ impl App {
 
     /// The Java major this version will launch with, for display.
     ///
-    /// A vanilla profile takes the newest runtime at or above its minimum, which
-    /// is what [`launch::find_java`] does; a loader profile keeps the profile's
-    /// own pin. An AOT-trained version always runs on the JVM recorded next to
-    /// its cache.
+    /// Same rule as [`launch::find_java`]: a vanilla profile takes the newest
+    /// runtime at or above its minimum, a LaunchWrapper-era one is capped where
+    /// `java.applet` still exists, and a loader profile keeps its own pin. An
+    /// AOT-trained version always runs on the JVM recorded next to its cache.
     pub fn java_for(&self, version: &LocalVersion) -> Option<u32> {
         if version.aot {
             return Some(28);
         }
-        if version.inherits.is_none()
-            && !launch::uses_launchwrapper(version.main_class.as_deref())
-        {
-            let required = version.java.unwrap_or(8);
-            return self
-                .installed_java
-                .iter()
-                .copied()
-                .find(|major| *major >= required);
+        let kind = launch::java_kind(
+            version.inherits.is_some(),
+            version.main_class.as_deref(),
+        );
+        if kind == launch::JavaKind::Loader {
+            return version.java;
         }
-        version.java
+        let required = version.java.unwrap_or(8);
+        launch::pick_major(&self.installed_java, required, kind)
     }
 
     pub fn reload(&mut self) {
@@ -454,9 +452,9 @@ impl App {
             return;
         }
         if launch::uses_launchwrapper(version.main_class.as_deref()) {
-            self.status = "这个版本只能用 Java 8 启动，无法训练 AOT".to_string();
+            self.status = "这个版本只能用 Java 25 或 8 启动，无法训练 AOT".to_string();
             self.log(
-                "LaunchWrapper 在 Java 9 及以上无法启动游戏，而 AOT 训练固定用 Java 28，所以这个版本没有可训练的东西",
+                "1.5.2 及更早的版本通过 MinecraftApplet 启动，需要 java.applet（Java 28 已移除），只能跑 Java 8–25；AOT 训练固定用 Java 28，所以这里没有可训练的东西",
             );
             return;
         }
