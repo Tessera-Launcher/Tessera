@@ -56,12 +56,6 @@ impl Launcher {
         if event.keystroke.modifiers.control {
             modifiers = modifiers | Modifiers::CONTROL;
         }
-        if event.keystroke.modifiers.shift {
-            modifiers = modifiers | Modifiers::SHIFT;
-        }
-        if event.keystroke.modifiers.alt {
-            modifiers = modifiers | Modifiers::ALT;
-        }
         self.state.handle_key(code, modifiers);
         self.step(cx);
         // A key that only moves the selection or writes a status line queues no

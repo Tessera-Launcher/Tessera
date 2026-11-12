@@ -31,9 +31,7 @@ pub struct Modifiers(u8);
 
 impl Modifiers {
     pub const NONE: Modifiers = Modifiers(0);
-    pub const SHIFT: Modifiers = Modifiers(1);
     pub const CONTROL: Modifiers = Modifiers(2);
-    pub const ALT: Modifiers = Modifiers(4);
 
     pub const fn contains(self, other: Modifiers) -> bool {
         self.0 & other.0 == other.0
