@@ -6,7 +6,7 @@
 //! machine turns those reports into the next status line.
 
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::StyledExt;
@@ -19,7 +19,7 @@ use gpui_kit::*;
 use crate::platform::{copy_to_clipboard, gui_key, open_browser};
 use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
-    VersionFilter,
+    TaskKind, VersionFilter,
 };
 use tessera_core::input::{Key, Modifiers};
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
@@ -46,26 +46,14 @@ mod platform;
 mod runtime;
 mod screens;
 mod sidebar;
+mod tasks;
 mod widgets;
 
 struct Launcher {
     state: State,
     client: reqwest::Client,
-    session_rx: Option<Receiver<session::SessionEvent>>,
-    login_rx: Option<Receiver<LoginEvent>>,
-    /// The mirror's version list and an actual install have separate slots:
-    /// opening the picker must never steal a running install's events.
-    versions_rx: Option<Receiver<InstallEvent>>,
-    install_rx: Option<Receiver<InstallEvent>>,
-    aot_rx: Vec<Receiver<aot::Event>>,
-    sweep_rx: Vec<Receiver<cleanup::Sweep>>,
-    /// Same split for Adoptium's list and a runtime download.
-    java_list_rx: Option<Receiver<java::Event>>,
-    java_install_rx: Option<Receiver<java::Event>>,
-    launch_rx: Vec<Receiver<launch::GameEvent>>,
-    /// Clipboard writes run off the UI thread: a stuck `xclip`/`wl-copy` must
-    /// not freeze the window.
-    clipboard_rx: Vec<Receiver<Result<String, String>>>,
+    /// Every background worker's channel, drained in one place.
+    tasks: tasks::Tasks,
     /// Explicit handles so the scrollbars can track the same offset the plain
     /// `overflow_y_scroll` path uses, without the extra `ScrollBounce` layer.
     log_scroll: ScrollHandle,
@@ -100,12 +88,10 @@ struct Launcher {
     app_id_sub: Option<Subscription>,
     proxy_input: Option<Entity<InputState>>,
     proxy_sub: Option<Subscription>,
-    /// The audio worker, started on the first sound: a launcher that never plays
+    /// The audio worker's command side. Its reports live in [`Tasks`], and the
+    /// worker is started on the first sound: a launcher that never plays
     /// anything must not open an audio device.
-    music_audio: Option<(
-        std::sync::mpsc::Sender<audio::Command>,
-        Receiver<audio::Event>,
-    )>,
+    music_audio: Option<Sender<audio::Command>>,
     /// The music transport's two sliders. Both are created on first use, like the
     /// text fields, because a slider needs a window.
     music_progress: Option<Entity<SliderState>>,
@@ -198,16 +184,7 @@ impl Launcher {
         Self {
             state,
             client,
-            session_rx: None,
-            login_rx: None,
-            versions_rx: None,
-            install_rx: None,
-            aot_rx: Vec::new(),
-            sweep_rx: Vec::new(),
-            java_list_rx: None,
-            java_install_rx: None,
-            launch_rx: Vec::new(),
-            clipboard_rx: Vec::new(),
+            tasks: tasks::Tasks::new(),
             log_scroll: ScrollHandle::default(),
             download_scroll: ScrollHandle::default(),
             install_scroll: ScrollHandle::default(),

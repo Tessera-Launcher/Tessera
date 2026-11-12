@@ -48,7 +48,7 @@ impl Launcher {
         cx.notify();
     }
 
-    /// Run the effects the state machine queued, and feed worker reports back.
+    /// Run the effects the state machine queued, and drain worker reports.
     pub(crate) fn step(&mut self, cx: &mut Context<Self>) {
         if self.state.should_quit {
             cx.quit();
@@ -60,71 +60,79 @@ impl Launcher {
             changed = true;
             match effect {
                 Effect::RefreshSession(file) => {
-                    if self.session_rx.is_some() {
+                    if self.tasks.running(TaskKind::Session) {
                         // One refresh at a time; put it back for the next tick.
                         self.state.request(Effect::RefreshSession(file));
                     } else {
-                        self.session_rx = Some(session::spawn_refresh(file));
+                        let rx = session::spawn_refresh(file);
+                        self.tasks.add(TaskKind::Session, rx, deliver_session);
                     }
                 }
                 Effect::Login(identity) => {
-                    self.login_rx = Some(login::spawn(
+                    let rx = login::spawn(
                         self.client.clone(),
                         identity,
                         self.state.accounts_dir.clone(),
-                    ));
+                    );
+                    self.tasks.add(TaskKind::Login, rx, deliver_login);
                 }
                 Effect::FetchVersions => {
-                    self.versions_rx = Some(install::spawn_versions(
+                    let rx = install::spawn_versions(
                         self.state.root.clone(),
                         self.state.source,
                         ASSET_CONCURRENCY,
-                    ));
+                    );
+                    // The picker's list and an actual install have separate
+                    // kinds: opening the picker must never steal a running
+                    // install's events.
+                    self.tasks.add(TaskKind::Versions, rx, deliver_install);
                 }
                 Effect::Install { version, loader } => {
-                    self.install_rx = Some(install::spawn_install(
+                    let rx = install::spawn_install(
                         self.state.root.clone(),
                         self.state.runtimes.clone(),
                         self.state.source,
                         ASSET_CONCURRENCY,
                         version,
                         loader,
-                    ));
+                    );
+                    self.tasks.add(TaskKind::Install, rx, deliver_install);
                 }
                 Effect::Launch { dir, credentials } => {
-                    self.launch_rx.push(launch::spawn_game(
+                    let rx = launch::spawn_game(
                         self.state.root.clone(),
                         dir,
                         credentials,
                         self.state.launch_options.clone(),
-                    ));
+                    );
+                    self.tasks.add(TaskKind::Game, rx, deliver_game);
                 }
                 Effect::FetchJavaList => {
-                    self.java_list_rx = Some(java::spawn_list());
+                    let rx = java::spawn_list();
+                    self.tasks.add(TaskKind::JavaList, rx, deliver_java);
                 }
                 Effect::InstallJava { runtime, urls } => {
-                    self.java_install_rx = Some(java::spawn_install(
-                        self.state.runtimes.clone(),
-                        runtime,
-                        urls,
-                    ));
+                    let rx = java::spawn_install(self.state.runtimes.clone(), runtime, urls);
+                    self.tasks.add(TaskKind::JavaInstall, rx, deliver_java);
                 }
                 Effect::Sweep(installed) => {
                     // Walking the shared library tree stats thousands of files.
-                    self.sweep_rx.push(cleanup::spawn(
+                    let rx = cleanup::spawn(
                         self.state.root.clone(),
                         self.state.cache.clone(),
                         installed,
-                    ));
+                    );
+                    self.tasks.add(TaskKind::Sweep, rx, deliver_sweep);
                 }
                 Effect::TrainAot(version) => {
-                    self.aot_rx.push(aot::spawn(
+                    let rx = aot::spawn(
                         self.state.root.clone(),
                         self.state.runtimes.clone(),
                         self.state.launch_options.clone(),
                         self.state.settings.github_proxy.clone(),
                         version,
-                    ));
+                    );
+                    self.tasks.add(TaskKind::Aot, rx, deliver_aot);
                 }
                 Effect::Music(command) => {
                     self.send_audio(command, cx);
@@ -134,7 +142,7 @@ impl Launcher {
                     std::thread::spawn(move || {
                         let _ = sender.send(copy_to_clipboard(&text));
                     });
-                    self.clipboard_rx.push(receiver);
+                    self.tasks.add(TaskKind::Clipboard, receiver, deliver_clipboard);
                 }
                 Effect::OpenBrowser(url) => match open_browser(&url) {
                     Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
@@ -143,151 +151,15 @@ impl Launcher {
             }
         }
 
-        if let Some(rx) = self.session_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_session_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.session_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
+        // The speed readout is sampled per tick, so it only ages while an
+        // install is running.
+        let installing = self.tasks.running(TaskKind::Install);
+        if self.tasks.poll(&mut self.state) {
+            changed = true;
         }
-
-        if let Some(rx) = self.login_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_login_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.login_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
+        if installing && self.state.tick() {
+            changed = true;
         }
-
-        if let Some(rx) = self.versions_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_install_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.versions_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if let Some(rx) = self.install_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_install_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.install_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-            // The progress bar smooths its speed from samples; ask it to age them.
-            if self.state.tick() {
-                changed = true;
-            }
-        }
-
-        if let Some(rx) = self.java_list_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_java_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.java_list_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if let Some(rx) = self.java_install_rx.take() {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_java_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        self.java_install_rx = Some(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.sweep_rx.retain_mut(|rx| loop {
-            match rx.try_recv() {
-                Ok(sweep) => {
-                    self.state.handle_sweep(sweep);
-                    changed = true;
-                }
-                Err(TryRecvError::Empty) => return true,
-                Err(TryRecvError::Disconnected) => {
-                    changed = true;
-                    return false;
-                }
-            }
-        });
-
-        self.aot_rx.retain_mut(|rx| loop {
-            match rx.try_recv() {
-                Ok(event) => {
-                    self.state.handle_aot_event(event);
-                    changed = true;
-                }
-                Err(TryRecvError::Empty) => return true,
-                Err(TryRecvError::Disconnected) => {
-                    changed = true;
-                    return false;
-                }
-            }
-        });
 
         // The log pane is the memory copy; this is the one that outlives the
         // window. A burst goes out as one write.
@@ -297,56 +169,6 @@ impl Launcher {
                 if let Err(error) = file.write_lines(&lines) {
                     self.log_file = None;
                     eprintln!("日志文件写入失败：{error}");
-                }
-            }
-        }
-
-        self.clipboard_rx.retain_mut(|rx| loop {
-            match rx.try_recv() {
-                Ok(Ok(tool)) => {
-                    self.state.log(format!("已复制（{tool}）"));
-                    changed = true;
-                }
-                Ok(Err(error)) => {
-                    self.state.log(error);
-                    changed = true;
-                }
-                Err(TryRecvError::Empty) => return true,
-                Err(TryRecvError::Disconnected) => {
-                    changed = true;
-                    return false;
-                }
-            }
-        });
-
-        let mut open = Vec::new();
-        for rx in self.launch_rx.drain(..) {
-            loop {
-                match rx.try_recv() {
-                    Ok(event) => {
-                        self.state.handle_game_event(event);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        open.push(rx);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        self.launch_rx = open;
-
-        // Reports from the audio worker: where the device is, and when a track
-        // ends. Only the music page runs a transport.
-        if let Some(rx) = self.music_audio.as_ref().map(|(_, rx)| rx) {
-            let events: Vec<_> = rx.try_iter().collect();
-            for event in events {
-                if self.state.handle_music_event(event) {
-                    changed = true;
                 }
             }
         }
@@ -369,6 +191,86 @@ impl Launcher {
     }
 }
 
+// ---- worker reports → state machine ----
+//
+// One function per event type. The bool says whether the report is terminal for
+// its worker: the task registry uses it to tell a clean finish (terminal report,
+// then the channel closes) from a worker that died silently.
+
+fn deliver_session(app: &mut State, event: session::SessionEvent) -> bool {
+    let terminal = matches!(
+        event,
+        session::SessionEvent::Ready { .. }
+            | session::SessionEvent::NeedsSignIn { .. }
+            | session::SessionEvent::Failed { .. }
+    );
+    app.handle_session_event(event);
+    terminal
+}
+
+fn deliver_login(app: &mut State, event: LoginEvent) -> bool {
+    let terminal = matches!(event, LoginEvent::Succeeded { .. } | LoginEvent::Failed(_));
+    app.handle_login_event(event);
+    terminal
+}
+
+fn deliver_install(app: &mut State, event: InstallEvent) -> bool {
+    // `Versions` ends the picker's list request; `Finished`/`Failed` end an
+    // install. An install never sends `Versions`, so one predicate covers both.
+    let terminal = matches!(
+        event,
+        InstallEvent::Versions(_) | InstallEvent::Finished { .. } | InstallEvent::Failed(_)
+    );
+    app.handle_install_event(event);
+    terminal
+}
+
+fn deliver_java(app: &mut State, event: java::Event) -> bool {
+    let terminal = matches!(
+        event,
+        java::Event::Listed(_) | java::Event::Installed { .. } | java::Event::Failed(_)
+    );
+    app.handle_java_event(event);
+    terminal
+}
+
+fn deliver_sweep(app: &mut State, sweep: cleanup::Sweep) -> bool {
+    app.handle_sweep(sweep);
+    true
+}
+
+fn deliver_aot(app: &mut State, event: aot::Event) -> bool {
+    let terminal = matches!(
+        event,
+        aot::Event::Finished { .. } | aot::Event::Skipped { .. } | aot::Event::Failed { .. }
+    );
+    app.handle_aot_event(event);
+    terminal
+}
+
+fn deliver_game(app: &mut State, event: launch::GameEvent) -> bool {
+    let terminal = matches!(
+        event,
+        launch::GameEvent::Failed { .. } | launch::GameEvent::Exited { .. }
+    );
+    app.handle_game_event(event);
+    terminal
+}
+
+fn deliver_clipboard(app: &mut State, result: Result<String, String>) -> bool {
+    match result {
+        Ok(tool) => app.log(format!("已复制（{tool}）")),
+        Err(error) => app.log(error),
+    }
+    true
+}
+
+fn deliver_music(app: &mut State, event: audio::Event) -> bool {
+    // The audio worker lives as long as the window; nothing it reports is final.
+    app.handle_music_event(event);
+    false
+}
+
 impl Launcher {
     /// Hand one command to the audio worker, starting it on first use.
     ///
@@ -377,9 +279,10 @@ impl Launcher {
     fn send_audio(&mut self, command: audio::Command, cx: &mut Context<Self>) {
         if self.music_audio.is_none() {
             let (commands, events) = audio::spawn();
-            self.music_audio = Some((commands, events));
+            self.tasks.add(TaskKind::Music, events, deliver_music);
+            self.music_audio = Some(commands);
         }
-        let Some((commands, _)) = &self.music_audio else {
+        let Some(commands) = &self.music_audio else {
             return;
         };
         if let Err(error) = commands.send(command) {

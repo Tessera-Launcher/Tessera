@@ -84,6 +84,57 @@ pub enum Effect {
     Music(crate::audio::Command),
 }
 
+/// Which background worker a report belongs to.
+///
+/// Every worker sends a final event on every path (success, failure, skip), so a
+/// channel that closes without one means the thread panicked or returned early.
+/// Naming the worker lets the state machine say which flow died instead of
+/// leaving the UI on a stale status forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    /// The picker's version list.
+    Versions,
+    /// One version install (and the loader it carries).
+    Install,
+    /// The device-code login flow.
+    Login,
+    /// A token refresh before launch.
+    Session,
+    /// Adoptium's runtime list.
+    JavaList,
+    /// One runtime download.
+    JavaInstall,
+    /// Reclaiming unreferenced files after an uninstall.
+    Sweep,
+    /// AOT cache training for a fresh 26.1+ install.
+    Aot,
+    /// A launched game process, until it exits.
+    Game,
+    /// A clipboard write.
+    Clipboard,
+    /// The audio worker, which never reports a terminal event.
+    Music,
+}
+
+impl TaskKind {
+    /// User-facing name, used in the log and the status line.
+    pub const fn label(self) -> &'static str {
+        match self {
+            TaskKind::Versions => "版本列表",
+            TaskKind::Install => "安装",
+            TaskKind::Login => "登录",
+            TaskKind::Session => "令牌刷新",
+            TaskKind::JavaList => "运行时列表",
+            TaskKind::JavaInstall => "运行时下载",
+            TaskKind::Sweep => "清理",
+            TaskKind::Aot => "AOT 训练",
+            TaskKind::Game => "游戏进程",
+            TaskKind::Clipboard => "剪贴板",
+            TaskKind::Music => "音频",
+        }
+    }
+}
+
 /// Who is signed in, for the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Account {
@@ -615,6 +666,53 @@ impl App {
         };
         self.log(self.status.clone());
         self.log("正在清理共享库和资源…");
+    }
+
+    /// A worker's channel closed without a terminal report.
+    ///
+    /// Normal completion always sends one (the registry only reports this when
+    /// none arrived), so the honest reading is "the thread died": panic, a
+    /// failed thread spawn, or a process that ended it. The flows that would
+    /// otherwise wait forever are unwound here.
+    pub fn handle_task_gone(&mut self, kind: TaskKind) {
+        let label = kind.label();
+        self.log(format!("{label}后台任务意外结束，没有报告结果"));
+        match kind {
+            TaskKind::Install => {
+                if self.install_running {
+                    self.install_running = false;
+                    self.download.stage = DownloadStage::Failed;
+                    self.download.error = Some(format!("{label}线程意外结束"));
+                }
+                self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::Session => {
+                // The launch flow is parked on this refresh; without clearing it
+                // every later Enter would answer "正在刷新登录令牌".
+                if self.refreshing.take().is_some() {
+                    self.status = "令牌刷新失败".to_string();
+                }
+            }
+            TaskKind::Login => {
+                if self.screen == Screen::Login
+                    && matches!(self.login.step, LoginStep::Waiting { .. })
+                {
+                    self.login.step = LoginStep::Failed(format!("{label}线程意外结束"));
+                }
+                self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::JavaInstall | TaskKind::JavaList => {
+                self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::Game => {
+                self.status = "游戏进程：等待线程意外结束".to_string();
+            }
+            TaskKind::Versions
+            | TaskKind::Sweep
+            | TaskKind::Aot
+            | TaskKind::Clipboard
+            | TaskKind::Music => {}
+        }
     }
 
     /// Apply the result of the background sweep an uninstall started.
@@ -1205,6 +1303,68 @@ mod tests {
             "the status must report the sweep: {}",
             app.status
         );
+    }
+
+    #[test]
+    fn a_dead_install_worker_fails_the_progress_screen_instead_of_hanging() {
+        let mut app = app();
+        app.install_running = true;
+        app.screen = Screen::Installing;
+        app.download.stage = DownloadStage::Installing;
+
+        app.handle_task_gone(TaskKind::Install);
+
+        assert!(!app.install_running);
+        assert_eq!(app.download.stage, DownloadStage::Failed);
+        assert!(app.download.error.is_some());
+        assert!(
+            app.log.iter().any(|line| line.contains("安装后台任务意外结束")),
+            "{:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn a_dead_refresh_worker_does_not_park_every_later_launch() {
+        let mut app = app();
+        app.refreshing = Some(PathBuf::from("/acc/Steve.json"));
+
+        app.handle_task_gone(TaskKind::Session);
+
+        // Without this, `request_launch` would answer "正在刷新登录令牌" forever.
+        assert!(app.refreshing.is_none());
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.contains("令牌刷新后台任务意外结束")),
+            "{:?}",
+            app.log
+        );
+    }
+
+    #[test]
+    fn a_dead_login_worker_leaves_the_waiting_screen() {
+        let mut app = app();
+        app.screen = Screen::Login;
+        app.login.step = LoginStep::Waiting {
+            user_code: "ABCD-EFGH".to_string(),
+            url: "https://microsoft.com/link".to_string(),
+        };
+
+        app.handle_task_gone(TaskKind::Login);
+
+        assert!(matches!(app.login.step, LoginStep::Failed(_)));
+    }
+
+    #[test]
+    fn a_dead_music_worker_is_only_a_log_line() {
+        // The audio thread is optional and starts on first use; losing it must not
+        // touch status or the screen.
+        let mut app = app();
+        let status = app.status.clone();
+        app.handle_task_gone(TaskKind::Music);
+        assert_eq!(app.status, status);
+        assert!(app.log.iter().any(|line| line.contains("音频后台任务")));
     }
 
     #[test]
