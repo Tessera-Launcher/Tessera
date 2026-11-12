@@ -16,6 +16,12 @@ use super::manifest::{client_jar, features, merge_chain, resolve_argument, subst
 use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
 use super::{Command, Credentials, Launch, Options};
 
+/// Whether `id` is a 1.8.x release (`1.8`, `1.8.9`, `1.8.9-pre1`).
+pub(super) fn is_1_8(id: &str) -> bool {
+    id.strip_prefix("1.8")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('-'))
+}
+
 pub(super) fn prepare_inner(
     root: &Path,
     version_dir_name: &str,
@@ -192,6 +198,26 @@ pub(super) fn prepare_inner(
         "-Dminecraft.launcher.version={}",
         env!("CARGO_PKG_VERSION")
     ));
+    // 1.8.x is the last vanilla line that ships netty 4.0.23, and that netty
+    // cannot use its epoll transport on a modern JDK: its `Unsafe` probe is
+    // refused, it then prefers heap buffers, and the epoll native read gets a
+    // NULL address out of `GetDirectBufferAddress` — joining a server dies
+    // with "Unable to access address of buffer" while single player keeps
+    // working, because LocalChannel never needs that address.
+    //
+    // Netty 4.0 has no `noNative` switch, only `io.netty.native.workdir`.
+    // Pointing that at a path that is a *file* makes the extraction fail,
+    // `Epoll.isAvailable()` turns false, and the game falls back to NIO, which
+    // only ever hands plain byte buffers to the socket. The executable is used
+    // as the file because it is guaranteed to exist.
+    //
+    // Loader profiles are not covered: their metadata pins Java 8, where this
+    // netty works, so they never reach the broken path.
+    if merged.parents.is_empty() && is_1_8(&merged.id) {
+        if let Ok(exe) = std::env::current_exe() {
+            args.push(format!("-Dio.netty.native.workdir={}", exe.display()));
+        }
+    }
     #[cfg(target_os = "macos")]
     if !args.iter().any(|arg| arg == "-XstartOnFirstThread") {
         args.push("-XstartOnFirstThread".to_string());

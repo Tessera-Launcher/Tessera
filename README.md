@@ -73,6 +73,15 @@ Windows / macOS 无需额外系统包。音乐播放不依赖 FFmpeg 或系统�
 Unix 用 symlink，Windows 优先用 NTFS junction（不需要管理员权限），失败才退回 symlink
 或复制。1.12.2 及更早（LWJGL 2）和 1.17+（LWJGL 3.3+）不受影响。
 
+原版 1.8.x 是最后一批带 netty 4.0.23 的版本，而那个 netty 在现代 JDK 上用不了 epoll：
+它探测 `Unsafe` 失败后一律分配堆缓冲，epoll 的原生读用 `GetDirectBufferAddress` 拿不到
+地址，进服务器就报 `Unable to access address of buffer`（单机走 LocalChannel 所以正常）。
+netty 4.0 没有 `noNative` 开关，启动器改为把 `io.netty.native.workdir` 指向 Tessera
+可执行文件本身——那个路径是个文件，netty 建不出解压目录，`Epoll.isAvailable()` 变回
+false，游戏自动退回 NIO（只用普通 ByteBuffer，不碰地址）。只在原版 1.8.x 上加这个参数：
+Mod Loader profile 按元数据固定用 Java 8，那里的 epoll 是好的。classpath 不动，AOT 缓存
+不受影响。
+
 **Java**：只用 `data/运行时/` 里启动器自己下载的运行时，不查 `JAVA_HOME`/`PATH`。
 需要的版本由版本 json 的 `javaVersion.majorVersion` 决定，缺失时按版本号推：
 1.20.5+ → 21，1.18–1.20.4 → 17，1.17 → 16（实际用 17），1.16.5 及更老 → 8。

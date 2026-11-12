@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use super::*;
 use super::aot_cache::aot_cache;
+use super::build::is_1_8;
 use super::java::parse_java_major;
 use super::manifest::{
     client_jar, features, load_chain, maven_path, rules_allow, substitute, OsRule, Rule,
@@ -278,6 +279,63 @@ fn a_legacy_launch_goes_through_the_agent() {
     assert!(!args
         .iter()
         .any(|arg| arg.starts_with("-Djava.system.class.loader")));
+}
+
+#[test]
+fn only_1_8_counts_as_the_netty_4_line() {
+    assert!(is_1_8("1.8"));
+    assert!(is_1_8("1.8.9"));
+    assert!(is_1_8("1.8.9-pre1"));
+    assert!(!is_1_8("1.80"));
+    assert!(!is_1_8("1.7.10"));
+    assert!(!is_1_8("1.9"));
+    assert!(!is_1_8("1.12.2"));
+}
+
+#[test]
+fn a_vanilla_1_8_launch_disables_the_broken_netty_epoll_transport() {
+    let tmp = tempfile::tempdir().unwrap();
+    fixture(tmp.path());
+    // 8 for the loader profile, 28 for the vanilla one.
+    managed_runtime(tmp.path(), 8);
+    let runtimes = managed_runtime(tmp.path(), 28);
+    let options = Options {
+        runtimes: Some(runtimes),
+        ..Default::default()
+    };
+
+    let launch = prepare(tmp.path(), "1.8.9", &Credentials::offline("Tester"), &options).unwrap();
+    let arg = launch
+        .command
+        .args
+        .iter()
+        .find(|arg| arg.starts_with("-Dio.netty.native.workdir="))
+        .expect("1.8.x has to keep netty 4.0's epoll native library out of the JVM");
+    // The value has to name something that exists and is *not* a directory:
+    // netty's extraction then fails, `Epoll.isAvailable()` answers false and
+    // the game falls back to NIO.
+    let anchor = Path::new(arg.trim_start_matches("-Dio.netty.native.workdir="));
+    assert!(anchor.is_file(), "{anchor:?}");
+
+    // A loader profile is pinned to the Java 8 its metadata asks for, where
+    // this netty is healthy, so it keeps epoll.
+    let fabric = prepare(
+        tmp.path(),
+        "1.8.9+Fabric0.15.11",
+        &Credentials::offline("Tester"),
+        &options,
+    )
+    .unwrap();
+    assert_eq!(fabric.java_major, 8);
+    assert!(
+        !fabric
+            .command
+            .args
+            .iter()
+            .any(|arg| arg.starts_with("-Dio.netty.native.workdir=")),
+        "{:?}",
+        fabric.command.args
+    );
 }
 
 #[test]
