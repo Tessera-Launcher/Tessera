@@ -257,9 +257,7 @@ impl Render for Launcher {
             Screen::Main => self.main_screen(cx).into_any_element(),
             Screen::Accounts => self.accounts_screen(cx).into_any_element(),
             Screen::Login => self.login_screen(window, cx).into_any_element(),
-            Screen::Download | Screen::Installing => {
-                self.download_screen(window, cx).into_any_element()
-            }
+            Screen::Download => self.download_screen(window, cx).into_any_element(),
             Screen::Java => self.java_screen(window, cx).into_any_element(),
             Screen::Music => self.music_screen(window, cx).into_any_element(),
         };

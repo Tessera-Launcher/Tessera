@@ -156,7 +156,7 @@ impl App {
                 self.handle_accounts_key(code, modifiers);
                 return;
             }
-            Screen::Download | Screen::Installing => {
+            Screen::Download => {
                 self.handle_download_key(code, modifiers);
                 return;
             }

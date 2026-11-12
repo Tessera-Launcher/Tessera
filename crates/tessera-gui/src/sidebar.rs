@@ -46,7 +46,7 @@ impl Page {
         match screen {
             Screen::Main | Screen::Login => Page::Home,
             Screen::Accounts => Page::Accounts,
-            Screen::Download | Screen::Installing => Page::Download,
+            Screen::Download => Page::Download,
             Screen::Java => Page::Runtimes,
             Screen::Music => Page::Music,
         }

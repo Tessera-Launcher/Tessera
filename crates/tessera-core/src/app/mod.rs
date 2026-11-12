@@ -36,8 +36,6 @@ pub enum Screen {
     Accounts,
     /// Version + loader picker.
     Download,
-    /// A download is running.
-    Installing,
     /// The Java runtime picker.
     Java,
     /// Discs and background music read straight from an installed version.
@@ -1265,7 +1263,7 @@ mod tests {
     fn a_dead_install_worker_fails_the_progress_screen_instead_of_hanging() {
         let mut app = app();
         app.install_running = true;
-        app.screen = Screen::Installing;
+        app.screen = Screen::Download;
         app.download.stage = DownloadStage::Installing;
 
         app.handle_task_gone(TaskKind::Install);
@@ -2710,7 +2708,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn enter_starts_the_install_and_switches_to_the_progress_screen() {
         let mut app = downloader();
         app.handle_download_key(Key::Enter, Modifiers::NONE);
-        assert_eq!(app.screen, Screen::Installing);
+        assert_eq!(app.screen, Screen::Download);
         assert_eq!(app.download.stage, DownloadStage::Installing);
         assert_eq!(
             install_effect(&app),
@@ -2845,7 +2843,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     #[test]
     fn a_new_install_ignores_the_previous_versions_aot_events() {
         let mut app = downloader();
-        app.screen = Screen::Installing;
+        app.screen = Screen::Download;
         app.handle_install_event(InstallEvent::Finished {
             version: "26.3".to_string(),
             loader: None,
@@ -2891,7 +2889,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     #[test]
     fn aot_progress_and_completion_land_on_the_install_screen() {
         let mut app = downloader();
-        app.screen = Screen::Installing;
+        app.screen = Screen::Download;
         app.handle_install_event(InstallEvent::Finished {
             version: "26.3".to_string(),
             loader: None,
@@ -3755,6 +3753,34 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert!(app.install_running);
         assert_eq!(app.download.stage, DownloadStage::Installing);
         assert_eq!(app.download.done, 3);
+    }
+
+    #[test]
+    fn aot_training_finishes_even_if_the_page_was_left_and_reopened() {
+        let mut app = downloader();
+        // A 26.1 vanilla install hands over to the forced AOT training run.
+        app.handle_install_event(InstallEvent::Finished {
+            version: "26.1".to_string(),
+            loader: None,
+        });
+        assert_eq!(app.download.stage, DownloadStage::Training);
+        assert!(app.download.aot_training.is_some());
+
+        // Leaving and coming back used to flip the screen to Download, which the
+        // old "is this page showing it" check read as "not showing", so the
+        // training run could never move the stage to Done afterwards.
+        app.show_main();
+        app.open_download();
+
+        app.handle_aot_event(crate::aot::Event::Finished {
+            version: "26.1".to_string(),
+            loaded: 10,
+            total: 10,
+            java_major: 28,
+            java_version: "28-ea".to_string(),
+        });
+        assert_eq!(app.download.stage, DownloadStage::Done);
+        assert!(app.download.aot_note.as_deref().unwrap_or("").contains("AOT"));
     }
 
     #[test]
