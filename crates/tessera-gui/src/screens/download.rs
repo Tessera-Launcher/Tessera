@@ -121,7 +121,7 @@ impl Launcher {
                     let version = download.version(index);
                     let picked = index == download.picked;
                     let id = version.id.clone();
-                    let kind = version.kind.clone();
+                    let kind = version.kind;
                     versions = versions.child(
                         div()
                             .id(format!("dl-{drawn}"))
@@ -144,7 +144,7 @@ impl Launcher {
                                     .w(px(8.0))
                                     .h(px(8.0))
                                     .rounded_full()
-                                    .bg(rgb(Launcher::kind_color(&kind))),
+                                    .bg(rgb(Launcher::kind_color(kind))),
                             )
                             .child(
                                 div()

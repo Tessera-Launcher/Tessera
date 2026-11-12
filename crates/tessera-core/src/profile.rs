@@ -12,13 +12,14 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::version::VersionKind;
+
 /// The fields the list and the installer read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profile {
     /// The profile's own `id`, which `inheritsFrom` refers to.
     pub id: Option<String>,
-    /// `release` / `snapshot` / `old_beta` / `old_alpha`.
-    pub kind: Option<String>,
+    pub kind: Option<VersionKind>,
     /// `javaVersion.majorVersion`.
     pub java: Option<u32>,
     pub inherits: Option<String>,
@@ -57,7 +58,7 @@ pub fn from_json(text: &str) -> Option<Profile> {
     };
     Some(Profile {
         id: string("id"),
-        kind: string("type"),
+        kind: string("type").map(|raw| VersionKind::parse(&raw)),
         java: json
             .get("javaVersion")
             .and_then(|version| version.get("majorVersion"))
@@ -82,7 +83,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(profile.id.as_deref(), Some("26.3+Fabric0.20.1"));
-        assert_eq!(profile.kind.as_deref(), Some("release"));
+        assert_eq!(profile.kind, Some(VersionKind::Release));
         assert_eq!(profile.java, Some(21));
         assert_eq!(profile.inherits.as_deref(), Some("26.3"));
         assert_eq!(profile.main_class.as_deref(), Some("net.fabricmc.Knot"));

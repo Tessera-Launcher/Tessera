@@ -23,6 +23,7 @@ use tessera_core::app::{
     TaskKind, VersionFilter,
 };
 use tessera_core::input::{Key, Modifiers};
+use tessera_core::version::VersionKind;
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::launch;
 use tessera_core::login::{self, Identity, LoginEvent};

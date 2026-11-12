@@ -11,6 +11,51 @@
 //! betas (`25w46a`, `b1.8.1`) do not parse: every caller already treats "not a
 //! release-style id" as the oldest case.
 
+/// What kind of release a version is.
+///
+/// The profile spells these out as strings (`release`, `snapshot`, `old_beta`,
+/// `old_alpha`); comparing those strings in four modules is how a typo becomes
+/// "this version silently never matches the filter".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum VersionKind {
+    Release,
+    Snapshot,
+    OldBeta,
+    OldAlpha,
+    /// No `type` in the profile, or one this build does not know.
+    #[default]
+    Unknown,
+}
+
+impl VersionKind {
+    /// The profile's own spelling, or [`VersionKind::Unknown`].
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "release" => Self::Release,
+            "snapshot" => Self::Snapshot,
+            "old_beta" => Self::OldBeta,
+            "old_alpha" => Self::OldAlpha,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// The spelling the profile uses, and what the UI shows.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Snapshot => "snapshot",
+            Self::OldBeta => "old_beta",
+            Self::OldAlpha => "old_alpha",
+            Self::Unknown => "-",
+        }
+    }
+
+    /// Beta and alpha builds: the ones no current loader supports.
+    pub const fn is_old(self) -> bool {
+        matches!(self, Self::OldBeta | Self::OldAlpha)
+    }
+}
+
 /// A release-style Minecraft version: `major.minor[.patch]`.
 ///
 /// The ordering is the numeric one, so `26.1 < 26.1.1` and `1.9 < 1.10`.
@@ -88,6 +133,23 @@ mod tests {
             Some(McVersion::new(26, 4, 0))
         );
         assert_eq!(McVersion::parse("26.1"), Some(McVersion::new(26, 1, 0)));
+    }
+
+    #[test]
+    fn kinds_round_trip_through_their_labels() {
+        for (raw, kind) in [
+            ("release", VersionKind::Release),
+            ("snapshot", VersionKind::Snapshot),
+            ("old_beta", VersionKind::OldBeta),
+            ("old_alpha", VersionKind::OldAlpha),
+        ] {
+            assert_eq!(VersionKind::parse(raw), kind);
+            assert_eq!(kind.label(), raw);
+        }
+        assert_eq!(VersionKind::parse("nightly"), VersionKind::Unknown);
+        assert_eq!(VersionKind::Unknown.label(), "-");
+        assert!(VersionKind::OldBeta.is_old());
+        assert!(!VersionKind::Release.is_old());
     }
 
     #[test]

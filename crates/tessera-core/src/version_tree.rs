@@ -76,10 +76,10 @@ impl Row {
 /// its own row, which is the safe direction to be wrong in.
 pub fn family(version: &RemoteVersion) -> Option<String> {
     let id = version.id.as_str();
-    if version.kind.starts_with("old_") {
-        return old_family(&version.kind, id);
+    if version.kind.is_old() {
+        return old_family(version.kind.label(), id);
     }
-    if version.kind != "snapshot" {
+    if version.kind != crate::version::VersionKind::Snapshot {
         return None;
     }
 
@@ -215,7 +215,7 @@ mod tests {
     fn version(id: &str, kind: &str) -> RemoteVersion {
         RemoteVersion {
             id: id.to_string(),
-            kind: kind.to_string(),
+            kind: crate::version::VersionKind::parse(kind),
         }
     }
 

@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::version::VersionKind;
+
 /// One installed version directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalVersion {
@@ -21,8 +23,7 @@ pub struct LocalVersion {
     /// Normally the same as [`LocalVersion::dir`]; it is kept separate because
     /// `inheritsFrom` names a profile, not a directory.
     pub id: String,
-    /// `release` / `snapshot` / `old_beta` / `old_alpha`, or `-` when absent.
-    pub kind: String,
+    pub kind: VersionKind,
     /// `javaVersion.majorVersion`, when the profile pins one.
     pub java: Option<u32>,
     /// `inheritsFrom`, i.e. the vanilla version a loader profile builds on.
@@ -90,7 +91,7 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
             None => LocalVersion {
                 dir: id.clone(),
                 id: id.clone(),
-                kind: "-".to_string(),
+                kind: VersionKind::Unknown,
                 java: None,
                 inherits: None,
                 main_class: None,
@@ -132,7 +133,7 @@ fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
     Some(LocalVersion {
         dir: id.to_string(),
         id: profile.id.unwrap_or_else(|| id.to_string()),
-        kind: profile.kind.unwrap_or_else(|| "-".to_string()),
+        kind: profile.kind.unwrap_or_default(),
         java: profile.java,
         inherits: profile.inherits,
         main_class: profile.main_class,
@@ -270,7 +271,11 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("versions/half-installed")).unwrap();
         let versions = scan(tmp.path());
         assert_eq!(versions.len(), 1);
-        assert_eq!(versions[0].kind, "-", "unreadable profile is still listed");
+        assert_eq!(
+            versions[0].kind,
+            VersionKind::Unknown,
+            "unreadable profile is still listed"
+        );
         assert!(!versions[0].has_profile, "and it is marked unlaunchable");
 
         assert!(scan(&tmp.path().join("nowhere")).is_empty());

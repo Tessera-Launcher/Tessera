@@ -5,11 +5,11 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
-    pub(crate) fn kind_color(kind: &str) -> u32 {
+    pub(crate) fn kind_color(kind: VersionKind) -> u32 {
         match kind {
-            "snapshot" => SNAPSHOT,
-            "old_beta" | "old_alpha" => LEGACY,
-            _ => ACCENT,
+            VersionKind::Snapshot => SNAPSHOT,
+            VersionKind::OldBeta | VersionKind::OldAlpha => LEGACY,
+            VersionKind::Release | VersionKind::Unknown => ACCENT,
         }
     }
 
@@ -140,7 +140,7 @@ impl Launcher {
                                 .w(px(8.0))
                                 .h(px(8.0))
                                 .rounded_full()
-                                .bg(rgb(if broken { BROKEN } else { Self::kind_color(&version.kind) })),
+                                .bg(rgb(if broken { BROKEN } else { Self::kind_color(version.kind) })),
                         )
                         .child(
                             div()
@@ -174,7 +174,7 @@ impl Launcher {
             Some(version) => {
                 body = body
                     .child(field("目录", version.dir.clone()))
-                    .child(field("类型", version.kind.clone()))
+                    .child(field("类型", version.kind.label().to_string()))
                     .child(field(
                         "Java",
                         if version.aot {

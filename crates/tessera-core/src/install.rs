@@ -108,7 +108,7 @@ impl Loader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteVersion {
     pub id: String,
-    pub kind: String,
+    pub kind: crate::version::VersionKind,
 }
 
 /// What the worker reports.
@@ -152,13 +152,12 @@ pub fn spawn_versions(
                 .map(|entry| RemoteVersion {
                     id: entry.id,
                     kind: match entry.version_type {
-                        mdt::VersionType::Release => "release",
-                        mdt::VersionType::Snapshot => "snapshot",
-                        mdt::VersionType::OldBeta => "old_beta",
-                        mdt::VersionType::OldAlpha => "old_alpha",
-                        mdt::VersionType::Other => "-",
-                    }
-                    .to_string(),
+                        mdt::VersionType::Release => crate::version::VersionKind::Release,
+                        mdt::VersionType::Snapshot => crate::version::VersionKind::Snapshot,
+                        mdt::VersionType::OldBeta => crate::version::VersionKind::OldBeta,
+                        mdt::VersionType::OldAlpha => crate::version::VersionKind::OldAlpha,
+                        mdt::VersionType::Other => crate::version::VersionKind::Unknown,
+                    },
                 })
                 .collect();
             let _ = sender.send(InstallEvent::Versions(listed));
@@ -475,7 +474,9 @@ mod tests {
             }
         }
         assert!(versions.len() > 100, "got {} versions", versions.len());
-        assert!(versions.iter().any(|v| v.kind == "release"));
+        assert!(versions
+            .iter()
+            .any(|v| v.kind == crate::version::VersionKind::Release));
         assert!(versions.iter().all(|v| !v.id.is_empty()));
     }
 

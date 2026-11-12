@@ -1047,7 +1047,7 @@ mod tests {
         LocalVersion {
             dir: id.to_string(),
             id: id.to_string(),
-            kind: "release".to_string(),
+            kind: crate::version::VersionKind::Release,
             java: Some(17),
             inherits: None,
             main_class: Some("net.minecraft.client.main.Main".to_string()),
@@ -2397,7 +2397,7 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
     fn remote(id: &str, kind: &str) -> RemoteVersion {
         RemoteVersion {
             id: id.to_string(),
-            kind: kind.to_string(),
+            kind: crate::version::VersionKind::parse(kind),
         }
     }
 
@@ -2655,7 +2655,10 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Release);
         assert_eq!(app.download.matched(), 2);
-        assert!(app.download.versions().all(|v| v.kind == "release"));
+        assert!(app
+            .download
+            .versions()
+            .all(|v| v.kind == crate::version::VersionKind::Release));
 
         app.handle_download_key(Key::Char('f'), Modifiers::NONE);
         assert_eq!(app.download.filter, VersionFilter::Snapshot);

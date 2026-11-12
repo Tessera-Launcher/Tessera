@@ -62,12 +62,13 @@ impl VersionFilter {
         }
     }
 
-    fn matches(self, kind: &str) -> bool {
+    fn matches(self, kind: crate::version::VersionKind) -> bool {
+        use crate::version::VersionKind;
         match self {
             VersionFilter::All => true,
-            VersionFilter::Release => kind == "release",
-            VersionFilter::Snapshot => kind == "snapshot",
-            VersionFilter::Old => kind.starts_with("old_"),
+            VersionFilter::Release => kind == VersionKind::Release,
+            VersionFilter::Snapshot => kind == VersionKind::Snapshot,
+            VersionFilter::Old => kind.is_old(),
         }
     }
 }
@@ -292,7 +293,7 @@ impl DownloadUi {
         // keystroke costs a scan, not a full copy of the mirror's list.
         self.visible.clear();
         for (index, version) in self.all.iter().enumerate() {
-            if !filter.matches(&version.kind) {
+            if !filter.matches(version.kind) {
                 continue;
             }
             if !query.is_empty() && !version.id.to_lowercase().contains(&query) {
