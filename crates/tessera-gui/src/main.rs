@@ -182,7 +182,14 @@ impl Launcher {
                 state.log("缓存不在数据目录内，卸载时不清理它");
             }
         }
-        state.log(format!("数据目录 {}", data.root().display()));
+        if data.is_portable() {
+            state.log(format!("数据目录 {}", data.root().display()));
+        } else {
+            state.log(format!(
+                "程序目录不可写，数据目录改到 {}",
+                data.root().display()
+            ));
+        }
         state.log(format!("游戏目录 {}", root.display()));
         state.log(format!("JRE 目录 {}", data.runtimes().display()));
         let log_file = match logfile::LogFile::open(&data.log_file()) {

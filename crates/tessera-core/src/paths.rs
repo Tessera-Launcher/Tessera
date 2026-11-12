@@ -1,8 +1,15 @@
 //! Portable layout: everything lives under `data/` next to the binary.
 //!
 //! Nothing is written to the user's home directory, so the launcher can be
-//! unzipped anywhere, copied to a USB stick, or deleted cleanly. `TESSERA_DATA`
-//! overrides the root for tests and for running out of a checkout.
+//! unzipped anywhere, copied to a USB stick, or deleted cleanly.
+//!
+//! Two exceptions, both about *not being able to write there*:
+//!
+//! - `TESSERA_DATA` overrides the root entirely (tests, checkouts, power users);
+//! - when the binary's directory is read-only — a macOS `.app` bundle, a Windows
+//!   install under `Program Files`, a read-only mount — the data root falls back
+//!   to the platform's per-user data directory. Without that, a packaged build
+//!   could not start at all.
 
 use std::path::{Path, PathBuf};
 
@@ -28,12 +35,28 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `$TESSERA_DATA`, else `<directory of the binary>/data`.
+    /// `$TESSERA_DATA`, else `<directory of the binary>/data` when that is
+    /// writable, else the per-user data directory.
     pub fn discover() -> Self {
-        let root = std::env::var_os("TESSERA_DATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| exe_dir().join(DATA));
-        Paths { root }
+        if let Some(root) = std::env::var_os("TESSERA_DATA") {
+            return Paths {
+                root: PathBuf::from(root),
+            };
+        }
+        let portable = exe_dir().join(DATA);
+        if is_writable(&portable) {
+            Paths { root: portable }
+        } else {
+            Paths {
+                root: user_data_dir().join(DATA),
+            }
+        }
+    }
+
+    /// Whether this root is the portable one next to the binary. Used by the log
+    /// line, so a user who wonders where the files went sees the answer.
+    pub fn is_portable(&self) -> bool {
+        self.root == exe_dir().join(DATA)
     }
 
     /// For tests: an explicit root.
@@ -141,6 +164,58 @@ pub fn runtime_dir_beside(accounts_dir: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from(RUNTIMES), |data| data.join(RUNTIMES))
 }
 
+/// Whether `dir` can hold the data tree: it must exist (or be creatable) and
+/// accept a new file. This is a probe, not a permission model — the first real
+/// write reports a failure anyway.
+fn is_writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".tessera-write-probe");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The platform's per-user data directory, used when the portable one is not
+/// writable.
+fn user_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Tessera");
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("Tessera");
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("tessera");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("tessera");
+        }
+    }
+    // Last resort: the working directory, which is at least *somewhere* the
+    // process was allowed to start.
+    PathBuf::from("tessera-data")
+}
+
 /// The directory the executable sits in (falls back to the working directory).
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
@@ -214,6 +289,38 @@ mod tests {
         assert!(std::fs::read_to_string(paths.app_ids())
             .unwrap()
             .contains("mine"));
+    }
+
+    #[test]
+    fn a_writable_directory_passes_the_probe_and_leaves_nothing_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("data");
+        assert!(is_writable(&dir));
+        assert!(dir.is_dir());
+        assert!(!dir.join(".tessera-write-probe").exists());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_read_only_directory_fails_the_probe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // root ignores the permission bits, so the check would be meaningless.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("locked");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut permissions = std::fs::metadata(&dir).unwrap().permissions();
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&dir, permissions).unwrap();
+
+        assert!(!is_writable(&dir));
+
+        let mut permissions = std::fs::metadata(&dir).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&dir, permissions).unwrap();
     }
 
     #[test]
