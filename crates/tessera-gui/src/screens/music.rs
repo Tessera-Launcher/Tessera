@@ -59,7 +59,7 @@ impl Launcher {
                     .on_click(
                         cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                             this.state.select_music_version(index);
-                            cx.notify();
+                            this.refresh(cx);
                         }),
                     ),
             );
@@ -100,7 +100,7 @@ impl Launcher {
                                 if event.click_count() > 1 {
                                     this.state.music_play_selected();
                                 }
-                                cx.notify();
+                                this.refresh(cx);
                             },
                         ))
                         .child(
@@ -251,7 +251,7 @@ impl Launcher {
                     .child(if playing { "⏸" } else { "▶" })
                     .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
                         this.state.music_play_pause();
-                        cx.notify();
+                        this.refresh(cx);
                     })),
             )
             .child(
@@ -300,7 +300,7 @@ impl Launcher {
                     .child(order)
                     .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
                         this.state.music_toggle_order();
-                        cx.notify();
+                        this.refresh(cx);
                     })),
             )
     }
@@ -325,7 +325,7 @@ impl Launcher {
                     .on_click(
                         cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                             this.state.set_music_kind(kind);
-                            cx.notify();
+                            this.refresh(cx);
                         }),
                     ),
             );
@@ -349,13 +349,13 @@ impl Launcher {
                         // The drag is the authority until it is released.
                         this.music_seeking = true;
                         this.state.music_seek(single(*value));
-                        cx.notify();
+                        this.refresh(cx);
                     }
                     SliderEvent::Release(value) => {
                         this.state.music_seek(single(*value));
                         this.music_seeking = false;
                         this.music_progress_seen = this.state.music.progress();
-                        cx.notify();
+                        this.refresh(cx);
                     }
                 },
             ));
@@ -377,7 +377,7 @@ impl Launcher {
                         SliderEvent::Change(value) | SliderEvent::Release(value) => *value,
                     };
                     this.state.music_set_volume(single(value));
-                    cx.notify();
+                    this.refresh(cx);
                 },
             ));
             self.music_volume = Some(state);

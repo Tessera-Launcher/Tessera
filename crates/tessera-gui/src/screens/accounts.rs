@@ -36,7 +36,7 @@ impl Launcher {
                         if event.click_count() > 1 {
                             this.state.activate_selected_account();
                         }
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .child(
                         div()
@@ -72,16 +72,16 @@ impl Launcher {
             .child(footer_bar(confirm).child(
                 primary_button("切换", cx, |this: &mut Launcher, cx| {
                     this.state.activate_selected_account();
-                    cx.notify();
+                    this.refresh(cx);
                 }),
             )
             .child(button("移除", cx, |this: &mut Launcher, cx| {
                 this.state.remove_selected_account();
-                cx.notify();
+                this.refresh(cx);
             }))
             .child(button("登录新账户", cx, |this: &mut Launcher, cx| {
                 this.state.open_login();
-                cx.notify();
+                this.refresh(cx);
             })))
     }
 }

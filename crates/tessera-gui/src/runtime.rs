@@ -199,6 +199,18 @@ impl Launcher {
         }
     }
 
+    /// Repaint, and run whatever the handler just queued.
+    ///
+    /// Mouse, menu and text-field handlers mutate the state machine directly and
+    /// then ask for a frame. The keyboard path goes through `on_key`, which
+    /// already steps; everything else must come through here, or the `Effect`
+    /// the handler queued (play, seek, start install, open browser…) is never
+    /// executed and the UI silently does nothing.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.step(cx);
+        cx.notify();
+    }
+
     /// Quit without losing the log tail or leaving a training JVM behind.
     ///
     /// The game process is deliberately not killed: a player who closes the

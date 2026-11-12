@@ -33,7 +33,7 @@ impl Launcher {
                     .text_xs()
                     .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                         this.state.set_download_filter(filter);
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .child(filter.label()),
             );
@@ -137,7 +137,7 @@ impl Launcher {
                             .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                                 this.state.download.picked = index;
                                 this.state.download.refresh_loaders();
-                                cx.notify();
+                                this.refresh(cx);
                             }))
                             .child(
                                 div()
@@ -183,7 +183,7 @@ impl Launcher {
                             .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                                 this.state.download.picked = first;
                                 this.state.toggle_row(drawn);
-                                cx.notify();
+                                this.refresh(cx);
                             }))
                             .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(SNAPSHOT)))
                             .child(div().flex_1().text_sm().text_color(rgb(DIM)).child(label)),
@@ -232,7 +232,7 @@ impl Launcher {
                     .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
                     .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                         this.state.download.loader_pick = index;
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .child(
                         div()
@@ -293,11 +293,11 @@ impl Launcher {
                 footer_bar(&format!("选中：{picked} · 下载源 {}", self.state.source_label()))
                     .child(primary_button("安装", cx, |this: &mut Launcher, cx| {
                         this.state.start_install();
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .child(button("换源", cx, |this: &mut Launcher, cx| {
                         this.state.toggle_source();
-                        cx.notify();
+                        this.refresh(cx);
                     })),
             )
     }
@@ -407,7 +407,7 @@ impl Launcher {
             .child(footer_bar(&self.state.status).child(button("返回", cx, |this: &mut Launcher, cx| {
                 this.state.close_download();
                 this.state.reload();
-                cx.notify();
+                this.refresh(cx);
             })))
     }
 
@@ -430,7 +430,7 @@ impl Launcher {
                     InputEvent::PressEnter { .. } => this.state.start_install(),
                     _ => return,
                 }
-                cx.notify();
+                this.refresh(cx);
             },
         ));
         self.search = Some(state.clone());

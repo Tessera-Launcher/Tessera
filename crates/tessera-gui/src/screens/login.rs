@@ -24,8 +24,7 @@ impl Launcher {
                         move |this: &mut Launcher, cx| {
                             this.state.login.choice = index;
                             this.state.handle_login_key(Key::Enter, Modifiers::NONE);
-                            this.step(cx);
-                            cx.notify();
+                            this.refresh(cx);
                         },
                     ));
                 }
@@ -54,7 +53,7 @@ impl Launcher {
                                 name: name.clone(),
                                 app_id: app_id.clone(),
                             });
-                            cx.notify();
+                            this.refresh(cx);
                         },
                     ));
                 }
@@ -77,8 +76,7 @@ impl Launcher {
                             .gap_2()
                             .child(primary_button("开始登录", cx, |this: &mut Launcher, cx| {
                                 this.state.confirm_login_app_id();
-                                this.step(cx);
-                                cx.notify();
+                                this.refresh(cx);
                             })),
                     );
                 hint = "Enter 或「开始登录」提交".to_string();
@@ -104,20 +102,23 @@ impl Launcher {
                                 .gap_2()
                                 .child(button("复制链接", cx, {
                                     let url = url.clone();
-                                    move |this: &mut Launcher, _cx| {
+                                    move |this: &mut Launcher, cx| {
                                         this.state.request(Effect::Copy(url.clone()));
+                                        this.refresh(cx);
                                     }
                                 }))
                                 .child(button("打开链接", cx, {
                                     let url = url.clone();
-                                    move |this: &mut Launcher, _cx| {
+                                    move |this: &mut Launcher, cx| {
                                         this.state.request(Effect::OpenBrowser(url.clone()));
+                                        this.refresh(cx);
                                     }
                                 }))
                                 .child(button("复制代码", cx, {
                                     let code = user_code.clone();
-                                    move |this: &mut Launcher, _cx| {
+                                    move |this: &mut Launcher, cx| {
                                         this.state.request(Effect::Copy(code.clone()));
+                                        this.refresh(cx);
                                     }
                                 })),
                         )
@@ -162,7 +163,7 @@ impl Launcher {
             .child(panel("身份 / 等待授权", body, true))
             .child(footer_bar(&hint).child(button("关闭", cx, |this: &mut Launcher, cx| {
                 this.state.close_login();
-                cx.notify();
+                this.refresh(cx);
             })))
     }
 
@@ -185,7 +186,7 @@ impl Launcher {
                     InputEvent::PressEnter { .. } => this.state.confirm_login_app_id(),
                     _ => return,
                 }
-                cx.notify();
+                this.refresh(cx);
             },
         ));
         self.app_id_input = Some(state.clone());

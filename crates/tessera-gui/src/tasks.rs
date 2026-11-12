@@ -156,12 +156,18 @@ fn bridge<T: Send + 'static>(
         if batch.iter().any(terminal) {
             finished = true;
         }
-        let sent = wake.unbounded_send(Box::new(move |this: &mut Launcher, cx: &mut Context<Launcher>| {
-            for event in batch {
-                deliver(this, event);
-            }
-            this.step(cx);
-        }));
+        let sent = wake.unbounded_send(Box::new(
+            move |this: &mut Launcher, cx: &mut Context<Launcher>| {
+                for event in batch {
+                    deliver(this, event);
+                }
+                // A report is a state change: the music clock, download
+                // progress and log lines all have to reach the screen without
+                // waiting for another key press.
+                cx.notify();
+                this.step(cx);
+            },
+        ));
         if sent.is_err() {
             return;
         }

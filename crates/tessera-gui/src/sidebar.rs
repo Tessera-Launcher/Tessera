@@ -85,7 +85,7 @@ impl Launcher {
             }
             Page::Music => {}
         }
-        cx.notify();
+        self.refresh(cx);
     }
 
     pub(crate) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {

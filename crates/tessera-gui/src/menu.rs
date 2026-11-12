@@ -8,8 +8,7 @@ pub(crate) fn download_menu_item(weak: WeakEntity<Launcher>) -> PopupMenuItem {
     PopupMenuItem::new("下载游戏…").on_click(move |_, _, app| {
         let _ = weak.update(app, |this, cx| {
             this.state.open_download();
-            this.step(cx);
-            cx.notify();
+            this.refresh(cx);
         });
     })
 }
@@ -26,13 +25,12 @@ pub(crate) fn launch_menu_item(weak: WeakEntity<Launcher>, dir: String) -> Popup
             else {
                 this.state
                     .log(format!("版本 {dir} 已不在列表中，无法启动"));
-                cx.notify();
+                this.refresh(cx);
                 return;
             };
             this.state.selected = index;
             this.state.request_launch();
-            this.step(cx);
-            cx.notify();
+            this.refresh(cx);
         });
     })
 }
@@ -41,7 +39,7 @@ pub(crate) fn refresh_menu_item(weak: WeakEntity<Launcher>) -> PopupMenuItem {
     PopupMenuItem::new("刷新").on_click(move |_, _, app| {
         let _ = weak.update(app, |this, cx| {
             this.state.reload();
-            cx.notify();
+            this.refresh(cx);
         });
     })
 }
@@ -61,13 +59,12 @@ pub(crate) fn uninstall_menu_item(weak: WeakEntity<Launcher>, dir: String) -> Po
             else {
                 this.state
                     .log(format!("版本 {dir} 已不在列表中，无法卸载"));
-                cx.notify();
+                this.refresh(cx);
                 return;
             };
             this.state.selected = index;
             this.state.request_uninstall();
-            this.step(cx);
-            cx.notify();
+            this.refresh(cx);
         });
     })
 }

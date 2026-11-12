@@ -53,9 +53,9 @@ impl Launcher {
                         // Double click installs, like Enter in the state machine.
                         if event.click_count() > 1 {
                             this.state.handle_java_key(Key::Enter, Modifiers::NONE);
-                            this.step(cx);
                         }
-                        cx.notify();
+                        // `refresh` also runs the effect the key just queued.
+                        this.refresh(cx);
                     }))
                     .child(
                         div()
@@ -193,17 +193,15 @@ impl Launcher {
                 footer_bar(&self.state.status)
                     .child(primary_button("下载", cx, |this: &mut Launcher, cx| {
                         this.state.handle_java_key(Key::Enter, Modifiers::NONE);
-                        this.step(cx);
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .child(button(&format!("全部更新 ({updates})"), cx, |this: &mut Launcher, cx| {
                         this.state.handle_java_key(Key::Char('u'), Modifiers::NONE);
-                        this.step(cx);
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .child(button(&format!("换源（{source}）"), cx, |this: &mut Launcher, cx| {
                         this.state.handle_java_key(Key::Char('s'), Modifiers::NONE);
-                        cx.notify();
+                        this.refresh(cx);
                     }))
                     .children(busy.then(|| chip("下载中", SNAPSHOT))),
             )
@@ -229,7 +227,7 @@ impl Launcher {
                     {
                         this.state.log(format!("配置写入失败：{error}"));
                     }
-                    cx.notify();
+                    this.refresh(cx);
                 }
             },
         ));

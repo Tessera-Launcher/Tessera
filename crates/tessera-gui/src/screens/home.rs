@@ -133,7 +133,7 @@ impl Launcher {
                             if event.click_count() > 1 {
                                 this.state.request_launch();
                             }
-                            cx.notify();
+                            this.refresh(cx);
                         }))
                         .child(
                             div()
@@ -252,7 +252,7 @@ impl Launcher {
                 footer_bar(&self.state.status)
                     .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
                         this.state.request_launch();
-                        cx.notify();
+                        this.refresh(cx);
                     })),
             )
     }
@@ -304,12 +304,11 @@ impl Launcher {
                 .gap_2()
                 .child(primary_button("确认卸载", cx, |this: &mut Launcher, cx| {
                     this.state.request_uninstall();
-                    this.step(cx);
-                    cx.notify();
+                    this.refresh(cx);
                 }))
                 .child(button("取消", cx, |this: &mut Launcher, cx| {
                     this.state.cancel_uninstall();
-                    cx.notify();
+                    this.refresh(cx);
                 })),
         );
         Some(
