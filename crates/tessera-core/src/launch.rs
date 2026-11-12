@@ -195,10 +195,12 @@ fn prepare_inner(
     } else {
         None
     };
-    // A profile with no parent is a vanilla install; everything else (Forge,
-    // Fabric, a hand-written `inheritsFrom`) brings its own class-loading layer
-    // and keeps the loader rule for Java.
-    let vanilla = merged.parents.is_empty();
+    // Vanilla Minecraft has no upper bound on the JVM, but two kinds of profile
+    // still do: anything with a parent (Forge/Fabric/a hand-written
+    // `inheritsFrom`) brings its own class-loading layer, and Mojang's own 1.5.2
+    // profile runs on LaunchWrapper, whose 1.12 release casts the system class
+    // loader to `URLClassLoader` and dies on Java 9+. Both keep the old pin.
+    let vanilla = merged.parents.is_empty() && !uses_launchwrapper(Some(&merged.main_class));
     let (java, java_major) = if let Some(selection) = &aot {
         (selection.java.clone(), selection.java_major)
     } else if let Some(override_java) = java_override {
@@ -1068,6 +1070,20 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
     } else {
         major >= required
     }
+}
+
+/// The main class LaunchWrapper installs run on.
+pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
+
+/// Whether this profile boots through LaunchWrapper.
+///
+/// It matters for the Java choice: LaunchWrapper 1.12 casts the system class
+/// loader to `URLClassLoader`, which stopped being true in Java 9, and Forge's
+/// tweaker sets a SecurityManager, which Java 24 removed. Profiles that use it
+/// keep the legacy pin so they fail with "install Java 8" instead of a
+/// `ClassCastException` deep in a launch.
+pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
+    main_class == Some(LAUNCHWRAPPER)
 }
 
 /// Find the Java a profile needs among the runtimes this launcher manages.

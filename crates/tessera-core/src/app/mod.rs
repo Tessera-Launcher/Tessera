@@ -394,7 +394,9 @@ impl App {
         if version.aot {
             return Some(28);
         }
-        if version.inherits.is_none() {
+        if version.inherits.is_none()
+            && !launch::uses_launchwrapper(version.main_class.as_deref())
+        {
             let required = version.java.unwrap_or(8);
             return self
                 .installed_java
@@ -448,6 +450,13 @@ impl App {
             self.status = "只有原版版本可以训练 AOT".to_string();
             self.log(
                 "Mod Loader 用自定义类加载器加载游戏，那些类进不了 AOT 缓存，所以不训练",
+            );
+            return;
+        }
+        if launch::uses_launchwrapper(version.main_class.as_deref()) {
+            self.status = "这个版本只能用 Java 8 启动，无法训练 AOT".to_string();
+            self.log(
+                "LaunchWrapper 在 Java 9 及以上无法启动游戏，而 AOT 训练固定用 Java 28，所以这个版本没有可训练的东西",
             );
             return;
         }
