@@ -80,8 +80,6 @@ pub enum DownloadStage {
     LoadingVersions,
     Picking,
     Installing,
-    /// The install finished; the forced AOT training run is in progress.
-    Training,
     Done,
     Failed,
 }
@@ -123,40 +121,7 @@ pub struct DownloadUi {
     pub(crate) sample: Option<(Instant, u64)>,
     pub error: Option<String>,
     pub installed: Option<(String, Option<String>)>,
-    /// The forced AOT training run that belongs to the last install.
-    pub aot: AotProgress,
     fetching: bool,
-}
-
-/// The forced AOT training run after a 26.1+ vanilla install.
-///
-/// These fields move together: a run has one version, one phase and one
-/// explanation. Kept as six loose fields on [`DownloadUi`], every reset and
-/// every event handler had to remember all six.
-#[derive(Debug, Default)]
-pub struct AotProgress {
-    /// The version whose training this screen is tracking, if any.
-    pub training: Option<String>,
-    /// Classes loaded so far, and how many the classpath has in total.
-    pub loaded: usize,
-    pub total: usize,
-    /// Java 28 is being prepared/downloaded before training starts.
-    pub preparing: bool,
-    /// The game is gone and the JVM is assembling the cache.
-    pub assembling: bool,
-    /// A short explanation for the Done screen (AOT skipped/failed).
-    pub note: Option<String>,
-}
-
-impl AotProgress {
-    /// Forget the previous run's numbers, keeping which version is tracked.
-    fn reset(&mut self) {
-        self.loaded = 0;
-        self.total = 0;
-        self.preparing = false;
-        self.assembling = false;
-        self.note = None;
-    }
 }
 
 impl Default for DownloadUi {
@@ -182,7 +147,6 @@ impl Default for DownloadUi {
             sample: None,
             error: None,
             installed: None,
-            aot: AotProgress::default(),
             fetching: false,
         }
     }
@@ -422,7 +386,6 @@ impl App {
             self.download.stage = DownloadStage::Picking;
             self.download.installed = None;
             self.download.error = None;
-            self.download.aot.note = None;
         }
     }
 
@@ -485,10 +448,10 @@ impl App {
                     _ => {}
                 }
             }
-            DownloadStage::Installing | DownloadStage::Training => {
+            DownloadStage::Installing => {
                 if matches!(code, Key::Esc | Key::Char('q')) {
                     self.screen = Screen::Main;
-                    self.log("安装/训练转为后台进行，完成后会重新扫描版本");
+                    self.log("安装转为后台进行，完成后会重新扫描版本");
                 }
             }
             DownloadStage::Done | DownloadStage::Failed => {
@@ -628,8 +591,6 @@ impl App {
         self.download.sample = None;
         self.download.installed = None;
         self.download.error = None;
-        self.download.aot.note = None;
-        self.download.aot.training = None;
         self.screen = Screen::Download;
         self.status = format!("安装 {version} · {}", loader.label());
         self.log(format!("开始安装 {version}（{}）", loader.label()));
@@ -694,7 +655,7 @@ impl App {
             InstallEvent::Finished { version, loader } => {
                 self.install_running = false;
                 self.download.installed = Some((version.clone(), loader.clone()));
-                self.download.aot.reset();
+                self.download.stage = DownloadStage::Done;
                 self.reload();
                 self.log(format!(
                     "安装完成：{version}{}",
@@ -702,19 +663,7 @@ impl App {
                         .as_ref()
                         .map_or_else(String::new, |loader| format!(" + {loader}"))
                 ));
-                // 26.1+ vanilla installs pay for one training run as part of the
-                // install. Mod loaders are excluded: their classes go through a
-                // custom ClassLoader and cannot enter the AOT cache anyway.
-                if loader.is_none() && crate::aot::eligible(&version) {
-                    self.download.stage = DownloadStage::Training;
-                    self.download.aot.training = Some(version.clone());
-                    self.status = format!("安装完成，正在训练 {version} 的 AOT 缓存");
-                    self.log("开始 AOT 训练（26.1+ 原版）");
-                    self.request(Effect::TrainAot(version));
-                } else {
-                    self.download.stage = DownloadStage::Done;
-                    self.status = format!("安装完成：{version}");
-                }
+                self.status = format!("安装完成：{version}");
             }
             InstallEvent::Failed(message) => {
                 self.download.fetching = false;
@@ -723,92 +672,6 @@ impl App {
                 self.download.error = Some(message.clone());
                 self.status = "下载失败".to_string();
                 self.log(format!("下载失败：{message}"));
-            }
-        }
-    }
-
-    /// Apply a forced-AOT-training event.
-    pub fn handle_aot_event(&mut self, event: crate::aot::Event) {
-        use crate::aot::Event;
-        let version = match &event {
-            Event::Preparing { version, .. }
-            | Event::Progress { version, .. }
-            | Event::Assembling { version }
-            | Event::Finished { version, .. }
-            | Event::Skipped { version, .. }
-            | Event::Failed { version, .. } => version.clone(),
-        };
-        // A training run for an older version may still be finishing after a new
-        // install started; its progress must not overwrite the new install's.
-        // This is also why the stage is updated unconditionally below: the page
-        // may have been closed and reopened while training ran, and the run this
-        // page tracks is still the same one.
-        if self.download.aot.training.as_deref() != Some(version.as_str()) {
-            return;
-        }
-        match event {
-            Event::Preparing { message, .. } => {
-                self.download.aot.preparing = true;
-                self.download.aot.loaded = 0;
-                self.download.aot.total = 0;
-                self.download.stage = DownloadStage::Training;
-                self.status = message.clone();
-                self.log(message);
-            }
-            Event::Progress { loaded, total, .. } => {
-                self.download.aot.preparing = false;
-                self.download.aot.loaded = loaded;
-                self.download.aot.total = total;
-                self.download.stage = DownloadStage::Training;
-                self.download.aot.assembling = false;
-                self.status = if total > 0 {
-                    format!("AOT 训练：{loaded} / {total} 个类")
-                } else {
-                    format!("AOT 训练：已加载 {loaded} 个类")
-                };
-            }
-            Event::Assembling { .. } => {
-                self.download.aot.preparing = false;
-                self.download.aot.assembling = true;
-                self.download.aot.loaded = self.download.aot.loaded.max(self.download.aot.total);
-                self.download.stage = DownloadStage::Training;
-                self.status = "AOT 训练完成，正在组装缓存…".to_string();
-                self.log("AOT 训练完成，正在组装缓存（可能几分钟）");
-            }
-            Event::Finished {
-                loaded,
-                total,
-                java_major,
-                java_version,
-                ..
-            } => {
-                let note = format!(
-                    "AOT 缓存已生成（Java {java_major} {java_version}，{loaded}/{total} 个类）"
-                );
-                self.download.aot.preparing = false;
-                self.download.aot.assembling = false;
-                self.download.aot.note = Some(note.clone());
-                self.download.aot.training = None;
-                self.download.stage = DownloadStage::Done;
-                self.status = note.clone();
-                self.log(note);
-            }
-            Event::Skipped { reason, .. } => {
-                self.download.aot.preparing = false;
-                self.download.aot.note = Some(format!("跳过 AOT：{reason}"));
-                self.download.aot.training = None;
-                self.download.stage = DownloadStage::Done;
-                self.status = format!("安装完成（跳过 AOT：{reason}）");
-                self.log(format!("跳过 AOT 训练：{reason}"));
-            }
-            Event::Failed { reason, .. } => {
-                self.download.aot.preparing = false;
-                self.download.aot.assembling = false;
-                self.download.aot.note = Some(format!("AOT 训练失败：{reason}"));
-                self.download.aot.training = None;
-                self.download.stage = DownloadStage::Done;
-                self.status = "安装完成，AOT 训练失败".to_string();
-                self.log(format!("AOT 训练失败：{reason}"));
             }
         }
     }

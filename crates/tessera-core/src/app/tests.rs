@@ -1909,61 +1909,20 @@ fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
 }
 
 #[test]
-fn a_modern_vanilla_install_starts_aot_training() {
+fn installing_never_trains_aot_behind_the_players_back() {
     let mut app = downloader();
     app.handle_install_event(InstallEvent::Finished {
         version: "26.3".to_string(),
         loader: None,
     });
-    assert_eq!(app.download.stage, DownloadStage::Training);
+    assert_eq!(app.download.stage, DownloadStage::Done);
     assert!(
-        app.effects()
+        !app.effects()
             .iter()
-            .any(|effect| matches!(effect, Effect::TrainAot(version) if version == "26.3")),
-        "training is queued for the install worker"
+            .any(|effect| matches!(effect, Effect::TrainAot(_))),
+        "training is voluntary: the install ends at Done and nothing else"
     );
-
-    // Older versions and loader installs keep the old install-only path.
-    for (version, loader) in [
-        ("1.21.11", None),
-        ("26.3", Some("Fabric 0.20.1".to_string())),
-    ] {
-        let mut app = downloader();
-        app.handle_install_event(InstallEvent::Finished {
-            version: version.to_string(),
-            loader,
-        });
-        assert_eq!(app.download.stage, DownloadStage::Done, "{version}");
-        assert!(
-            !app.effects()
-                .iter()
-                .any(|effect| matches!(effect, Effect::TrainAot(_))),
-            "{version}"
-        );
-    }
-}
-
-#[test]
-fn a_new_install_ignores_the_previous_versions_aot_events() {
-    let mut app = downloader();
-    app.screen = Screen::Download;
-    app.handle_install_event(InstallEvent::Finished {
-        version: "26.3".to_string(),
-        loader: None,
-    });
-    assert_eq!(app.download.aot.training.as_deref(), Some("26.3"));
-
-    app.start_install();
-    assert!(app.install_running);
-    app.handle_aot_event(crate::aot::Event::Progress {
-        version: "26.3".to_string(),
-        loaded: 123,
-        total: 456,
-    });
-    assert_eq!(
-        app.download.aot.loaded, 0,
-        "stale AOT must not touch the new install"
-    );
+    assert!(app.aot.training.is_none());
 }
 
 #[test]
@@ -1990,26 +1949,36 @@ fn opening_the_picker_does_not_reset_a_running_install() {
 }
 
 #[test]
-fn aot_progress_and_completion_land_on_the_install_screen() {
+fn aot_progress_and_completion_land_on_the_main_screen() {
     let mut app = downloader();
-    app.screen = Screen::Download;
     app.handle_install_event(InstallEvent::Finished {
         version: "26.3".to_string(),
         loader: None,
     });
+    app.all_versions = vec![version("26.3")];
+    app.apply_version_filter();
+    app.selected = 0;
+    app.take_effects();
+    app.start_aot_training();
+    assert_eq!(app.aot.training.as_deref(), Some("26.3"));
+    assert!(matches!(
+        app.effects().last(),
+        Some(Effect::TrainAot(version)) if version == "26.3"
+    ));
+
     app.handle_aot_event(crate::aot::Event::Progress {
         version: "26.3".to_string(),
         loaded: 100,
         total: 200,
     });
-    assert_eq!(app.download.stage, DownloadStage::Training);
-    assert_eq!(app.download.aot.loaded, 100);
-    assert_eq!(app.download.aot.total, 200);
+    assert_eq!(app.aot.loaded, 100);
+    assert_eq!(app.aot.total, 200);
+    assert_eq!(app.status, "AOT 训练：100 / 200 个类");
 
     app.handle_aot_event(crate::aot::Event::Assembling {
         version: "26.3".to_string(),
     });
-    assert!(app.download.aot.assembling);
+    assert!(app.aot.assembling);
 
     app.handle_aot_event(crate::aot::Event::Finished {
         version: "26.3".to_string(),
@@ -2018,16 +1987,42 @@ fn aot_progress_and_completion_land_on_the_install_screen() {
         java_major: 28,
         java_version: "28+23-ea-beta".to_string(),
     });
-    assert_eq!(app.download.stage, DownloadStage::Done);
-    assert!(!app.download.aot.assembling);
+    assert!(!app.aot.assembling);
+    assert!(app.aot.training.is_none());
     assert!(
-        app.download
-            .aot.note
-            .as_deref()
-            .unwrap()
-            .contains("AOT 缓存已生成"),
+        app.aot.note.as_deref().unwrap().contains("AOT 缓存已生成"),
         "{:?}",
-        app.download.aot.note
+        app.aot.note
+    );
+}
+
+#[test]
+fn only_vanilla_versions_can_be_trained() {
+    let mut loader = version("1.8.9-forge-11.15.0.1656");
+    loader.inherits = Some("1.8.9".to_string());
+    let mut app = App::new("/mc", "/acc", vec![loader], Vec::new());
+    app.start_aot_training();
+    assert!(app.aot.training.is_none());
+    assert!(
+        !app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::TrainAot(_))),
+        "a loader install gets no cache, so no training run"
+    );
+    assert!(app.status.contains("原版"), "{}", app.status);
+}
+
+#[test]
+fn a_second_training_run_is_refused_while_one_is_in_flight() {
+    let mut app = App::new("/mc", "/acc", vec![version("1.8.9")], Vec::new());
+    app.start_aot_training();
+    app.take_effects();
+    app.start_aot_training();
+    assert_eq!(app.status, "已有 AOT 训练在进行");
+    assert!(
+        !app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::TrainAot(_)))
     );
 }
 
@@ -2856,34 +2851,6 @@ fn leaving_and_returning_shows_a_running_install_and_its_progress() {
     assert!(app.install_running);
     assert_eq!(app.download.stage, DownloadStage::Installing);
     assert_eq!(app.download.done, 3);
-}
-
-#[test]
-fn aot_training_finishes_even_if_the_page_was_left_and_reopened() {
-    let mut app = downloader();
-    // A 26.1 vanilla install hands over to the forced AOT training run.
-    app.handle_install_event(InstallEvent::Finished {
-        version: "26.1".to_string(),
-        loader: None,
-    });
-    assert_eq!(app.download.stage, DownloadStage::Training);
-    assert!(app.download.aot.training.is_some());
-
-    // Leaving and coming back used to flip the screen to Download, which the
-    // old "is this page showing it" check read as "not showing", so the
-    // training run could never move the stage to Done afterwards.
-    app.show_main();
-    app.open_download();
-
-    app.handle_aot_event(crate::aot::Event::Finished {
-        version: "26.1".to_string(),
-        loaded: 10,
-        total: 10,
-        java_major: 28,
-        java_version: "28-ea".to_string(),
-    });
-    assert_eq!(app.download.stage, DownloadStage::Done);
-    assert!(app.download.aot.note.as_deref().unwrap_or("").contains("AOT"));
 }
 
 #[test]

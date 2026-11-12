@@ -237,6 +237,13 @@ impl Launcher {
             )
             .child(
                 footer_bar(&self.state.status)
+                    // Training is voluntary: it costs a game start and a cache
+                    // the size of the client, and has to be redone after a Java
+                    // upgrade, so it never happens behind the player's back.
+                    .child(button("开始 AOT 训练", cx, |this: &mut Launcher, cx| {
+                        this.state.start_aot_training();
+                        this.refresh(cx);
+                    }))
                     .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
                         this.state.request_launch();
                         this.refresh(cx);

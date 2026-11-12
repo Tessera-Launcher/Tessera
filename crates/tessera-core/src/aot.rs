@@ -1,15 +1,17 @@
-//! Forced AOT-cache training for modern vanilla installs.
+//! Voluntary AOT-cache training for vanilla versions.
 //!
-//! Minecraft 26.1+ runs on a JDK with Project Leyden's AOT cache. Installing a
-//! vanilla version therefore ends with one training launch: the game starts with
-//! `-XX:AOTCacheOutput`, class loading is recorded, and the cache is assembled
-//! when the JVM exits. The cache is stored next to the version jar, together
-//! with the exact JVM build that produced it; `launch` only uses it when that
-//! same build is still installed.
+//! Minecraft runs on a JDK with Project Leyden's AOT cache. Training launches
+//! the game once with `-XX:AOTCacheOutput`, records class loading, and — when
+//! the JVM exits — assembles a cache next to the version jar. A later launch
+//! maps that cache instead of reading thousands of class files from jars; the
+//! metadata beside it records the exact JVM build, and `launch` only uses the
+//! cache while that same build is installed.
 //!
-//! Training is deliberately skipped for 1.x versions, for snapshots older than
-//! 26.1, and for every Mod Loader install: custom class loaders (Knot,
-//! ModLauncher) load the classes AOT cannot cache, so the win is not there.
+//! Training is started by the player (the button next to 启动), never by an
+//! install: the cache is large, it has to be rebuilt after a Java upgrade, and
+//! a player who only plays once does not want either cost. Mod Loader installs
+//! are refused by the caller — their custom class loaders load the classes AOT
+//! cannot cache.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -67,14 +69,6 @@ pub enum Event {
         version: String,
         reason: String,
     },
-}
-
-/// Whether this version is inside the 26.1+ window.
-///
-/// `1.21.11` is out, `25w46a` is out, `26.1` and `26.4-snapshot-7` are in.
-pub fn eligible(version: &str) -> bool {
-    crate::version::McVersion::parse(version)
-        .is_some_and(|version| version.at_least(26, 1, 0))
 }
 
 /// Train one vanilla version and leave a cache next to its jar.
@@ -564,24 +558,6 @@ mod tests {
         assert_eq!(error.kind(), crate::error::Kind::Process);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(child.try_wait().unwrap().is_some(), "the child was reaped");
-    }
-
-    #[test]
-    fn only_the_26_1_window_is_eligible() {
-        for version in ["26.1", "26.1.1", "26.2", "26.4-snapshot-7", "26.1-pre1"] {
-            assert!(eligible(version), "{version}");
-        }
-        for version in [
-            "1.21.11",
-            "1.26.3",
-            "25w46a",
-            "26.0",
-            "b1.8.1",
-            "a1.2.6",
-            "rd-132211",
-        ] {
-            assert!(!eligible(version), "{version}");
-        }
     }
 
     #[test]

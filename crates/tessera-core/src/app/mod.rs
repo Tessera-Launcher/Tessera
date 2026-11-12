@@ -73,7 +73,7 @@ pub enum Effect {
         dir: String,
         credentials: launch::Credentials,
     },
-    /// Train the AOT cache for a freshly installed vanilla version.
+    /// Train the AOT cache for the vanilla version the player asked for.
     TrainAot(String),
 }
 
@@ -90,6 +90,38 @@ pub enum UiRequest {
     Copy(String),
     OpenBrowser(String),
     Audio(crate::audio::Command),
+}
+
+/// The AOT training run the player started from the version list.
+///
+/// Training is voluntary: a cache makes a vanilla launch load its classes from
+/// a mapped archive instead of thousands of jar entries, but it costs the size
+/// of the archive and has to be redone after a Java upgrade, so the player
+/// decides when to pay for it.
+#[derive(Debug, Default)]
+pub struct AotProgress {
+    /// The version being trained, if a run is in flight.
+    pub training: Option<String>,
+    /// Classes loaded so far, and how many the classpath has in total.
+    pub loaded: usize,
+    pub total: usize,
+    /// Java 28 is being prepared/downloaded before training starts.
+    pub preparing: bool,
+    /// The game is gone and the JVM is assembling the cache.
+    pub assembling: bool,
+    /// The last run's result, for the status line.
+    pub note: Option<String>,
+}
+
+impl AotProgress {
+    /// Forget the previous run's numbers, keeping which version is tracked.
+    fn reset(&mut self) {
+        self.loaded = 0;
+        self.total = 0;
+        self.preparing = false;
+        self.assembling = false;
+        self.note = None;
+    }
 }
 
 /// Which background worker a report belongs to.
@@ -114,7 +146,7 @@ pub enum TaskKind {
     JavaInstall,
     /// Reclaiming unreferenced files after an uninstall.
     Sweep,
-    /// AOT cache training for a fresh 26.1+ install.
+    /// AOT cache training started from the version list.
     Aot,
     /// A launched game process, until it exits.
     Game,
@@ -250,6 +282,10 @@ pub struct App {
     pub java: JavaUi,
     /// The music page's state.
     pub music: MusicUi,
+    /// The AOT training run started from the main page. One at a time: the
+    /// training launches a game, and two JVMs fighting over one version
+    /// directory is not a state the rest of this code knows how to describe.
+    pub aot: AotProgress,
     /// Majors of the runtimes on disk, newest first.
     ///
     /// The list pane prints the Java a launch would actually use, and a vanilla
@@ -305,6 +341,7 @@ impl App {
             settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
             music: MusicUi::default(),
+            aot: AotProgress::default(),
             installed_java: Vec::new(),
             uninstall_confirm: None,
             install_running: false,
@@ -369,8 +406,16 @@ impl App {
     }
 
     pub fn reload(&mut self) {
-        // The directory name is the stable key: two sessions of the same profile
-        // id cannot exist, but the id inside a JSON is not what the paths use.
+        self.refresh_versions();
+        self.status = format!("已刷新：{} 个版本", self.versions.len());
+        self.log(self.status.clone());
+    }
+
+    /// Rescan the versions folder, keeping the selected row if it survived.
+    ///
+    /// The directory name is the stable key: two sessions of the same profile id
+    /// cannot exist, but the id inside a JSON is not what the paths use.
+    fn refresh_versions(&mut self) {
         let keep = self.selected_version().map(|v| v.dir.clone());
         self.uninstall_confirm = None;
         self.size_cache = None;
@@ -380,8 +425,125 @@ impl App {
         self.selected = keep
             .and_then(|dir| self.versions.iter().position(|v| v.dir == dir))
             .unwrap_or(0);
-        self.status = format!("已刷新：{} 个版本", self.versions.len());
-        self.log(self.status.clone());
+    }
+
+    // ---- AOT training ----
+
+    /// Start an AOT training run for the selected version.
+    ///
+    /// Only vanilla profiles are accepted: a loader install puts the game behind
+    /// its own class loader, and classes loaded that way never enter the cache,
+    /// so training one would cost a full game start and a large archive for no
+    /// speed-up.
+    pub fn start_aot_training(&mut self) {
+        if self.aot.training.is_some() {
+            self.status = "已有 AOT 训练在进行".to_string();
+            return;
+        }
+        let Some(version) = self.selected_version() else {
+            self.status = "未选择版本".to_string();
+            return;
+        };
+        if version.inherits.is_some() {
+            self.status = "只有原版版本可以训练 AOT".to_string();
+            self.log(
+                "Mod Loader 用自定义类加载器加载游戏，那些类进不了 AOT 缓存，所以不训练",
+            );
+            return;
+        }
+        if !version.has_profile || !version.has_jar {
+            self.status = "版本文件不完整，无法训练".to_string();
+            return;
+        }
+        let dir = version.dir.clone();
+        self.aot = AotProgress {
+            training: Some(dir.clone()),
+            ..AotProgress::default()
+        };
+        self.status = format!("准备 AOT 训练：{dir}");
+        self.log(format!(
+            "开始 AOT 训练 {dir}（会启动一次游戏，训练完缓存放在版本目录里）"
+        ));
+        self.request(Effect::TrainAot(dir));
+    }
+
+    /// Apply an AOT training event.
+    pub fn handle_aot_event(&mut self, event: crate::aot::Event) {
+        use crate::aot::Event;
+        let version = match &event {
+            Event::Preparing { version, .. }
+            | Event::Progress { version, .. }
+            | Event::Assembling { version }
+            | Event::Finished { version, .. }
+            | Event::Skipped { version, .. }
+            | Event::Failed { version, .. } => version.clone(),
+        };
+        // The run a page shows is the run this app tracks; a late event from a
+        // run the player cancelled or replaced must not move the new one.
+        if self.aot.training.as_deref() != Some(version.as_str()) {
+            return;
+        }
+        match event {
+            Event::Preparing { message, .. } => {
+                self.aot.reset();
+                self.aot.preparing = true;
+                self.status = message.clone();
+                self.log(message);
+            }
+            Event::Progress { loaded, total, .. } => {
+                self.aot.preparing = false;
+                self.aot.loaded = loaded;
+                self.aot.total = total;
+                self.aot.assembling = false;
+                self.status = if total > 0 {
+                    format!("AOT 训练：{loaded} / {total} 个类")
+                } else {
+                    format!("AOT 训练：已加载 {loaded} 个类")
+                };
+            }
+            Event::Assembling { .. } => {
+                self.aot.preparing = false;
+                self.aot.assembling = true;
+                self.aot.loaded = self.aot.loaded.max(self.aot.total);
+                self.status = "AOT 训练完成，正在组装缓存…".to_string();
+                self.log("AOT 训练完成，正在组装缓存（可能几分钟）");
+            }
+            Event::Finished {
+                loaded,
+                total,
+                java_major,
+                java_version,
+                ..
+            } => {
+                let note = format!(
+                    "AOT 缓存已生成（Java {java_major} {java_version}，{loaded}/{total} 个类）"
+                );
+                self.aot.preparing = false;
+                self.aot.assembling = false;
+                self.aot.note = Some(note.clone());
+                self.aot.training = None;
+                // The list reads the cache flag from disk; a rescan is what makes
+                // the row show "AOT Cache 是" without a manual refresh.
+                self.refresh_versions();
+                self.status = note.clone();
+                self.log(note);
+            }
+            Event::Skipped { reason, .. } => {
+                self.aot.preparing = false;
+                self.aot.note = Some(format!("跳过 AOT：{reason}"));
+                self.aot.training = None;
+                self.status = format!("跳过 AOT：{reason}");
+                self.log(format!("跳过 AOT 训练：{reason}"));
+            }
+            Event::Failed { reason, .. } => {
+                self.aot.preparing = false;
+                self.aot.assembling = false;
+                self.aot.note = Some(format!("AOT 训练失败：{reason}"));
+                self.aot.training = None;
+                self.status = "AOT 训练失败".to_string();
+                self.log(format!("AOT 训练失败：{reason}"));
+            }
+        }
     }
 
     /// All keyboard handling, so every front-end can replay a key and behave
@@ -777,9 +939,17 @@ impl App {
             TaskKind::Game => {
                 self.status = "游戏进程：等待线程意外结束".to_string();
             }
+            TaskKind::Aot => {
+                // A dead training thread would otherwise keep the button
+                // answering "已有 AOT 训练在进行" for the rest of the session.
+                if self.aot.training.take().is_some() {
+                    self.aot.assembling = false;
+                    self.aot.preparing = false;
+                    self.status = format!("{label}：后台任务意外结束");
+                }
+            }
             TaskKind::Versions
             | TaskKind::Sweep
-            | TaskKind::Aot
             | TaskKind::Clipboard
             | TaskKind::Music
             | TaskKind::Measure => {}

@@ -353,23 +353,6 @@ impl Launcher {
             }
             body = body.child(div().text_xs().text_color(rgb(DIM)).child(line));
         }
-        if download.stage == DownloadStage::Training {
-            let step = if download.aot.assembling {
-                "正在组装缓存（可能要几分钟）".to_string()
-            } else if download.aot.preparing {
-                "正在准备 Java 28…".to_string()
-            } else if download.aot.total > 0 {
-                format!("AOT 训练：{} / {} 个类", download.aot.loaded, download.aot.total)
-            } else {
-                "AOT 训练：准备中…".to_string()
-            };
-            body = body
-                .child(div().mt_2().text_sm().text_color(rgb(ACCENT)).child("AOT 缓存训练"))
-                .child(div().text_xs().text_color(rgb(DIM)).child(step));
-        }
-        if let Some(note) = &download.aot.note {
-            body = body.child(div().text_xs().text_color(rgb(DIM)).child(note.clone()));
-        }
         if let Some(error) = &download.error {
             body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
         }
@@ -385,10 +368,7 @@ impl Launcher {
             );
         }
 
-        let title = match download.stage {
-            DownloadStage::Training => "安装 · AOT 训练",
-            _ => "安装",
-        };
+        let title = "安装";
         div()
             .v_flex()
             .flex_1()
