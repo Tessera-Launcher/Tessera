@@ -332,6 +332,67 @@ impl App {
         self.log(self.status.clone());
     }
 
+    /// All keyboard handling, so every front-end can replay a key and behave
+    /// identically to pressing it.
+    ///
+    /// This lives next to the state it dispatches over, not next to any one
+    /// screen: every screen's keys arrive here first.
+    pub fn handle_key(&mut self, code: Key, modifiers: Modifiers) {
+        if modifiers.contains(Modifiers::CONTROL) && code == Key::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        match self.screen {
+            Screen::Login => {
+                self.handle_login_key(code, modifiers);
+                return;
+            }
+            Screen::Accounts => {
+                self.handle_accounts_key(code, modifiers);
+                return;
+            }
+            Screen::Download => {
+                self.handle_download_key(code, modifiers);
+                return;
+            }
+            Screen::Java => {
+                self.handle_java_key(code, modifiers);
+                return;
+            }
+            Screen::Music => {
+                self.handle_music_key(code, modifiers);
+                return;
+            }
+            Screen::Main => {}
+        }
+        match code {
+            Key::Char('q') | Key::Esc => self.should_quit = true,
+            Key::Down | Key::Char('j') => self.select_next(),
+            Key::Up | Key::Char('k') => self.select_prev(),
+            Key::Home | Key::Char('g') => self.select_first(),
+            Key::End | Key::Char('G') => self.select_last(),
+            Key::Char('r') => self.reload(),
+            Key::Char('h') => self.toggle_base_versions(),
+            Key::Char('l') => self.open_login(),
+            Key::Char('a') => self.open_accounts(),
+            Key::Char('d') => self.open_download(),
+            // `j` already moves the selection; the Java screen gets `v` (虚拟机).
+            Key::Char('v') => self.open_java(),
+            Key::Char('m') => self.open_music(),
+            // Two presses, like removing an account: deleting a whole version
+            // directory is not something a single stray key may do.
+            Key::Char('x') | Key::Delete => self.request_uninstall(),
+            Key::Enter => self.request_launch(),
+            _ => {}
+        }
+        // Anything other than the uninstall key itself drops the pending
+        // confirmation, so "press x again" cannot survive the user wandering off
+        // and coming back minutes later.
+        if !matches!(code, Key::Char('x') | Key::Delete) {
+            self.uninstall_confirm = None;
+        }
+    }
+
     /// Recompute the visible list from `all_versions` and the base-version toggle.
     fn apply_version_filter(&mut self) {
         self.versions = self
