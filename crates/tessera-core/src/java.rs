@@ -424,20 +424,11 @@ pub fn spawn_install(runtimes: PathBuf, runtime: Runtime, urls: Vec<String>) -> 
     })
 }
 
-/// A client with the launcher's user agent.
-///
-/// Adoptium's API sits behind Cloudflare and answers 403 to clients that look
-/// like a script, so the agent is not optional.
+/// The Java screen's client: the launcher's user agent and TLS policy, with a
+/// 15-minute cap on the whole artifact download. Metadata requests override it
+/// with a much shorter per-request timeout.
 fn blocking_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
-        // A stalled connection must not hang the Java screen forever. The
-        // 15-minute cap is for the whole artifact download; metadata requests
-        // override it with a much shorter per-request timeout.
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(15 * 60))
-        .build()
-        .map_err(|error| Error::internal(format!("无法创建 HTTP 客户端：{error}")))
+    crate::http::blocking_client(Duration::from_secs(15 * 60))
 }
 
 /// What the worker tells the UI.

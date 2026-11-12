@@ -199,13 +199,14 @@ impl Launcher {
                 None
             }
         };
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("tessera-launcher/", env!("CARGO_PKG_VERSION")))
-            // A stalled login poll must not keep a channel occupied forever.
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(60))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        // One policy for every request the front-end makes; see `core::http`.
+        let client = match tessera_core::http::async_client() {
+            Ok(client) => client,
+            Err(error) => {
+                state.log(format!("{error}，改用默认 HTTP 配置"));
+                reqwest::Client::new()
+            }
+        };
         if blocked {
             state.status = "另一个 Tessera 正在使用这个数据目录".to_string();
         }
