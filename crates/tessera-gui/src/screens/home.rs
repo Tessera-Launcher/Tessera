@@ -106,16 +106,14 @@ impl Launcher {
             {
                 let selected = index == self.state.selected;
                 let broken = !version.has_jar && version.inherits.is_none();
-                let java = if version.aot {
-                    // A trained cache is bound to the Java 28 JVM it was built
-                    // with; `launch` uses that JVM, not the profile's pin.
-                    "Java 28".to_string()
-                } else {
-                    version
-                        .java
-                        .map(|major| format!("Java {major}"))
-                        .unwrap_or_else(|| "Java —".to_string())
-                };
+                // What the launch will actually use, not the profile's pin: a
+                // vanilla version runs on the newest runtime on disk, and a
+                // trained one on the JVM its cache was built with.
+                let java = self
+                    .state
+                    .java_for(version)
+                    .map(|major| format!("Java {major}"))
+                    .unwrap_or_else(|| "Java —".to_string());
                 let dir = version.dir.clone();
                 list = list.child(
                     div()
@@ -177,14 +175,10 @@ impl Launcher {
                     .child(field("类型", version.kind.label().to_string()))
                     .child(field(
                         "Java",
-                        if version.aot {
-                            "28".to_string()
-                        } else {
-                            version
-                                .java
-                                .map(|major| major.to_string())
-                                .unwrap_or_else(|| "—".to_string())
-                        },
+                        self.state
+                            .java_for(version)
+                            .map(|major| major.to_string())
+                            .unwrap_or_else(|| "—".to_string()),
                     ))
                     .child(field(
                         "AOT Cache",

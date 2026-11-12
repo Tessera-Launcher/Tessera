@@ -250,6 +250,12 @@ pub struct App {
     pub java: JavaUi,
     /// The music page's state.
     pub music: MusicUi,
+    /// Majors of the runtimes on disk, newest first.
+    ///
+    /// The list pane prints the Java a launch would actually use, and a vanilla
+    /// profile always takes the newest one, so the answer has to be cached here
+    /// instead of re-reading `data/运行时` on every frame.
+    pub installed_java: Vec<u32>,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
     /// True from `start_install` until the worker reports Finished/Failed.
@@ -299,6 +305,7 @@ impl App {
             settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
             music: MusicUi::default(),
+            installed_java: Vec::new(),
             uninstall_confirm: None,
             install_running: false,
             cache: None,
@@ -307,6 +314,7 @@ impl App {
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
         app.apply_version_filter();
+        app.refresh_java();
         app.launch_options.runtimes = Some(app.runtimes.clone());
 
         let status = app.status.clone();
@@ -330,6 +338,36 @@ impl App {
 
     // ---- main screen ----
 
+    /// Re-read the runtimes directory; the list pane labels versions with it.
+    fn refresh_java(&mut self) {
+        self.installed_java = crate::java::installed(&self.runtimes)
+            .into_iter()
+            .map(|(major, _)| major)
+            .collect();
+        self.installed_java.sort_unstable_by(|a, b| b.cmp(a));
+    }
+
+    /// The Java major this version will launch with, for display.
+    ///
+    /// A vanilla profile takes the newest runtime at or above its minimum, which
+    /// is what [`launch::find_java`] does; a loader profile keeps the profile's
+    /// own pin. An AOT-trained version always runs on the JVM recorded next to
+    /// its cache.
+    pub fn java_for(&self, version: &LocalVersion) -> Option<u32> {
+        if version.aot {
+            return Some(28);
+        }
+        if version.inherits.is_none() {
+            let required = version.java.unwrap_or(8);
+            return self
+                .installed_java
+                .iter()
+                .copied()
+                .find(|major| *major >= required);
+        }
+        version.java
+    }
+
     pub fn reload(&mut self) {
         // The directory name is the stable key: two sessions of the same profile
         // id cannot exist, but the id inside a JSON is not what the paths use.
@@ -337,6 +375,7 @@ impl App {
         self.uninstall_confirm = None;
         self.size_cache = None;
         self.all_versions = discover::scan(&self.root);
+        self.refresh_java();
         self.apply_version_filter();
         self.selected = keep
             .and_then(|dir| self.versions.iter().position(|v| v.dir == dir))
@@ -664,6 +703,7 @@ impl App {
         // what is on disk, and a base whose last dependant just disappeared has
         // to become visible again (`h` would otherwise show a phantom base).
         self.all_versions = discover::scan(&self.root);
+        self.refresh_java();
         self.apply_version_filter();
 
         // `libraries/` and `assets/` are shared by every version, so the delete

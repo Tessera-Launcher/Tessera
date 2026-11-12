@@ -195,12 +195,16 @@ fn prepare_inner(
     } else {
         None
     };
+    // A profile with no parent is a vanilla install; everything else (Forge,
+    // Fabric, a hand-written `inheritsFrom`) brings its own class-loading layer
+    // and keeps the loader rule for Java.
+    let vanilla = merged.parents.is_empty();
     let (java, java_major) = if let Some(selection) = &aot {
         (selection.java.clone(), selection.java_major)
     } else if let Some(override_java) = java_override {
         override_java
     } else {
-        find_java(&runtimes, required)?
+        find_java(&runtimes, required, vanilla)?
     };
     // A loader install copies the parent's client jar without renaming it, so the
     // jar next to a `26.3+Fabric…` profile is still `26.3.jar`. A trained
@@ -1072,27 +1076,50 @@ pub fn java_is_acceptable(required: u32, major: u32) -> bool {
 /// `--java`. Whatever the game runs on was downloaded here on purpose, so the
 /// version on disk is a fact the launcher owns and can explain.
 ///
-/// An exact version wins; otherwise the smallest acceptable one is used, and the
-/// result is probed once so a half-unpacked runtime fails with a message instead
-/// of a confusing game crash.
-pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32)> {
+/// Vanilla and loader profiles want opposite things from a JVM, so they get
+/// separate rules:
+///
+/// * Vanilla takes the **newest** runtime that still satisfies the profile's
+///   minimum. Minecraft itself has no upper bound — a 1.8.9 world runs on Java
+///   28 — and the newest JVM is the one that can replay an AOT cache.
+/// * A loader profile pins the range: Forge's launch wrapper only works on the
+///   Java it was written for, so an exact match wins and the smallest acceptable
+///   runtime stands in for a version that is not installed.
+///
+/// The result is probed once so a half-unpacked runtime fails with a message
+/// instead of a confusing game crash.
+pub fn find_java(runtimes: &Path, required: u32, vanilla: bool) -> Result<(PathBuf, u32)> {
     let installed = crate::java::installed(runtimes);
     if installed.is_empty() {
-        return Err(Error::missing(format!(
-            "还没有下载 Java {required}：先去 Java 运行时界面装一个（{}）",
-            runtimes.display()
-        )));
+        return Err(Error::missing(if vanilla {
+            format!(
+                "还没有下载 Java：原版统一跑最新的 Java（去 Java 运行时界面装 Java 28，{}）",
+                runtimes.display()
+            )
+        } else {
+            format!(
+                "还没有下载 Java {required}：先去 Java 运行时界面装一个（{}）",
+                runtimes.display()
+            )
+        }));
     }
 
-    let pick = installed
-        .iter()
-        .find(|(major, _)| *major == required)
-        .or_else(|| {
-            installed
-                .iter()
-                .filter(|(major, _)| java_is_acceptable(required, *major))
-                .min_by_key(|(major, _)| *major)
-        });
+    let pick = if vanilla {
+        installed
+            .iter()
+            .filter(|(major, _)| *major >= required)
+            .max_by_key(|(major, _)| *major)
+    } else {
+        installed
+            .iter()
+            .find(|(major, _)| *major == required)
+            .or_else(|| {
+                installed
+                    .iter()
+                    .filter(|(major, _)| java_is_acceptable(required, *major))
+                    .min_by_key(|(major, _)| *major)
+            })
+    };
 
     let Some((major, path)) = pick else {
         let seen = installed
@@ -1100,7 +1127,9 @@ pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32)> {
             .map(|(major, _)| format!("Java {major}"))
             .collect::<Vec<_>>()
             .join("、");
-        return Err(Error::missing(if required <= 8 {
+        return Err(Error::missing(if vanilla {
+            format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
+        } else if required <= 8 {
             format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
         } else {
             format!(
@@ -1370,7 +1399,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let runtimes = tmp.path().join("运行时");
         // Nothing installed: the error says what to do, not "install Java on PATH".
-        let error = find_java(&runtimes, 21).unwrap_err();
+        let error = find_java(&runtimes, 21, false).unwrap_err();
         assert!(error.to_string().contains("Java 运行时界面"), "{error}");
         assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
 
@@ -1378,14 +1407,44 @@ mod tests {
         managed_runtime(tmp.path(), 21);
 
         // Exact wins, 8 stays pinned, and a 17 profile takes the smallest newer one.
-        assert_eq!(find_java(&runtimes, 21).unwrap().1, 21);
-        assert_eq!(find_java(&runtimes, 8).unwrap().1, 8);
-        assert_eq!(find_java(&runtimes, 17).unwrap().1, 21);
+        assert_eq!(find_java(&runtimes, 21, false).unwrap().1, 21);
+        assert_eq!(find_java(&runtimes, 8, false).unwrap().1, 8);
+        assert_eq!(find_java(&runtimes, 17, false).unwrap().1, 21);
         // A 25 profile has nothing to run on, and the message lists what exists.
-        let error = find_java(&runtimes, 25).unwrap_err();
+        let error = find_java(&runtimes, 25, false).unwrap_err();
         assert!(error.to_string().contains("Java 25"), "{error}");
         assert!(error.to_string().contains("Java 8"), "{error}");
         assert!(error.to_string().contains("Java 21"), "{error}");
+    }
+
+    #[test]
+    fn vanilla_takes_the_newest_runtime_and_loaders_keep_their_pin() {
+        let tmp = tempfile::tempdir().unwrap();
+        managed_runtime(tmp.path(), 8);
+        managed_runtime(tmp.path(), 17);
+        managed_runtime(tmp.path(), 28);
+        let runtimes = tmp.path().join("运行时");
+
+        // Vanilla: newest wins, even for a 1.8.9 profile that pins 8. This is
+        // what lets one Java 28 runtime serve every unmodded version.
+        assert_eq!(find_java(&runtimes, 8, true).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 17, true).unwrap().1, 28);
+        assert_eq!(find_java(&runtimes, 26, true).unwrap().1, 28);
+        // A newer minimum than anything installed still fails, and says so.
+        let error = find_java(&runtimes, 30, true).unwrap_err();
+        assert!(error.to_string().contains("30"), "{error}");
+
+        // Loaders keep the old rule: exact 8 for a legacy profile, never 28.
+        assert_eq!(find_java(&runtimes, 8, false).unwrap().1, 8);
+        assert_eq!(find_java(&runtimes, 17, false).unwrap().1, 17);
+        assert_eq!(find_java(&runtimes, 21, false).unwrap().1, 28);
+    }
+
+    #[test]
+    fn a_vanilla_launch_without_runtimes_suggests_the_newest_java() {
+        let tmp = tempfile::tempdir().unwrap();
+        let error = find_java(&tmp.path().join("运行时"), 8, true).unwrap_err();
+        assert!(error.to_string().contains("Java 28"), "{error}");
     }
 
     #[test]

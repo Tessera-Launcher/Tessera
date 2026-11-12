@@ -2983,3 +2983,25 @@ fn account_label_distinguishes_signed_out_and_in() {
     );
 }
 
+
+#[test]
+fn vanilla_versions_are_labelled_with_the_newest_runtime() {
+    let mut app = App::new("/mc", "/acc", vec![version("1.8.9")], Vec::new());
+    let selected = version("1.8.9");
+    // `version` pins Java 17, so 8 alone is not enough and shows nothing.
+    app.installed_java = vec![8];
+    assert_eq!(app.java_for(&selected), None);
+    app.installed_java = vec![28, 17];
+    assert_eq!(app.java_for(&selected), Some(28));
+
+    // A loader profile keeps the pin its JSON declares.
+    let mut loader = version("1.8.9-forge-11.15.0.1656");
+    loader.inherits = Some("1.8.9".to_string());
+    loader.java = Some(8);
+    assert_eq!(app.java_for(&loader), Some(8));
+
+    // A trained cache is bound to the JVM that wrote it.
+    let mut trained = version("1.12.2");
+    trained.aot = true;
+    assert_eq!(app.java_for(&trained), Some(28));
+}

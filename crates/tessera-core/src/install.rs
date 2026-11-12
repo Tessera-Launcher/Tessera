@@ -262,7 +262,7 @@ fn installer_java(
     // otherwise the version number decides (see `launch::required_java`).
     let declared = declared_java(root, version);
     let required = crate::launch::required_java(version, declared);
-    let (java, major) = crate::launch::find_java(runtimes, required)?;
+    let (java, major) = crate::launch::find_java(runtimes, required, false)?;
     let _ = sender.send(InstallEvent::Log(format!(
         "{} 的官方安装器使用 Java {major}（{}）",
         loader.label(),
