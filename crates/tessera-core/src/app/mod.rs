@@ -42,12 +42,13 @@ pub enum Screen {
     Music,
 }
 
-/// A side effect the state machine wants performed.
+/// Launcher work the state machine wants performed.
 ///
 /// Everything that needs a thread, a process, the network, or a long disk walk is
 /// expressed as an [`Effect`] instead of a loose `pending_*` field: the state
 /// machine records the intent, and the main loop is the only place that knows
-/// how to execute it.
+/// how to execute it. Desktop-only actions (clipboard, browser, audio device)
+/// are [`UiRequest`]s, not effects.
 #[derive(Debug)]
 pub enum Effect {
     /// Start the device-code login for this identity.
@@ -65,10 +66,6 @@ pub enum Effect {
         runtime: crate::java::Runtime,
         urls: Vec<String>,
     },
-    /// Put `text` on the clipboard through the desktop clipboard tool.
-    Copy(String),
-    /// Hand `url` to the desktop's browser.
-    OpenBrowser(String),
     /// Reclaim shared libraries/assets no remaining version references.
     Sweep(Vec<String>),
     /// Prepare and start one version, and wait for it, on a worker thread.
@@ -78,8 +75,21 @@ pub enum Effect {
     },
     /// Train the AOT cache for a freshly installed vanilla version.
     TrainAot(String),
-    /// Ask the audio worker to play, pause, seek or change the volume.
-    Music(crate::audio::Command),
+}
+
+/// Something only the window can do: the clipboard, the browser, the audio
+/// device.
+///
+/// These are not [`Effect`]s. An effect starts work the state machine owns and
+/// whose reports come back to it; a UI request hands a value to a desktop tool
+/// the state machine cannot reach, and nothing reports back. Keeping them apart
+/// means the effect queue stays a description of launcher work, and a headless
+/// front-end can implement every effect while ignoring these.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiRequest {
+    Copy(String),
+    OpenBrowser(String),
+    Audio(crate::audio::Command),
 }
 
 /// Which background worker a report belongs to.
@@ -224,6 +234,8 @@ pub struct App {
     /// Work the state machine wants the main loop to do. Drained with
     /// [`App::take_effects`]; empty between iterations.
     effects: Vec<Effect>,
+    /// Desktop requests, drained with [`App::take_ui_requests`].
+    ui_requests: Vec<UiRequest>,
     /// The credential file whose refresh is in flight, kept so a failed refresh
     /// can fall back to the token already on disk.
     refreshing: Option<PathBuf>,
@@ -280,6 +292,7 @@ impl App {
             accounts_ui: AccountsUi::default(),
             download: DownloadUi::default(),
             effects: Vec::new(),
+            ui_requests: Vec::new(),
             refreshing: None,
             source: crate::install::Source::default(),
             launch_options: launch::Options::default(),
@@ -460,6 +473,21 @@ impl App {
     }
 
     /// Take everything the main loop has to do before the next frame.
+    /// Record a request for the desktop front-end.
+    pub fn request_ui(&mut self, request: UiRequest) {
+        self.ui_requests.push(request);
+    }
+
+    /// Every desktop request queued since the last drain.
+    pub fn take_ui_requests(&mut self) -> Vec<UiRequest> {
+        std::mem::take(&mut self.ui_requests)
+    }
+
+    /// The requests queued so far, for the front-end and for tests.
+    pub fn ui_requests(&self) -> &[UiRequest] {
+        &self.ui_requests
+    }
+
     pub fn take_effects(&mut self) -> Vec<Effect> {
         std::mem::take(&mut self.effects)
     }

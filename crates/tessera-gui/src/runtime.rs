@@ -71,12 +71,34 @@ impl Launcher {
             return;
         }
         if self.blocked {
-            // Do not even drain the effects: every one of them writes to a data
+            // Do not even drain the queues: every effect writes to a data
             // directory someone else is using.
             self.state.take_effects();
+            self.state.take_ui_requests();
             return;
         }
         let mut changed = false;
+
+        // Desktop requests first: they are cheap and one of them starts the
+        // audio worker, which the effects below never touch.
+        for request in self.state.take_ui_requests() {
+            changed = true;
+            match request {
+                UiRequest::Copy(text) => {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(copy_to_clipboard(&text));
+                    });
+                    self.tasks
+                        .watch(TaskKind::Clipboard, receiver, deliver_clipboard, clipboard_done);
+                }
+                UiRequest::OpenBrowser(url) => match open_browser(&url) {
+                    Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
+                    Err(error) => self.state.log(format!("打开浏览器失败：{error}")),
+                },
+                UiRequest::Audio(command) => self.send_audio(command, cx),
+            }
+        }
 
         for effect in self.state.take_effects() {
             changed = true;
@@ -160,20 +182,6 @@ impl Launcher {
                     );
                     self.tasks.watch(TaskKind::Aot, rx, deliver_aot, aot_done);
                 }
-                Effect::Music(command) => {
-                    self.send_audio(command, cx);
-                }
-                Effect::Copy(text) => {
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || {
-                        let _ = sender.send(copy_to_clipboard(&text));
-                    });
-                    self.tasks.watch(TaskKind::Clipboard, receiver, deliver_clipboard, clipboard_done);
-                }
-                Effect::OpenBrowser(url) => match open_browser(&url) {
-                    Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
-                    Err(error) => self.state.log(format!("打开浏览器失败：{error}")),
-                },
             }
         }
 

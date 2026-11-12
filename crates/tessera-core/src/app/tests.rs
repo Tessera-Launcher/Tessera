@@ -50,15 +50,15 @@ fn java_effect(app: &App) -> Option<(crate::java::Runtime, Vec<String>)> {
 }
 
 fn copy_effect(app: &App) -> Option<String> {
-    app.effects().iter().rev().find_map(|effect| match effect {
-        Effect::Copy(text) => Some(text.clone()),
+    app.ui_requests().iter().rev().find_map(|request| match request {
+        UiRequest::Copy(text) => Some(text.clone()),
         _ => None,
     })
 }
 
 fn browser_effect(app: &App) -> Option<String> {
-    app.effects().iter().rev().find_map(|effect| match effect {
-        Effect::OpenBrowser(url) => Some(url.clone()),
+    app.ui_requests().iter().rev().find_map(|request| match request {
+        UiRequest::OpenBrowser(url) => Some(url.clone()),
         _ => None,
     })
 }
@@ -2475,10 +2475,10 @@ fn esc_returns_to_the_main_screen() {
 
 /// The commands the transport queued this frame.
 fn music_commands(app: &App) -> Vec<&crate::audio::Command> {
-    app.effects()
+    app.ui_requests()
         .iter()
-        .filter_map(|effect| match effect {
-            Effect::Music(command) => Some(command),
+        .filter_map(|request| match request {
+            UiRequest::Audio(command) => Some(command),
             _ => None,
         })
         .collect()
@@ -2909,9 +2909,9 @@ fn leaving_and_returning_keeps_the_music_transport_and_cursor() {
     assert!(app.music.library.is_some());
     // Reopening must not stop the queue it was playing.
     assert!(!app
-        .effects()
+        .ui_requests()
         .iter()
-        .any(|effect| matches!(effect, Effect::Music(crate::audio::Command::Stop))));
+        .any(|request| matches!(request, UiRequest::Audio(crate::audio::Command::Stop))));
 }
 
 #[test]

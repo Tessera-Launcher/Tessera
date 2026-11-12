@@ -103,21 +103,21 @@ impl Launcher {
                                 .child(button("复制链接", cx, {
                                     let url = url.clone();
                                     move |this: &mut Launcher, cx| {
-                                        this.state.request(Effect::Copy(url.clone()));
+                                        this.state.request_ui(UiRequest::Copy(url.clone()));
                                         this.refresh(cx);
                                     }
                                 }))
                                 .child(button("打开链接", cx, {
                                     let url = url.clone();
                                     move |this: &mut Launcher, cx| {
-                                        this.state.request(Effect::OpenBrowser(url.clone()));
+                                        this.state.request_ui(UiRequest::OpenBrowser(url.clone()));
                                         this.refresh(cx);
                                     }
                                 }))
                                 .child(button("复制代码", cx, {
                                     let code = user_code.clone();
                                     move |this: &mut Launcher, cx| {
-                                        this.state.request(Effect::Copy(code.clone()));
+                                        this.state.request_ui(UiRequest::Copy(code.clone()));
                                         this.refresh(cx);
                                     }
                                 })),

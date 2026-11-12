@@ -317,7 +317,7 @@ impl App {
 
     fn stop_transport(&mut self) {
         if self.music.playing {
-            self.request(Effect::Music(crate::audio::Command::Stop));
+            self.request_ui(UiRequest::Audio(crate::audio::Command::Stop));
         }
         self.music.playing = false;
         self.music.position = Duration::ZERO;
@@ -337,8 +337,8 @@ impl App {
             start: self.music.position,
         };
         let volume = self.music.volume;
-        self.request(Effect::Music(crate::audio::Command::Volume(volume)));
-        self.request(Effect::Music(command));
+        self.request_ui(UiRequest::Audio(crate::audio::Command::Volume(volume)));
+        self.request_ui(UiRequest::Audio(command));
         self.music.playing = true;
     }
 
@@ -350,7 +350,7 @@ impl App {
         }
         if self.music.playing {
             self.music.playing = false;
-            self.request(Effect::Music(crate::audio::Command::Pause));
+            self.request_ui(UiRequest::Audio(crate::audio::Command::Pause));
             self.status = format!(
                 "已暂停 · {}",
                 self.music
@@ -402,7 +402,7 @@ impl App {
         let fraction = fraction.clamp(0.0, 1.0);
         self.music.position = duration.mul_f32(fraction);
         if self.music.playing {
-            self.request(Effect::Music(crate::audio::Command::Seek(
+            self.request_ui(UiRequest::Audio(crate::audio::Command::Seek(
                 self.music.position,
             )));
         }
@@ -410,7 +410,7 @@ impl App {
 
     pub fn music_set_volume(&mut self, volume: f32) {
         self.music.volume = volume.clamp(0.0, 1.0);
-        self.request(Effect::Music(crate::audio::Command::Volume(
+        self.request_ui(UiRequest::Audio(crate::audio::Command::Volume(
             self.music.volume,
         )));
     }

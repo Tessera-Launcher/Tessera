@@ -20,7 +20,7 @@ use crate::platform::{copy_to_clipboard, gui_key, open_browser};
 use crate::widgets::LogView;
 use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
-    TaskKind, VersionFilter,
+    TaskKind, UiRequest, VersionFilter,
 };
 use tessera_core::input::{Key, Modifiers};
 use tessera_core::version::VersionKind;

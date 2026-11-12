@@ -217,17 +217,17 @@ impl App {
                 match code {
                     Key::Esc | Key::Char('q') => self.close_login(),
                     Key::Char('c') if !user_code.is_empty() => {
-                        self.request(Effect::Copy(user_code.clone()));
+                        self.request_ui(UiRequest::Copy(user_code.clone()));
                         self.log(format!("复制设备码：{user_code}"));
                         self.status = "已复制设备码".to_string();
                     }
                     Key::Char('y') if !url.is_empty() => {
-                        self.request(Effect::Copy(url.clone()));
+                        self.request_ui(UiRequest::Copy(url.clone()));
                         self.log(format!("复制链接：{url}"));
                         self.status = "已复制链接".to_string();
                     }
                     Key::Char('o') if !url.is_empty() => {
-                        self.request(Effect::OpenBrowser(url.clone()));
+                        self.request_ui(UiRequest::OpenBrowser(url.clone()));
                         self.log(format!("在浏览器打开：{url}"));
                         self.status = "正在打开浏览器…".to_string();
                     }
