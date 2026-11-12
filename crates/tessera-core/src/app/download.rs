@@ -133,6 +133,9 @@ pub struct DownloadUi {
     pub aot_note: Option<String>,
     /// The version whose AOT training this screen is currently tracking.
     pub aot_training: Option<String>,
+    /// A version-list request is in flight. The stage cannot say this on its own:
+    /// a page that was never opened reads as `LoadingVersions` too.
+    fetching: bool,
 }
 
 impl Default for DownloadUi {
@@ -164,6 +167,7 @@ impl Default for DownloadUi {
             aot_assembling: false,
             aot_note: None,
             aot_training: None,
+            fetching: false,
         }
     }
 }
@@ -374,24 +378,45 @@ impl App {
     }
 
     /// Open the picker and ask the main loop to fetch the version list.
+    /// Show the download page, keeping what it already holds.
+    ///
+    /// Switching to another page and back must land on the same search, filter,
+    /// selection and — if one is running — the same install, so the page is only
+    /// initialised when it has nothing to show yet.
     pub fn open_download(&mut self) {
-        // An install owns the progress screen and its worker slot. Resetting
-        // `DownloadUi` here would hide a running install and detach its events.
+        // An install owns the progress screen and its worker slot. Reopening
+        // must not hide it behind a fresh picker.
         if self.install_running {
             self.screen = Screen::Download;
             self.status = "安装进行中，请等待完成".to_string();
             return;
         }
-        self.download = DownloadUi::default();
         self.screen = Screen::Download;
-        self.request(Effect::FetchVersions);
-        self.status = "下载：正在获取版本列表".to_string();
-        self.log("打开下载界面");
+        // Never loaded, or the last fetch failed: the list is what the page is
+        // for, so ask for it. A request still in flight is left alone.
+        if self.download.all.is_empty() && !self.download.fetching {
+            self.download.stage = DownloadStage::LoadingVersions;
+            self.download.fetching = true;
+            self.request(Effect::FetchVersions);
+            self.status = "下载：正在获取版本列表".to_string();
+            self.log("打开下载界面");
+        }
     }
 
     pub fn close_download(&mut self) {
         self.screen = Screen::Main;
-        self.download.stage = DownloadStage::Picking;
+        // A finished run leaves its result page behind; closing it goes back to
+        // the picker. A run still in progress keeps its stage, so coming back
+        // shows where it is.
+        if matches!(
+            self.download.stage,
+            DownloadStage::Done | DownloadStage::Failed
+        ) {
+            self.download.stage = DownloadStage::Picking;
+            self.download.installed = None;
+            self.download.error = None;
+            self.download.aot_note = None;
+        }
     }
 
     pub fn handle_download_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
@@ -613,6 +638,9 @@ impl App {
     pub fn handle_install_event(&mut self, event: InstallEvent) {
         match event {
             InstallEvent::Versions(versions) => {
+                self.download.fetching = false;
+                // A previous list failure is superseded by this answer.
+                self.download.error = None;
                 // A stale list request must not flip a running install back to
                 // the picker or reset its progress.
                 if self.install_running {
@@ -691,6 +719,7 @@ impl App {
                 }
             }
             InstallEvent::Failed(message) => {
+                self.download.fetching = false;
                 self.install_running = false;
                 self.download.stage = DownloadStage::Failed;
                 self.download.error = Some(message.clone());

@@ -9,19 +9,45 @@ pub struct AccountsUi {
     pub selected: usize,
     /// Set after the first `d`; a second `d` deletes the file.
     pub confirm_delete: bool,
+    /// Whether the page has been opened before. The cursor is only meaningful
+    /// from the second visit on; the first one lands on the active account.
+    visited: bool,
 }
 
 impl App {
     // ---- account manager ----
 
     pub fn open_accounts(&mut self) {
+        // The list is re-read (files change while the page is closed), but the
+        // cursor follows the row that was selected rather than the active
+        // account: switching pages and back must not move it.
+        let previous = self
+            .accounts_ui
+            .visited
+            .then(|| {
+                self.accounts
+                    .get(self.accounts_ui.selected)
+                    .map(|account| account.file.clone())
+            })
+            .flatten();
         self.accounts = accounts::list(&self.accounts_dir);
-        self.accounts_ui = AccountsUi::default();
-        if let Some(file) = self.account.file() {
-            if let Some(index) = self.accounts.iter().position(|a| a.file == file) {
-                self.accounts_ui.selected = index;
-            }
-        }
+        self.accounts_ui.selected = previous
+            .as_deref()
+            .and_then(|file| {
+                self.accounts
+                    .iter()
+                    .position(|account| account.file == file)
+            })
+            .or_else(|| {
+                self.account.file().and_then(|file| {
+                    self.accounts
+                        .iter()
+                        .position(|account| account.file == file)
+                })
+            })
+            .unwrap_or(0);
+        self.accounts_ui.confirm_delete = false;
+        self.accounts_ui.visited = true;
         self.screen = Screen::Accounts;
         self.status = format!("账户 {} 个", self.accounts.len());
     }

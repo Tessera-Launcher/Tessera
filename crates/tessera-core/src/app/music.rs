@@ -141,23 +141,31 @@ impl App {
     /// base-only ones: a profile that only exists as a loader's parent still
     /// names its own assets, and its music is the same music.
     pub fn open_music(&mut self) {
-        let keep = self.state_version_selection();
-        self.music = MusicUi::default();
+        let previous = self.state_version_selection();
+        // Re-derive the version list: versions are installed and removed while
+        // the page is closed, and the list is the one thing that must not go
+        // stale. Everything else below is kept.
         self.music.versions = self
             .all_versions
             .iter()
             .filter(|version| version.has_profile)
             .map(|version| version.dir.clone())
             .collect();
-        self.music.selected = keep
-            .and_then(|dir| self.music.versions.iter().position(|name| *name == dir))
-            .unwrap_or(0);
+        self.music.selected = previous
+            .as_deref()
+            .and_then(|dir| self.music.versions.iter().position(|name| name == dir))
+            .unwrap_or_else(|| self.music.selected.min(self.music.versions.len().saturating_sub(1)));
         self.screen = Screen::Music;
-        self.log("打开音乐界面");
-        self.reload_music();
+
+        let moved = previous.as_deref() != self.music.selected_version();
+        let never_loaded = self.music.library.is_none() && self.music.message.is_none();
+        if moved || never_loaded {
+            self.log("打开音乐界面");
+            self.reload_music();
+        }
     }
 
-    /// The version the page showed last time, so reopening it lands there.
+    /// The version the page shows.
     fn state_version_selection(&self) -> Option<String> {
         self.music.selected_version().map(str::to_string)
     }

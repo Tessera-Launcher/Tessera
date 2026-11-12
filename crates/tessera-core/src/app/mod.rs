@@ -727,6 +727,19 @@ impl App {
         }
     }
 
+    /// Go back to the main screen without closing the page that was open.
+    ///
+    /// The sidebar switches pages; it is not a close button. Whatever the page
+    /// holds (a picker's search and filter, a music queue that is still playing,
+    /// a runtime list) stays exactly as it was, so coming back is returning to the
+    /// same place instead of starting over.
+    pub fn show_main(&mut self) {
+        if self.screen == Screen::Login {
+            self.close_login();
+        }
+        self.screen = Screen::Main;
+    }
+
     /// Apply the result of the background sweep an uninstall started.
     pub fn handle_sweep(&mut self, sweep: cleanup::Sweep) {
         let note = sweep.note();
@@ -3773,6 +3786,119 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
         assert!(app.music.library.is_none());
         let message = app.music.message.as_deref().unwrap_or_default();
         assert!(message.contains("没有资源索引"), "{message}");
+    }
+
+    // ---- switching pages keeps each page's state ----
+
+    #[test]
+    fn leaving_and_returning_keeps_the_download_picker_where_it_was() {
+        let mut app = downloader();
+        app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+        type_search(&mut app, "1.20");
+        let picked = app.download.picked;
+        assert_eq!(app.download.filter, VersionFilter::Release);
+
+        app.show_main();
+        app.take_effects();
+        app.open_download();
+
+        assert_eq!(app.screen, Screen::Download);
+        assert_eq!(app.download.query, "1.20");
+        assert_eq!(app.download.filter, VersionFilter::Release);
+        assert_eq!(app.download.picked, picked);
+        assert_eq!(app.download.stage, DownloadStage::Picking);
+        assert!(!has_fetch_versions(&app), "the list is not requested again");
+    }
+
+    #[test]
+    fn leaving_and_returning_shows_a_running_install_and_its_progress() {
+        let mut app = downloader();
+        app.start_install();
+        app.handle_install_event(InstallEvent::Progress {
+            done: 3,
+            total: 10,
+            remaining_bytes: 1,
+            total_bytes: 2,
+        });
+
+        app.show_main();
+        app.open_download();
+
+        assert_eq!(app.screen, Screen::Download);
+        assert!(app.install_running);
+        assert_eq!(app.download.stage, DownloadStage::Installing);
+        assert_eq!(app.download.done, 3);
+    }
+
+    #[test]
+    fn leaving_and_returning_keeps_the_music_transport_and_cursor() {
+        let root = music_home();
+        let mut app = music_app(root.path());
+        app.open_music();
+        app.music.focus = MusicFocus::Tracks;
+        app.music.cursor = 1;
+        let title = app.music.selected_track().map(|track| track.title.clone());
+        app.music_play_pause();
+        app.music.position = std::time::Duration::from_secs(30);
+        app.take_effects();
+
+        app.show_main();
+        app.open_music();
+
+        assert_eq!(app.screen, Screen::Music);
+        assert!(app.music.playing, "the transport keeps running");
+        assert_eq!(app.music.position, std::time::Duration::from_secs(30));
+        assert_eq!(app.music.cursor, 1);
+        assert_eq!(app.music.selected_track().map(|track| track.title.clone()), title);
+        assert!(app.music.library.is_some());
+        // Reopening must not stop the queue it was playing.
+        assert!(!app
+            .effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::Music(crate::audio::Command::Stop))));
+    }
+
+    #[test]
+    fn the_java_page_does_not_ask_adoptium_again_while_a_request_is_in_flight() {
+        let mut app = app();
+        app.open_java();
+        assert!(has_fetch_java_list(&app));
+        app.take_effects();
+
+        app.show_main();
+        app.open_java();
+
+        assert_eq!(app.screen, Screen::Java);
+        assert!(!has_fetch_java_list(&app), "one request, not one per visit");
+    }
+
+    #[test]
+    fn a_loaded_java_list_survives_a_page_switch() {
+        let mut app = app();
+        app.open_java();
+        app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+        app.java.selected = 0;
+        app.take_effects();
+
+        app.show_main();
+        app.open_java();
+
+        assert_eq!(app.java.stage, JavaStage::Picking);
+        assert_eq!(app.java.runtimes.len(), 1);
+        assert!(!has_fetch_java_list(&app));
+    }
+
+    #[test]
+    fn leaving_and_returning_keeps_the_account_cursor() {
+        let (_tmp, mut app) = with_accounts();
+        app.open_accounts();
+        app.handle_accounts_key(Key::Down, Modifiers::NONE);
+        let selected = app.accounts_ui.selected;
+
+        app.show_main();
+        app.open_accounts();
+
+        assert_eq!(app.accounts_ui.selected, selected);
     }
 
     #[test]

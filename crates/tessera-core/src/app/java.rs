@@ -45,6 +45,9 @@ pub struct JavaUi {
     pub update_done: usize,
     /// Failures from the current `u` run, one line each.
     pub update_failures: Vec<String>,
+    /// A runtime-list request is in flight. `stage` alone cannot say this: never
+    /// opened also reads as `Loading`.
+    fetching: bool,
 }
 
 impl Default for JavaUi {
@@ -64,6 +67,7 @@ impl Default for JavaUi {
             update_queue: std::collections::VecDeque::new(),
             update_done: 0,
             update_failures: Vec::new(),
+            fetching: false,
         }
     }
 }
@@ -120,22 +124,33 @@ impl App {
     // ---- java runtimes ----
 
     /// Open the Java picker and ask the loop for Adoptium's list.
+    /// Show the runtime page, keeping what it already holds.
+    ///
+    /// The list, the selection and a download in flight all survive a trip to
+    /// another page. Only a page with no list yet asks Adoptium.
     pub fn open_java(&mut self) {
-        // A download owns this screen's worker slot. Reopening the screen must
-        // not replace `JavaUi` (and its Downloading stage) while it runs.
+        // A download owns this screen's worker slot. Reopening must not replace
+        // `JavaUi` (and its Downloading stage) while it runs.
         if self.java.stage == JavaStage::Downloading {
             self.screen = Screen::Java;
             self.status = "Java 下载进行中，请等待完成".to_string();
             return;
         }
-        self.java = JavaUi::default();
-        // The proxy is the one field of this screen that outlives it.
-        self.java.proxy = self.settings.github_proxy.clone();
-        self.java.installed = crate::java::installed_runtimes(&self.runtimes);
         self.screen = Screen::Java;
-        self.request(Effect::FetchJavaList);
-        self.status = "Java：正在查询 Adoptium".to_string();
-        self.log("打开 Java 下载界面");
+        // Cheap (one directory listing), and it is what tells the page which
+        // runtimes are already on disk after a download elsewhere.
+        self.java.installed = crate::java::installed_runtimes(&self.runtimes);
+        // Empty list and not already loading: first visit, or the last fetch
+        // failed. A request still in flight is left alone.
+        if self.java.runtimes.is_empty() && !self.java.fetching {
+            // The proxy is seeded from the config once; a typed value survives.
+            self.java.proxy = self.settings.github_proxy.clone();
+            self.java.stage = JavaStage::Loading;
+            self.java.fetching = true;
+            self.request(Effect::FetchJavaList);
+            self.status = "Java：正在查询 Adoptium".to_string();
+            self.log("打开 Java 下载界面");
+        }
     }
 
     pub fn close_java(&mut self) {
@@ -331,6 +346,7 @@ impl App {
         use crate::java::Event;
         match event {
             Event::Listed(runtimes) => {
+                self.java.fetching = false;
                 self.log(format!("Adoptium：{} 个 Java 版本", runtimes.len()));
                 self.java.runtimes = runtimes;
                 self.java.selected = self
@@ -389,6 +405,7 @@ impl App {
                     self.log(format!("Java {major} 更新失败：{message}"));
                     self.start_next_update();
                 } else {
+                    self.java.fetching = false;
                     self.java.stage = JavaStage::Failed;
                     self.java.message = Some(message.clone());
                     self.status = "Java 下载失败".to_string();

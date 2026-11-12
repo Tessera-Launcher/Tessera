@@ -57,33 +57,17 @@ impl Launcher {
     /// Switch screens from the sidebar. Clicking the active page is a no-op so
     /// it never resets the screen's own state (a running install, a picker).
     fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+        // Leaving the login overlay by switching pages cancels that flow; every
+        // other page keeps its state, which is the point of a sidebar.
+        if self.state.screen == Screen::Login {
+            self.state.close_login();
+        }
         match page {
-            Page::Home => match self.state.screen {
-                Screen::Main => {}
-                Screen::Accounts => self.state.close_accounts(),
-                Screen::Download | Screen::Installing => self.state.close_download(),
-                Screen::Java => self.state.close_java(),
-                Screen::Music => self.state.close_music(),
-                Screen::Login => self.state.close_login(),
-            },
-            Page::Accounts if self.state.screen != Screen::Accounts => {
-                self.state.open_accounts();
-            }
-            Page::Accounts => {}
-            Page::Download
-                if !matches!(self.state.screen, Screen::Download | Screen::Installing) =>
-            {
-                self.state.open_download();
-            }
-            Page::Download => {}
-            Page::Runtimes if self.state.screen != Screen::Java => {
-                self.state.open_java();
-            }
-            Page::Runtimes => {}
-            Page::Music if self.state.screen != Screen::Music => {
-                self.state.open_music();
-            }
-            Page::Music => {}
+            Page::Home => self.state.show_main(),
+            Page::Accounts => self.state.open_accounts(),
+            Page::Download => self.state.open_download(),
+            Page::Runtimes => self.state.open_java(),
+            Page::Music => self.state.open_music(),
         }
         self.refresh(cx);
     }
