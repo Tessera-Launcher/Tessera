@@ -24,6 +24,7 @@ pub mod logfile;
 pub mod login;
 pub mod music;
 pub mod paths;
+pub mod profile;
 pub mod session;
 pub mod settings;
 pub mod task;

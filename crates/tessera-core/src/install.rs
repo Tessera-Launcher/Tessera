@@ -274,17 +274,7 @@ fn installer_java(
 
 /// `javaVersion.majorVersion` from an already-installed profile, if it is there.
 fn declared_java(root: &Path, version: &str) -> Option<u32> {
-    let text = std::fs::read_to_string(
-        root.join("versions")
-            .join(version)
-            .join(format!("{version}.json")),
-    )
-    .ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    json.get("javaVersion")?
-        .get("majorVersion")?
-        .as_u64()
-        .map(|major| major as u32)
+    crate::profile::read(root, version)?.java
 }
 
 /// Latest loader build for one Minecraft version, via the loader manifests.

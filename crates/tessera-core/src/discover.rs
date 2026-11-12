@@ -128,23 +128,16 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
 
 /// Read `<dir>/<id>.json` into a [`LocalVersion`], or `None` if it is unreadable.
 fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
-    let text = std::fs::read_to_string(dir.join(format!("{id}.json"))).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let string = |key: &str| json.get(key).and_then(|v| v.as_str()).map(str::to_string);
-
+    let profile = crate::profile::read_in(dir, id)?;
     Some(LocalVersion {
         dir: id.to_string(),
-        id: string("id").unwrap_or_else(|| id.to_string()),
-        kind: string("type").unwrap_or_else(|| "-".to_string()),
-        java: json
-            .get("javaVersion")
-            .and_then(|v| v.get("majorVersion"))
-            .and_then(serde_json::Value::as_u64)
-            .map(|v| v as u32),
-        inherits: string("inheritsFrom"),
-        main_class: string("mainClass"),
+        id: profile.id.unwrap_or_else(|| id.to_string()),
+        kind: profile.kind.unwrap_or_else(|| "-".to_string()),
+        java: profile.java,
+        inherits: profile.inherits,
+        main_class: profile.main_class,
         has_jar: dir.join(format!("{id}.jar")).is_file(),
-        release_time: string("releaseTime"),
+        release_time: profile.release_time,
         // Filled in by `scan` once every profile is known.
         is_base_only: false,
         has_profile: true,
