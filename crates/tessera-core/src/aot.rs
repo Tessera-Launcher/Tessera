@@ -14,7 +14,7 @@
 //! cannot cache.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -170,6 +170,12 @@ fn train(
             original_jar.display()
         )));
     }
+    // A cache cannot replay classes from a sealed jar: the cached class defines
+    // its package with the cache as its code source, so the first class from
+    // that package which missed the cache trips a sealing violation at launch.
+    // LWJGL 2.9.4 (every pre-1.13 version) is sealed, so a 1.8.9 cache would
+    // crash the game while a 26.3 one would not.
+    unseal_classpath(&mut args)?;
     let total = classpath_classes(&args);
     let _ = sender.send(Event::Progress {
         version: version.to_string(),
@@ -457,8 +463,65 @@ fn wait_for_exit(child: &mut Child, timeout: Duration, cancel: &AtomicBool) -> R
 /// Source and manifest live in `assets/aot-preloader.java` / `.jar`.
 const PRELOADER: &[u8] = include_bytes!("../assets/aot-preloader.jar");
 
+/// Strip `Sealed: true` from every jar on the classpath that has it.
+///
+/// The rewrite keeps every other entry byte-for-byte, so the jar keeps working
+/// for a normal launch; what it loses is the JVM's promise that all classes in
+/// a package come from this one file, which the cache cannot honour.
+fn unseal_classpath(args: &mut [String]) -> Result<usize> {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let Some(classpath) = args
+        .windows(2)
+        .rev()
+        .find(|pair| pair[0] == "-cp" || pair[0] == "-classpath")
+        .map(|pair| pair[1].clone())
+    else {
+        return Ok(0);
+    };
+    let mut count = 0;
+    for entry in classpath.split(separator) {
+        if !entry.ends_with(".jar") {
+            continue;
+        }
+        let path = Path::new(entry);
+        if !is_sealed(path) {
+            continue;
+        }
+        let tmp = path.with_extension("jar.unsealed");
+        make_unsigned_jar(path, &tmp)?;
+        fs::rename(&tmp, path)
+            .map_err(|error| Error::io(format!("无法替换 {}", path.display()), error))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Whether a jar's manifest seals one or more packages.
+fn is_sealed(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    let Ok(mut manifest) = archive.by_name("META-INF/MANIFEST.MF") else {
+        return false;
+    };
+    let mut text = String::new();
+    manifest.read_to_string(&mut text).is_ok()
+        && text.lines().any(|line| {
+            line.trim()
+                .to_ascii_lowercase()
+                .starts_with("sealed:")
+        })
+}
+
 /// Copy the client jar without its signature files, so its classes are eligible
 /// for the AOT cache.
+///
+/// The manifest also loses any `Sealed:` attribute: signature and sealing rules
+/// are exactly what a cached class cannot satisfy, and a client jar that keeps
+/// either one makes the whole cache unusable instead of merely uncached.
 fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
     let file = File::open(source)
         .map_err(|error| Error::io(format!("无法读取客户端 jar {}", source.display()), error))?;
@@ -482,6 +545,29 @@ fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
         }
         let options =
             zip::write::SimpleFileOptions::default().compression_method(entry.compression());
+        if name.eq_ignore_ascii_case("META-INF/MANIFEST.MF") {
+            let mut text = String::new();
+            entry
+                .read_to_string(&mut text)
+                .map_err(|error| Error::invalid(format!("无法读取 {name}: {error}")))?;
+            let body: String = text
+                .lines()
+                .filter(|line| {
+                    !line
+                        .trim()
+                        .to_ascii_lowercase()
+                        .starts_with("sealed:")
+                })
+                .map(|line| format!("{line}\n"))
+                .collect();
+            writer
+                .start_file(&name, options)
+                .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
+            writer
+                .write_all(body.as_bytes())
+                .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
+            continue;
+        }
         if entry.is_dir() {
             writer
                 .add_directory(&name, options)
@@ -592,6 +678,58 @@ mod tests {
             .any(|name| name == "META-INF/services/example.Service"));
         assert!(!names.iter().any(|name| name.ends_with(".SF")));
         assert!(!names.iter().any(|name| name.ends_with(".RSA")));
+    }
+
+    #[test]
+    fn a_sealed_library_jar_is_unsealed_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("lwjgl.jar");
+        {
+            let mut zip = zip::ZipWriter::new(File::create(&jar).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
+            zip.write_all(
+                b"Manifest-Version: 1.0\r\nCreated-By: 1.6\r\nSealed: true\r\n",
+            )
+            .unwrap();
+            zip.start_file("org/lwjgl/opengl/GL11.class", options)
+                .unwrap();
+            zip.write_all(b"x").unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(is_sealed(&jar));
+
+        let mut args = vec![
+            "-cp".to_string(),
+            format!("{}:{}", jar.display(), tmp.path().join("other.jar").display()),
+        ];
+        assert_eq!(unseal_classpath(&mut args).unwrap(), 1);
+        assert!(!is_sealed(&jar), "the manifest no longer seals the package");
+        // The class path still points at the same file, and the class survived.
+        assert_eq!(
+            args[1],
+            format!("{}:{}", jar.display(), tmp.path().join("other.jar").display())
+        );
+        let mut archive = zip::ZipArchive::new(File::open(&jar).unwrap()).unwrap();
+        assert!(archive.by_name("org/lwjgl/opengl/GL11.class").is_ok());
+        assert!(archive.by_name("META-INF/MANIFEST.MF").is_ok());
+    }
+
+    #[test]
+    fn an_unsealed_classpath_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("plain.jar");
+        {
+            let mut zip = zip::ZipWriter::new(File::create(&jar).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
+            zip.write_all(b"Manifest-Version: 1.0\r\n").unwrap();
+            zip.finish().unwrap();
+        }
+        let before = fs::read(&jar).unwrap();
+        let mut args = vec!["-cp".to_string(), jar.display().to_string()];
+        assert_eq!(unseal_classpath(&mut args).unwrap(), 0);
+        assert_eq!(fs::read(&jar).unwrap(), before, "nothing was rewritten");
     }
 
     #[test]
