@@ -189,7 +189,7 @@ impl DownloadUi {
         self.visible.iter().map(|&index| &self.all[index])
     }
 
-    /// The indices behind [`DownloadUi::versions`]; the tree layout and the
+    /// The indices behind `DownloadUi::versions`; the tree layout and the
     /// title need both the list and what it points at.
     pub fn visible(&self) -> &[usize] {
         &self.visible

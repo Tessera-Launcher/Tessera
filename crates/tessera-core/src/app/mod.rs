@@ -6,7 +6,7 @@
 //!
 //! This module owns the shared state ([`App`], [`Screen`], [`Effect`]) and the
 //! main screen. Each full-screen flow owns its state and handlers next door:
-//! [`download`], [`java`], [`login`] and [`account_manager`]. The child modules are
+//! `download`, `java`, `login` and `account_manager`. The child modules are
 //! descendants of this one, so they can reach `App`'s private fields without the
 //! fields being opened to the crate.
 
@@ -386,10 +386,11 @@ impl App {
 
     /// The Java major this version will launch with, for display.
     ///
-    /// Same rule as [`launch::find_java`]: a vanilla profile takes the newest
-    /// runtime at or above its minimum, a LaunchWrapper-era one is capped where
-    /// `java.applet` still exists, and a loader profile keeps its own pin. An
-    /// AOT-trained version always runs on the JVM recorded next to its cache.
+    /// Same rule as [`launch::find_java`]: vanilla and LaunchWrapper-era profiles
+    /// take the newest runtime at or above their minimum (the legacy agent
+    /// supplies the removed `java.applet` classes), while a loader profile keeps
+    /// its own pin. An AOT-trained version always runs on the JVM recorded next
+    /// to its cache.
     pub fn java_for(&self, version: &LocalVersion) -> Option<u32> {
         if version.aot {
             return Some(28);
@@ -720,7 +721,7 @@ impl App {
     /// `mods/` can hold tens of thousands of files, and the details pane asks on
     /// every frame. The front-end measures off the UI thread and reports back
     /// through [`App::set_measured_size`]. Any change to what is on disk goes
-    /// through [`App::reload`] or [`App::uninstall`], which drop the cache.
+    /// through `App::reload` or `App::uninstall`, which drop the cache.
     pub fn selected_size(&self) -> Option<u64> {
         let dir = self.selected_dir()?;
         match &self.size_cache {

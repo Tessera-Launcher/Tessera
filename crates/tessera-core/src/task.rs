@@ -33,7 +33,7 @@ pub fn write() -> RwLockWriteGuard<'static, ()> {
 ///
 /// Every worker has the same shape: a channel, a thread, and a `Result` whose
 /// error still has to reach the UI when `work` never sent a terminal event.
-/// [`on_error`] builds that last report; it runs only when the closure returns
+/// `on_error` builds that last report; it runs only when the closure returns
 /// `Err`.
 pub fn spawn_reporter<T, F, W>(name: &str, on_error: F, work: W) -> std::sync::mpsc::Receiver<T>
 where

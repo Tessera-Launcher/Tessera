@@ -8,8 +8,8 @@
 
 已可用：扫描并启动本地版本、微软 device code 登录（官方 / 自定义 app id /
 `azure_app_ids.toml` 清单）、版本与 5 种 Mod Loader 下载、Adoptium JRE 下载、
-令牌刷新、卸载与共享库/资源回收、26.1+ 原版 AOT 缓存训练、唱片与背景音乐播放、
-日志落盘、按键全键盘操作。
+令牌刷新、卸载与共享库/资源回收、原版 AOT 缓存训练（含 1.0–1.5.2 的 legacy 路径）、
+唱片与背景音乐播放、日志落盘、按键全键盘操作。
 
 未做：mods / 资源包管理、服务器列表、实例设置页、设置界面（仍手改 `配置.toml`）、
 自动更新、主题与 Unifont。
@@ -68,10 +68,16 @@ Windows / macOS 无需额外系统包。音乐播放不依赖 FFmpeg 或系统�
 工作目录是版本目录本身，所以 mods 要放进 `versions/<id>/mods/`，不是 `data/游戏/mods/`。
 游戏进程由启动器后台 `wait`，退出码写进状态栏和日志。
 
+1.13–1.16.5 的 LWJGL 3.1/3.2 在 `dlopen` 前会把 native 路径转成 ASCII，数据目录含中文时
+会加载 `libglfw` 失败。启动器会为这些版本在临时目录建一个纯 ASCII 的 natives 镜像：
+Unix 用 symlink，Windows 优先用 NTFS junction（不需要管理员权限），失败才退回 symlink
+或复制。1.12.2 及更早（LWJGL 2）和 1.17+（LWJGL 3.3+）不受影响。
+
 **Java**：只用 `data/运行时/` 里启动器自己下载的运行时，不查 `JAVA_HOME`/`PATH`。
 需要的版本由版本 json 的 `javaVersion.majorVersion` 决定，缺失时按版本号推：
 1.20.5+ → 21，1.18–1.20.4 → 17，1.17 → 16（实际用 17），1.16.5 及更老 → 8。
-要求 8 的只接受 8，要求 17/21/25 的接受同版本或更高。
+原版（含 1.0–1.5.2 的 LaunchWrapper 时代）取已安装的最新 Java，因此一个 Java 28 可以
+跑所有原版；Mod Loader profile 按元数据 pin，要求 8 的就只接受 8。
 
 **下载**：`d` 打开选版本界面，`/` 搜索、`f` 循环类型、`Space` 展开快照族（搜索/筛选时
 一律平铺）、`Tab` 切焦点。右下角切换下载源（默认 BMCLAPI，`s` 键），只影响本次运行，
@@ -82,9 +88,11 @@ Windows / macOS 无需额外系统包。音乐播放不依赖 FFmpeg 或系统�
 SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换源，`p` 设 GitHub Proxy，
 `u` 批量更新可更新的大版本。装到 `data/运行时/<版本号>/`，启动时优先使用。
 
-**AOT**：原版 26.1+ 安装后自动训练（强制 Java 28 EA、去签名副本、`-javaagent` 全量
-类加载），缓存写 `versions/<id>/<id>.aot`；只有同一 Java build 与 agent 都在时才在
-启动时启用。26.x（含 Loader profile）启动还带 `fastmenu-agent.jar` 跳过菜单淡入。
+**AOT**：训练由主页的「开始 AOT 训练」手动触发，安装不会背着玩家启动游戏。任何原版
+都可以训练（Loader profile 除外，自定义类加载器加载的类进不了缓存）：强制 Java 28 EA、
+去签名客户端副本、unseal 密封库、`-javaagent` 全量预加载，缓存写
+`versions/<id>/<id>.aot`。只有同一 Java build 与 agent 都在时才在启动时启用；Java 升级
+后需要重训。26.x（含 Loader profile）启动还带 `fastmenu-agent.jar` 跳过菜单淡入。
 训练失败不影响安装本身。
 
 **音乐**：曲目名来自 `assets/indexes/<id>.json`，字节来自 `assets/objects/<sha1>`，
@@ -117,7 +125,10 @@ github_proxy = ""
 ```
 crates/tessera-core/  纯逻辑 + 屏幕状态机：发现、启动参数、下载、Java、账户、清理、音乐
 crates/tessera-core/src/app/   状态机（App / Screen / Effect）+ 每个流程的状态
-crates/tessera-core/assets/    AOT 预加载与 fastmenu 两个 Java agent 的源码和 jar
+crates/tessera-core/src/launch/  启动组装：build（参数/类路径）、manifest（版本链）、
+                              java（运行时选择）、natives（native 路径与 ASCII 镜像）、
+                              aot_cache（选择已训练缓存）、agents（内嵌 Java agent）
+crates/tessera-core/assets/    AOT 预加载、fastmenu、legacy 三个 Java agent 的源码和 jar
 crates/tessera-gui/   桌面前端：gpui-kit 窗口，复用同一个状态机（每屏一个文件）
 vendor/mdt-minecraft  下载层（upstream + 本地修复，见其 VENDORED.md）
 vendor/minecraft-auth 登录层（device code → 启动凭据）
