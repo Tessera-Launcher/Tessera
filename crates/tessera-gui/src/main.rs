@@ -25,7 +25,7 @@ use tessera_core::app::{
 use tessera_core::input::{Key, Modifiers};
 use tessera_core::install::{self, InstallEvent, ASSET_CONCURRENCY};
 use tessera_core::launch;
-use tessera_core::login::{self, Identity, LoginEvent};
+use tessera_core::login::{self, LoginEvent};
 use tessera_core::version::VersionKind;
 use tessera_core::{
     accounts, aot, audio, cleanup, discover, instance, java, logfile, music, paths::Paths, session,
@@ -87,6 +87,8 @@ struct Launcher {
     search_sub: Option<Subscription>,
     app_id_input: Option<Entity<InputState>>,
     app_id_sub: Option<Subscription>,
+    offline_input: Option<Entity<InputState>>,
+    offline_sub: Option<Subscription>,
     proxy_input: Option<Entity<InputState>>,
     proxy_sub: Option<Subscription>,
     /// The audio worker's command side. Its reports live in [`Tasks`], and the
@@ -219,6 +221,8 @@ impl Launcher {
             search_sub: None,
             app_id_input: None,
             app_id_sub: None,
+            offline_input: None,
+            offline_sub: None,
             proxy_input: None,
             proxy_sub: None,
             music_audio: None,

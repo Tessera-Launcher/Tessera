@@ -21,8 +21,12 @@ impl Launcher {
                         "官方启动器",
                         "用 Minecraft 官方启动器的应用身份登录",
                     ),
-                    (1, "自定义 app id", "其他启动器的 Azure 客户端 id"),
-                    (2, "现有凭据…", "读 azure_app_ids.toml 里的 app id"),
+                    (
+                        1,
+                        "自定义 app id",
+                        "手填一个 Azure 客户端 id，或选 azure_app_ids.toml 里的凭据",
+                    ),
+                    (2, "离线登录", "没有正版账户：只进单机，联机会被拒绝"),
                 ] {
                     body = body.child(choice_row(
                         title.into(),
@@ -38,9 +42,14 @@ impl Launcher {
                 }
                 hint = "选择用哪个身份登录".to_string();
             }
-            LoginStep::ChooseAppIds => {
+            LoginStep::AppId => {
+                let input = self.ensure_app_id(window, cx);
+                // The overlay is rebuilt on every open while the entity keeps
+                // its text, so the field is pulled back to the state machine.
+                self.sync_login_input(&input, &self.state.login.app_id.clone(), window, cx);
+                let mut list = div().v_flex().gap_1();
                 if let Some(error) = &self.state.login.app_ids_error {
-                    body = body.child(
+                    list = list.child(
                         div()
                             .p_2()
                             .text_sm()
@@ -48,45 +57,69 @@ impl Launcher {
                             .child(error.clone()),
                     );
                 }
-                for (index, entry) in self.state.login.app_ids.iter().enumerate() {
-                    let name = entry.label().to_string();
-                    let app_id = entry.client_id().to_string();
-                    body = body.child(choice_row(
-                        name.clone(),
-                        app_id.clone(),
+                for (index, entry) in self.state.login.app_ids.clone().into_iter().enumerate() {
+                    list = list.child(choice_row(
+                        entry.label().to_string(),
+                        entry.client_id().to_string(),
                         index == self.state.login.app_id_choice,
                         cx,
                         move |this: &mut Launcher, cx| {
-                            this.state.start_login(Identity::Saved {
-                                name: name.clone(),
-                                app_id: app_id.clone(),
-                            });
+                            this.state.start_saved_app_id(index);
                             this.refresh(cx);
                         },
                     ));
                 }
-                hint = "点一个身份开始登录".to_string();
+                body = body
+                    .child(div().p_2().text_sm().text_color(rgb(DIM)).child(
+                        "填一个 Azure 应用的 client id（Graph 权限只用于拿皮肤）；\
+                                 留空则用下面选中的现有凭据。",
+                    ))
+                    .child(Input::new(&input).appearance(false).text_sm())
+                    .child(div().h_flex().gap_2().child(primary_button(
+                        "用这个 id 登录",
+                        cx,
+                        |this: &mut Launcher, cx| {
+                            this.state.confirm_login_app_id();
+                            this.refresh(cx);
+                        },
+                    )))
+                    .child(list);
+                hint = "输入 id 后 Enter，或用 ↑↓ 选现有凭据".to_string();
             }
-            LoginStep::EnterAppId => {
-                let input = self.ensure_app_id(window, cx);
+            LoginStep::OfflineName => {
+                let input = self.ensure_offline_name(window, cx);
+                self.sync_login_input(&input, &self.state.login.offline_name.clone(), window, cx);
+                let allow_any = self.state.login.offline_any;
                 body = body
                     .child(
                         div()
                             .p_2()
                             .text_sm()
                             .text_color(rgb(DIM))
-                            .child("填一个 Azure 应用的 client id（Graph 权限只用于拿皮肤）。"),
+                            .child("离线模式没有会话：能进单机，联机会被服务器拒绝。"),
                     )
                     .child(Input::new(&input).appearance(false).text_sm())
-                    .child(div().h_flex().gap_2().child(primary_button(
-                        "开始登录",
+                    .child(checkbox(
+                        "允许任意用户名（中文、空格等，不要求符合原版规则）",
+                        allow_any,
                         cx,
                         |this: &mut Launcher, cx| {
-                            this.state.confirm_login_app_id();
+                            this.state.toggle_offline_any();
                             this.refresh(cx);
                         },
-                    )));
-                hint = "Enter 或「开始登录」提交".to_string();
+                    ));
+                if let Some(error) = &self.state.login.offline_error {
+                    body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
+                }
+                body = body.child(div().h_flex().gap_2().child(primary_button(
+                    "离线登录",
+                    cx,
+                    |this: &mut Launcher, cx| {
+                        this.state.confirm_offline_login();
+                        this.refresh(cx);
+                    },
+                )));
+                hint = "Tab 切换「任意用户名」· Enter 登录".to_string();
             }
             LoginStep::Waiting { user_code, url } => {
                 let ready = !user_code.is_empty() && !url.is_empty();
@@ -177,6 +210,52 @@ impl Launcher {
                     this.refresh(cx);
                 })),
             )
+    }
+
+    /// Keep a login text field in step with the state machine.
+    ///
+    /// The state is cleared when the overlay opens, but the input entity keeps
+    /// whatever was typed last time; without this the field would show (and
+    /// then submit) a stale id. Typing keeps both sides equal, so this only
+    /// ever writes when the two disagree.
+    fn sync_login_input(
+        &self,
+        input: &Entity<InputState>,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if input.read(cx).value().as_ref() != value {
+            input.update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+    }
+
+    /// The offline-name field on the login screen, created once.
+    fn ensure_offline_name(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(state) = &self.offline_input {
+            return state.clone();
+        }
+        let state = cx.new(|cx| InputState::new(window, cx).placeholder("离线用户名，例如 Steve"));
+        self.offline_sub = Some(cx.subscribe(
+            &state,
+            |this: &mut Launcher, state, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::Change => {
+                        let text = state.read(cx).value().to_string();
+                        this.state.set_login_offline_name(&text);
+                    }
+                    InputEvent::PressEnter { .. } => this.state.confirm_offline_login(),
+                    _ => return,
+                }
+                this.refresh(cx);
+            },
+        ));
+        self.offline_input = Some(state.clone());
+        state
     }
 
     /// The custom-client-id field on the login screen, created once.

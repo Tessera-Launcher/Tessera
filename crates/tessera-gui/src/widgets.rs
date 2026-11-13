@@ -233,6 +233,50 @@ pub(crate) fn choice_row(
         .child(div().text_xs().text_color(rgb(DIM)).child(subtitle))
 }
 
+/// A one-line checkbox: a filled square plus a label, toggled by clicking it.
+///
+/// Drawn from plain divs like `choice_row`, so it needs no widget crate and no
+/// extra focus handling (the keyboard toggles the same state from the state
+/// machine).
+pub(crate) fn checkbox(
+    label: &str,
+    checked: bool,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(format!("checkbox-{label}"))
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .py_1()
+        .cursor_pointer()
+        .on_click(
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                action(this, cx);
+            }),
+        )
+        .child(
+            div()
+                .w(px(14.0))
+                .h(px(14.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .bg(rgb(if checked { ACCENT } else { ROW }))
+                .text_xs()
+                .text_color(rgb(if checked { 0x0b_0d_10 } else { DIM }))
+                .child(if checked { "✓" } else { "" }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(if checked { TEXT } else { DIM }))
+                .child(label.to_string()),
+        )
+}
+
 pub(crate) fn button(
     label: &str,
     cx: &mut Context<Launcher>,

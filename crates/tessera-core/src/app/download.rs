@@ -525,16 +525,6 @@ impl App {
         self.status = format!("下载：{} 版本", filter.label());
     }
 
-    /// A text field changed the custom client id on the login screen.
-    pub fn set_login_app_id(&mut self, app_id: &str) {
-        self.login.app_id = app_id.to_string();
-    }
-
-    /// Enter on the custom-app-id step, or the OK button.
-    pub fn confirm_login_app_id(&mut self) {
-        self.handle_login_key(crate::input::Key::Enter, crate::input::Modifiers::NONE);
-    }
-
     /// Open or close the group drawn at `drawn`, for a front-end that has the
     /// row index rather than a keyboard cursor.
     pub fn toggle_row(&mut self, drawn: usize) {

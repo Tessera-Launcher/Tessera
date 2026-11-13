@@ -182,6 +182,11 @@ impl TaskKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Account {
     SignedOut,
+    /// A name typed into the login overlay: no session, no account file. The
+    /// game starts offline, so only single player works.
+    Offline {
+        name: String,
+    },
     /// A saved account: player name, which numbered session of that player it is,
     /// the identity that issued it, and the file holding it.
     ///
@@ -200,6 +205,7 @@ impl Account {
     pub fn label(&self) -> String {
         match self {
             Account::SignedOut => "未登录".to_string(),
+            Account::Offline { name } => format!("{name} · 离线"),
             Account::SignedIn {
                 name,
                 copy,
@@ -212,7 +218,7 @@ impl Account {
     /// The credential file behind this session, if any.
     pub fn file(&self) -> Option<&Path> {
         match self {
-            Account::SignedOut => None,
+            Account::SignedOut | Account::Offline { .. } => None,
             Account::SignedIn { file, .. } => Some(file),
         }
     }
@@ -1041,7 +1047,7 @@ impl App {
             }
             None => {
                 let name = match &self.account {
-                    Account::SignedIn { name, .. } => name.clone(),
+                    Account::SignedIn { name, .. } | Account::Offline { name } => name.clone(),
                     Account::SignedOut => "Player".to_string(),
                 };
                 self.log("未登录，使用离线身份（进服务器会被拒绝）");

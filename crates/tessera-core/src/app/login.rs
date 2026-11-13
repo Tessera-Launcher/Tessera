@@ -1,6 +1,6 @@
-//! The Microsoft login overlay: identity choice, a typed app id, the saved
-//! `azure_app_ids.toml` list, the device-code screen, and the events the login
-//! worker reports.
+//! The login overlay: identity choice, the custom app id screen (a typed id on
+//! top of the saved `azure_app_ids.toml` list), the offline name screen, the
+//! device-code screen, and the events the login worker reports.
 
 use super::*;
 
@@ -10,13 +10,14 @@ pub enum LoginStep {
     /// Pick the identity.
     #[default]
     Choose,
-    /// Type the custom application's client id.
-    EnterAppId,
-    /// Pick one of the ids listed in `azure_app_ids.toml`.
-    ChooseAppIds,
+    /// Custom app id: a typed client id, with the ids from
+    /// `azure_app_ids.toml` listed underneath.
+    AppId,
+    /// Type an offline player name.
+    OfflineName,
     /// Waiting for the browser: show the code.
     Waiting { user_code: String, url: String },
-    /// Finished, with the account that was written.
+    /// Finished, with the account that was written (or the offline name).
     Done { player: String, application: String },
     /// Finished with an error.
     Failed(String),
@@ -26,9 +27,9 @@ pub enum LoginStep {
 #[derive(Debug, Clone, Default)]
 pub struct LoginUi {
     pub step: LoginStep,
-    /// 0 = official launcher, 1 = custom app id, 2 = the saved list.
+    /// 0 = official launcher, 1 = custom app id, 2 = offline.
     pub choice: usize,
-    /// Typed client id, only used by the custom identity.
+    /// Typed client id, only used by [`LoginStep::AppId`].
     pub app_id: String,
     /// The list read from `azure_app_ids.toml`, in file order.
     pub app_ids: Vec<crate::app_ids::AppId>,
@@ -38,15 +39,29 @@ pub struct LoginUi {
     pub app_id_choice: usize,
     /// First drawn row, so a long list can scroll under the selection.
     pub app_id_offset: usize,
+    /// Typed offline player name, only used by [`LoginStep::OfflineName`].
+    pub offline_name: String,
+    /// Allow names that are not valid vanilla usernames (Chinese, spaces, …).
+    pub offline_any: bool,
+    /// Why the typed offline name was refused, shown under the field.
+    pub offline_error: Option<String>,
 }
 
 impl LoginUi {
-    /// Rows on the identity screen: official, custom, saved list.
+    /// Rows on the identity screen: official, custom app id, offline.
     pub const CHOICES: usize = 3;
 
     pub fn identity(&self) -> Option<Identity> {
         match self.step {
-            LoginStep::ChooseAppIds => {
+            // Both live on the same screen: a typed id wins, and an empty field
+            // falls through to the row the cursor is on.
+            LoginStep::AppId => {
+                let app_id = self.app_id.trim();
+                if !app_id.is_empty() {
+                    return Some(Identity::Custom {
+                        app_id: app_id.to_string(),
+                    });
+                }
                 let entry = self.app_ids.get(self.app_id_choice)?;
                 Some(Identity::Saved {
                     name: entry.label().to_string(),
@@ -55,16 +70,34 @@ impl LoginUi {
             }
             _ => match self.choice {
                 0 => Some(Identity::Official),
-                1 => {
-                    let app_id = self.app_id.trim();
-                    (!app_id.is_empty()).then(|| Identity::Custom {
-                        app_id: app_id.to_string(),
-                    })
-                }
                 _ => None,
             },
         }
     }
+}
+
+/// Why `name` cannot be used as an offline player name, or `None` when it can.
+///
+/// Offline mode is the only place a name matters without a server to check it,
+/// so the rules are stated here rather than discovered from a crash: vanilla
+/// usernames are 3–16 ASCII letters, digits or underscores, and anything else
+/// needs the checkbox (Chinese names are popular on single-player worlds and
+/// work everywhere the game does not validate the argument).
+pub fn offline_name_problem(name: &str, allow_any: bool) -> Option<String> {
+    if name.is_empty() {
+        return Some("请输入用户名".to_string());
+    }
+    if allow_any {
+        return None;
+    }
+    let length = name.chars().count();
+    if !(3..=16).contains(&length) {
+        return Some("原版用户名是 3–16 个字符（勾选后可输入其他名字）".to_string());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Some("原版用户名只能用字母、数字和下划线（勾选后可输入其他名字）".to_string());
+    }
+    None
 }
 
 impl App {
@@ -77,6 +110,9 @@ impl App {
             _ => Screen::Main,
         };
         self.login = LoginUi::default();
+        // The saved ids are shown on the custom-app-id screen and are cheap to
+        // read, so the list is current the moment that screen opens.
+        self.reload_app_ids();
         self.screen = Screen::Login;
         self.status = "登录：选择身份".to_string();
     }
@@ -90,34 +126,32 @@ impl App {
         }
     }
 
-    /// Read the app-id list, then show it. The file is re-read every time so an
-    /// edit in another window is picked up without restarting the launcher.
-    pub fn open_app_ids(&mut self) {
+    /// Read the app-id list into the overlay. The file is re-read every time so
+    /// an edit in another window is picked up without restarting the launcher.
+    fn reload_app_ids(&mut self) {
         let path = self.app_ids_path();
         self.login.app_id_choice = 0;
         self.login.app_id_offset = 0;
         match crate::app_ids::load(&path) {
-            Ok(ids) if !ids.is_empty() => {
+            Ok(ids) => {
                 self.login.app_ids = ids;
                 self.login.app_ids_error = None;
-                self.login.step = LoginStep::ChooseAppIds;
-                self.status = "登录：选择现有凭据".to_string();
-            }
-            Ok(_) => {
-                self.login.app_ids.clear();
-                self.login.app_ids_error =
-                    Some(format!("{} 里还没有可用的 [[api_keys]]", path.display()));
-                self.login.step = LoginStep::ChooseAppIds;
-                self.status = "登录：app id 清单为空".to_string();
             }
             Err(message) => {
+                // Not logged here: the screen is built on every open, so a
+                // missing file would otherwise fill the log on every `l`.
                 self.login.app_ids.clear();
-                self.login.app_ids_error = Some(message.clone());
-                self.login.step = LoginStep::ChooseAppIds;
-                self.status = "登录：无法读取 app id 清单".to_string();
-                self.log(message);
+                self.login.app_ids_error = Some(message);
             }
         }
+    }
+
+    /// Open the custom-app-id screen and refresh the list under it.
+    pub fn open_app_ids(&mut self) {
+        self.reload_app_ids();
+        self.login.step = LoginStep::AppId;
+        self.login.offline_error = None;
+        self.status = "登录：自定义 app id".to_string();
     }
 
     pub fn close_login(&mut self) {
@@ -141,11 +175,12 @@ impl App {
                 Key::Char('g') | Key::Home => self.login.choice = 0,
                 Key::Char('G') | Key::End => self.login.choice = LoginUi::CHOICES - 1,
                 Key::Enter | Key::Char(' ') => match self.login.choice {
-                    1 => {
-                        self.login.step = LoginStep::EnterAppId;
-                        self.status = "登录：输入 app id".to_string();
+                    1 => self.open_app_ids(),
+                    2 => {
+                        self.login.step = LoginStep::OfflineName;
+                        self.login.offline_error = None;
+                        self.status = "登录：输入离线用户名".to_string();
                     }
-                    2 => self.open_app_ids(),
                     _ => {
                         if let Some(identity) = self.login.identity() {
                             self.start_login(identity);
@@ -154,8 +189,9 @@ impl App {
                 },
                 _ => {}
             },
-            LoginStep::ChooseAppIds => match code {
-                Key::Esc | Key::Char('q') => {
+            // No `q` on the two typing screens: it is a letter here, not quit.
+            LoginStep::AppId => match code {
+                Key::Esc => {
                     self.login.step = LoginStep::Choose;
                     self.status = "登录：选择身份".to_string();
                 }
@@ -170,41 +206,49 @@ impl App {
                 Key::End | Key::Char('G') => {
                     self.login.app_id_choice = self.login.app_ids.len().saturating_sub(1);
                 }
-                Key::Enter | Key::Char(' ') => {
-                    if let Some(identity) = self.login.identity() {
-                        self.start_login(identity);
-                    } else {
-                        // An unreadable or empty file must say so, not start a
-                        // login with an id that came from nowhere.
-                        self.status = self
-                            .login
-                            .app_ids_error
-                            .clone()
-                            .unwrap_or_else(|| "没有可用的 app id".to_string());
-                    }
-                }
-                _ => {}
-            },
-            LoginStep::EnterAppId => match code {
-                Key::Esc => {
-                    self.login.step = LoginStep::Choose;
-                    self.status = "登录：选择身份".to_string();
-                }
                 Key::Backspace => {
                     self.login.app_id.pop();
                 }
-                Key::Enter => {
-                    if let Some(identity) = self.login.identity() {
-                        self.start_login(identity);
-                    } else {
-                        // Empty ids are refused rather than silently replaced by anything.
-                        self.status = "请输入 app id（不能为空）".to_string();
+                Key::Enter => match self.login.identity() {
+                    Some(identity) => self.start_login(identity),
+                    None => {
+                        // Neither a typed id nor a readable row: say which one
+                        // is missing instead of starting a login with nothing.
+                        self.status = match self.login.app_ids_error.clone() {
+                            Some(error) => format!("{error}；也可以直接输入 app id"),
+                            None => "请输入 app id，或选一个现有凭据".to_string(),
+                        };
                     }
-                }
+                },
                 Key::Char(c)
                     if !modifiers.contains(Modifiers::CONTROL) && self.login.app_id.len() < 64 =>
                 {
                     self.login.app_id.push(c);
+                }
+                _ => {}
+            },
+            LoginStep::OfflineName => match code {
+                Key::Esc => {
+                    self.login.step = LoginStep::Choose;
+                    self.login.offline_error = None;
+                    self.status = "登录：选择身份".to_string();
+                }
+                Key::Tab => {
+                    self.toggle_offline_any();
+                }
+                Key::Backspace => {
+                    self.login.offline_name.pop();
+                    self.login.offline_error = None;
+                }
+                Key::Enter => {
+                    self.apply_offline_login();
+                }
+                Key::Char(c)
+                    if !modifiers.contains(Modifiers::CONTROL)
+                        && self.login.offline_name.chars().count() < 32 =>
+                {
+                    self.login.offline_name.push(c);
+                    self.login.offline_error = None;
                 }
                 _ => {}
             },
@@ -244,6 +288,68 @@ impl App {
             }
         }
         true
+    }
+
+    /// A text field changed the custom client id on the login screen.
+    pub fn set_login_app_id(&mut self, app_id: &str) {
+        self.login.app_id = app_id.to_string();
+    }
+
+    /// Enter on the custom-app-id screen, or the OK button.
+    pub fn confirm_login_app_id(&mut self) {
+        self.handle_login_key(Key::Enter, Modifiers::NONE);
+    }
+
+    /// A text field changed the offline player name on the login screen.
+    pub fn set_login_offline_name(&mut self, name: &str) {
+        self.login.offline_name = name.to_string();
+        self.login.offline_error = None;
+    }
+
+    /// Enter on the offline-name screen, or the OK button.
+    pub fn confirm_offline_login(&mut self) {
+        self.apply_offline_login();
+    }
+
+    /// Flip the "any name" box on the offline screen.
+    pub fn toggle_offline_any(&mut self) {
+        self.login.offline_any = !self.login.offline_any;
+        self.login.offline_error = None;
+        self.status = if self.login.offline_any {
+            "离线：可以输入任意用户名".to_string()
+        } else {
+            "离线：用户名要符合原版规则".to_string()
+        };
+    }
+
+    /// Validate the typed offline name and make it the current identity.
+    pub fn apply_offline_login(&mut self) {
+        let name = self.login.offline_name.trim().to_string();
+        if let Some(problem) = offline_name_problem(&name, self.login.offline_any) {
+            self.login.offline_error = Some(problem.clone());
+            self.status = problem;
+            return;
+        }
+        self.account = Account::Offline { name: name.clone() };
+        self.login.step = LoginStep::Done {
+            player: name.clone(),
+            application: "离线".to_string(),
+        };
+        self.status = format!("离线登录：{name}");
+        self.log(format!("离线登录：{name}（没有会话，进服务器会被拒绝）"));
+    }
+
+    /// Start a login as the saved id at `index`, for a front-end with the row.
+    pub fn start_saved_app_id(&mut self, index: usize) {
+        let Some(entry) = self.login.app_ids.get(index) else {
+            return;
+        };
+        let identity = Identity::Saved {
+            name: entry.label().to_string(),
+            app_id: entry.client_id().to_string(),
+        };
+        self.login.app_id_choice = index;
+        self.start_login(identity);
     }
 
     /// Freeze the overlay and ask the main loop for a login thread.
