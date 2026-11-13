@@ -17,7 +17,14 @@ public final class Project {
         float cotangent = (float) Math.cos(radians) / sine;
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
+            // mallocFloat hands out uninitialised memory: every entry that is not
+            // written below would otherwise be garbage, and the projection matrix
+            // comes out meaningless (the world disappears, the sky quad stretches
+            // over the whole screen).
             FloatBuffer m = stack.mallocFloat(16);
+            for (int i = 0; i < 16; i++) {
+                m.put(i, i % 5 == 0 ? 1.0f : 0.0f);
+            }
             m.put(0, cotangent / aspect).put(5, cotangent)
                     .put(10, -(zFar + zNear) / deltaZ).put(11, -1.0f)
                     .put(14, -2.0f * zNear * zFar / deltaZ).put(15, 0.0f);

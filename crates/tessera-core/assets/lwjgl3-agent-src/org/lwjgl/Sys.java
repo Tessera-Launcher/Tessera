@@ -14,9 +14,17 @@ public final class Sys {
         return System.nanoTime();
     }
 
-    /** Nanoseconds per timer tick. */
+    /**
+     * Ticks per second, which is what LWJGL 2 means by "resolution".
+     *
+     * {@link #getTime()} returns nanoseconds and the game converts with
+     * `getTime() * 1000 / getTimerResolution()`; a resolution of 1e6 there made
+     * every millisecond 1000 ticks long, so the game tried to run a thousand
+     * ticks per frame and the main menu became unresponsive while its
+     * time-based animations flickered.
+     */
     public static long getTimerResolution() {
-        return 1_000_000L;
+        return 1_000_000_000L;
     }
 
     public static String getVersion() {
