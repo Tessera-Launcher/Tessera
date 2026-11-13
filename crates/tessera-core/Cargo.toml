@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.87"
 license = "GPL-3.0-or-later"
 description = "Core logic for Tessera: version discovery, launch assembly, downloads, Java runtimes, accounts, cleanup"
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
