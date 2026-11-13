@@ -22,6 +22,7 @@ pub mod java;
 pub mod launch;
 pub mod logfile;
 pub mod login;
+pub mod lwjgl3;
 pub mod music;
 pub mod paths;
 pub mod profile;

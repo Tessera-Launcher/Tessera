@@ -1181,3 +1181,147 @@ fn a_non_ascii_natives_path_gets_an_ascii_symlink() {
     // An ASCII natives path is left alone.
     assert!(ascii_natives_mirror(tmp.path()).is_none());
 }
+
+#[test]
+fn the_lwjgl3_mode_swaps_the_libraries_and_adds_the_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // A 1.8.9-shaped profile: it lists an LWJGL 2 library the mode has to drop.
+    // The file itself is never created, which is the point: the mode must not
+    // need the LWJGL 2 jars to be present at all.
+    write_version(
+        root,
+        "1.8.9",
+        serde_json::json!({
+            "id": "1.8.9",
+            "type": "release",
+            "mainClass": "net.minecraft.client.main.Main",
+            "minecraftArguments": "--username ${auth_player_name} --gameDir ${game_directory}",
+            "libraries": [
+                { "name": "org.lwjgl.lwjgl:lwjgl:2.9.4",
+                  "downloads": { "artifact": { "path": "org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4.jar" } } },
+                { "name": "com.mojang:patchy:1.1",
+                  "downloads": { "artifact": { "path": "com/mojang/patchy/1.1/patchy-1.1.jar" } } }
+            ]
+        }),
+    );
+    // A real (empty) zip: the mode strips the jar's signature files, so the
+    // client jar has to be parseable.
+    let client = root.join("versions/1.8.9/1.8.9.jar");
+    {
+        use std::io::Write;
+        let file = std::fs::File::create(&client).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file(
+            "META-INF/MANIFEST.MF",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"Manifest-Version: 1.0\n").unwrap();
+        zip.finish().unwrap();
+    }
+    let patchy = root.join("libraries/com/mojang/patchy/1.1/patchy-1.1.jar");
+    std::fs::create_dir_all(patchy.parent().unwrap()).unwrap();
+    std::fs::write(&patchy, b"jar").unwrap();
+
+    // The LWJGL 3 jars the mode expects, as empty files: only their existence
+    // matters for building the command.
+    let runtimes = managed_runtime(root, 28);
+    let lwjgl3_dir = crate::lwjgl3::dir(&runtimes);
+    std::fs::create_dir_all(&lwjgl3_dir).unwrap();
+    let jars = crate::lwjgl3::jars(&lwjgl3_dir).unwrap();
+    for jar in &jars {
+        std::fs::write(jar, b"jar").unwrap();
+    }
+
+    let options = Options {
+        runtimes: Some(runtimes),
+        lwjgl3: true,
+        ..Options::default()
+    };
+    let launch = prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();
+    let args = &launch.command.args;
+    let classpath = args
+        .iter()
+        .position(|arg| arg == "-cp")
+        .map(|index| args[index + 1].clone())
+        .expect("classpath");
+    assert!(
+        !classpath.contains("lwjgl-2.9.4"),
+        "the LWJGL 2 jar must be gone: {classpath}"
+    );
+    assert!(classpath.contains("patchy-1.1.jar"), "{classpath}");
+    for jar in &jars {
+        assert!(
+            classpath.contains(&jar.display().to_string()),
+            "{} missing from {classpath}",
+            jar.display()
+        );
+    }
+    assert_eq!(launch.classpath_entries, 1 + jars.len() + 1);
+    // The agent, and the flag LWJGL 3 asks for on JDK 24+.
+    let agent = crate::lwjgl3::agent(&lwjgl3_dir).unwrap();
+    assert!(agent.is_file(), "the embedded agent is written out");
+    assert!(
+        args.iter()
+            .any(|arg| arg == &format!("-javaagent:{}", agent.display())),
+        "{args:?}"
+    );
+    assert!(args
+        .iter()
+        .any(|arg| arg == "--enable-native-access=ALL-UNNAMED"));
+    // LWJGL 3 extracts its own natives, so no library path is set.
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.starts_with("-Djava.library.path=")),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn the_lwjgl3_mode_leaves_a_loader_profie_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_version(
+        root,
+        "1.8.9-forge-11.15.0.1656",
+        serde_json::json!({
+            "id": "1.8.9-forge-11.15.0.1656",
+            "type": "release",
+            "mainClass": "net.minecraft.launchwrapper.Launch",
+            "mdtLoader": { "id": "forge", "version": "11.15.0.1656" },
+            "libraries": []
+        }),
+    );
+    std::fs::write(
+        root.join("versions/1.8.9-forge-11.15.0.1656/1.8.9-forge-11.15.0.1656.jar"),
+        b"jar",
+    )
+    .unwrap();
+    managed_runtime(root, 8);
+
+    let options = Options {
+        runtimes: Some(root.join("运行时")),
+        lwjgl3: true,
+        ..Options::default()
+    };
+    // A loader profile keeps its own Java pin, so this needs the Java 8 runtime
+    // created above; the point of the test is that no agent is added.
+    let launch = prepare(
+        root,
+        "1.8.9-forge-11.15.0.1656",
+        &Credentials::offline("Steve"),
+        &options,
+    )
+    .unwrap();
+    assert!(
+        !launch
+            .command
+            .args
+            .iter()
+            .any(|arg| arg.starts_with("-javaagent:tessera") || arg.contains("lwjgl3-agent")),
+        "loader profiles are not rewritten: {:?}",
+        launch.command.args
+    );
+}

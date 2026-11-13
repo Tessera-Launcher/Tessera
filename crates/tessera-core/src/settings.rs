@@ -33,6 +33,12 @@ pub struct Settings {
     pub window_height: u32,
     /// `gh-proxy.com`-style base for the Java download; empty for none.
     pub github_proxy: String,
+    /// Run vanilla versions on LWJGL 3 instead of the LWJGL 2 Mojang ships.
+    ///
+    /// The shim only covers what 1.8.9 uses, so this is off by default and a
+    /// launch of another version will fail loudly (`NoSuchMethodError`) rather
+    /// than render something wrong.
+    pub lwjgl3: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +49,7 @@ impl Default for Settings {
             window_width: 854,
             window_height: 480,
             github_proxy: String::new(),
+            lwjgl3: false,
         }
     }
 }
@@ -191,11 +198,13 @@ mod tests {
             window_width: 1280,
             window_height: 720,
             github_proxy: "gh-proxy.com".into(),
+            lwjgl3: true,
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("memory_mb = 4096"), "{text}");
+        assert!(text.contains("lwjgl3 = true"), "{text}");
         assert!(!path.with_extension("toml.tmp").exists());
     }
 

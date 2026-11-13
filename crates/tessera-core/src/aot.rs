@@ -551,7 +551,7 @@ fn is_sealed(path: &Path) -> bool {
 /// The manifest also loses any `Sealed:` attribute: signature and sealing rules
 /// are exactly what a cached class cannot satisfy, and a client jar that keeps
 /// either one makes the whole cache unusable instead of merely uncached.
-fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
     let file = File::open(source)
         .map_err(|error| Error::io(format!("无法读取客户端 jar {}", source.display()), error))?;
     let mut archive = zip::ZipArchive::new(file)

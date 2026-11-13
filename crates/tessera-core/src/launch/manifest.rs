@@ -129,11 +129,18 @@ impl Merged {
         &self,
         libraries_dir: &Path,
         features: &HashMap<&'static str, bool>,
+        skip: &dyn Fn(&str) -> bool,
     ) -> Vec<PathBuf> {
         let mut seen: Vec<String> = Vec::new();
         let mut paths = Vec::new();
         for library in &self.libraries {
             if !rules_allow(&library.rules, features) {
+                continue;
+            }
+            // The modern-LWJGL mode replaces these by name, not by path: the
+            // LWJGL 2 group (`org.lwjgl.lwjgl`) and the LWJGL 3 one
+            // (`org.lwjgl`) share a directory prefix.
+            if skip(&library.name) {
                 continue;
             }
             // A natives jar is extracted, not put on the classpath; the library

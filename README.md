@@ -30,7 +30,8 @@ Windows / macOS 无需额外系统包。音乐播放不依赖 FFmpeg 或系统�
 ```
 <exe>/data/
 ├── 游戏/          versions / libraries / assets
-├── 运行时/        下载的 JRE，一个版本一个文件夹（21.0.13+9、8u512-b09）
+├── 运行时/        下载的 JRE，一个版本一个文件夹（21.0.13+9、8u512-b09）；
+│                 用现代 LWJGL 模式时还有 `lwjgl3/3.4.3/` 下的那些 jar
 ├── 凭据/账户/     一个账户一个 json，会话和离线账户都在这里
 │                 （玩家名.json / 玩家名 (1).json …）
 ├── 凭据/启动器/   azure_app_ids.toml：可选的启动器 app id 清单
@@ -150,7 +151,25 @@ memory_mb = 2048
 window_width = 854
 window_height = 480
 github_proxy = ""
+lwjgl3 = false
 ```
+
+`lwjgl3 = true` 打开**现代 LWJGL 模式**：原版不再用 Mojang 给的 LWJGL 2.9.4，
+而是用启动器自带的 `assets/lwjgl3-agent.jar`（里面的 `org.lwjgl.*` 是按 1.8.9
+实际用到的接口写的 shim，加上把 LWJGL2 名字改成 LWJGL3 名字的 agent）跑在
+**LWJGL 3.4.3** 上：
+
+- 版本 json 里的三个 `org.lwjgl.lwjgl:*` 被跳过，换成 `运行时/lwjgl3/3.4.3/`
+  里从 Maven Central 下、按 Maven 的 `.sha1` 校验过的 4 个模块 + 4 个 natives；
+  第一次启动时才下载，日志里有逐文件进度。
+- 启动参数加上 `-javaagent:…/tessera-lwjgl3-agent.jar` 和
+  `--enable-native-access=ALL-UNNAMED`；原来的 `-Djava.library.path` 和
+  natives 目录不再需要（LWJGL 3 自己解压原生库）。
+- 客户端 jar 会用去掉签名的副本（`<版本>.lwjgl3.jar`），因为 agent 改写过的类
+  过不了 jar 签名校验。
+- **只测过 1.8.9**。别的版本会以 `NoSuchMethodError` 明确报缺口，不会静默画错。
+- 这不是 Vulkan。1.8.9 是 GL 固定管线，Vulkan 只能靠 Mesa 的 zink 翻译
+  （`MESA_LOADER_DRIVER_OVERRIDE=zink`），和这个开关是两件事。
 
 下载源故意不持久化。每次启动在 `data/日志/tessera.log` 追加日志，窗口里只留 500 行。
 

@@ -45,7 +45,9 @@ pub(super) fn prepare_inner(
     // A finished AOT training run stores the exact JVM build it used. Launching
     // with a different JVM would make the cache silently unusable, so the cache
     // also chooses the Java here. Training itself passes an explicit override.
-    let aot = if java_override.is_none() {
+    // A cache is keyed by the class path it was trained on, and the modern-LWJGL
+    // mode changes that class path, so a trained cache is not used with it.
+    let aot = if java_override.is_none() && !options.lwjgl3 {
         aot_cache(&version_dir, version_dir_name, &runtimes)
     } else {
         None
@@ -62,7 +64,16 @@ pub(super) fn prepare_inner(
     // version, whose client jar it borrows), so the lookup walks the parent
     // chain too. A trained vanilla profile uses the unsigned copy the cache was
     // built from.
-    let client_jar = if let Some(selection) = &aot {
+    // The modern-LWJGL mode runs vanilla on LWJGL 3: the three LWJGL 2 libraries
+    // the version JSON lists are dropped and the 3.4.3 jars are appended below.
+    // Loader profiles are untouched — their own metadata already pins libraries.
+    let lwjgl3 = options.lwjgl3 && !merged.loader;
+    let client_jar = if lwjgl3 {
+        // The agent rewrites classes in the client jar, and a rewritten class
+        // cannot satisfy the jar's signature: launch from an unsigned copy.
+        let source = version_dir.join(format!("{version_dir_name}.jar"));
+        crate::lwjgl3::unsigned_client_jar(&version_dir, version_dir_name, &source)?
+    } else if let Some(selection) = &aot {
         selection.unsigned_jar.clone()
     } else {
         client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
@@ -79,9 +90,10 @@ pub(super) fn prepare_inner(
     let features = features(true);
 
     let libraries_dir = root.join("libraries");
+    let skip_lwjgl2 = |name: &str| lwjgl3 && name.starts_with("org.lwjgl.lwjgl:");
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut missing = 0usize;
-    for path in merged.classpath_paths(&libraries_dir, &features) {
+    for path in merged.classpath_paths(&libraries_dir, &features, &skip_lwjgl2) {
         if path.is_file() {
             classpath.push(path);
         } else {
@@ -92,6 +104,28 @@ pub(super) fn prepare_inner(
         return Err(Error::missing(format!(
             "{missing} 个依赖文件缺失（重新安装这个版本）"
         )));
+    }
+    // LWJGL 3.4.3 replaces everything the dropped libraries provided. The shim
+    // in the agent answers the LWJGL 2 API; these jars are what it runs on.
+    let lwjgl3_dir = if lwjgl3 {
+        let runtimes = options
+            .runtimes
+            .clone()
+            .ok_or_else(|| Error::internal("没有配置 Java 运行时目录"))?;
+        Some(crate::lwjgl3::dir(&runtimes))
+    } else {
+        None
+    };
+    if let Some(dir) = &lwjgl3_dir {
+        for jar in crate::lwjgl3::jars(dir)? {
+            if !jar.is_file() {
+                return Err(Error::missing(format!(
+                    "LWJGL 3 还没下载：{}（关掉配置里的 lwjgl3，或先启动一次让启动器下载）",
+                    jar.display()
+                )));
+            }
+            classpath.push(jar);
+        }
     }
     classpath.push(client_jar);
     // LaunchWrapper 1.5/1.12 casts the system class loader to `URLClassLoader`,
@@ -116,7 +150,14 @@ pub(super) fn prepare_inner(
         classpath.push(agent.clone());
     }
 
-    let natives = find_natives(&version_dir, version_dir_name, &merged.parents);
+    // LWJGL 3 unpacks its native libraries from the class path itself, so the
+    // `-natives` directory (and the ASCII mirror for LWJGL 3.1/3.2) is only
+    // needed in the original layout.
+    let natives = if lwjgl3 {
+        None
+    } else {
+        find_natives(&version_dir, version_dir_name, &merged.parents)
+    };
     let natives_dir = natives
         .clone()
         .unwrap_or_else(|| version_dir.join("natives"));
@@ -186,11 +227,19 @@ pub(super) fn prepare_inner(
 
     // Required no matter what the profile claimed.
     args.push(format!("-Xmx{}M", options.memory_mb));
+    if let Some(dir) = &lwjgl3_dir {
+        // The agent carries the LWJGL 2 shim and rewrites the call sites LWJGL 3
+        // renamed; `--enable-native-access` is what LWJGL 3 asks for on JDK 24+.
+        let agent = crate::lwjgl3::agent(dir)?;
+        args.push(format!("-javaagent:{}", agent.display()));
+        args.push("--enable-native-access=ALL-UNNAMED".to_string());
+    }
     // Only if the profile did not ask for a natives directory itself: ours is the
     // same path, but a duplicate `-D` reads like a conflict when debugging
-    if !args
-        .iter()
-        .any(|arg| arg.starts_with("-Djava.library.path="))
+    if !lwjgl3
+        && !args
+            .iter()
+            .any(|arg| arg.starts_with("-Djava.library.path="))
     {
         args.push(format!("-Djava.library.path={natives_string}"));
     }
