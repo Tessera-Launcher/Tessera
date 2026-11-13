@@ -27,7 +27,9 @@
 //! name of that inode is going away, otherwise the data survives under the other
 //! name and nothing is reclaimed.
 
-use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 

@@ -18,6 +18,9 @@ use std::path::Path;
 /// after opening: `mode()` only takes effect when the file is created, and a
 /// leftover temporary file from an earlier crash keeps whatever mode it had.
 pub fn write_atomic(path: &Path, body: &[u8], private: bool) -> std::io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = private;
+
     let file_name = path
         .file_name()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "路径没有文件名"))?;

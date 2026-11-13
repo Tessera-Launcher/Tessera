@@ -10,7 +10,9 @@ use super::manifest::{
     client_jar, features, load_chain, maven_path, rules_allow, substitute, OsRule, Rule,
     MAX_CHAIN_DEPTH,
 };
-use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
+use super::natives::{find_natives, lwjgl_needs_ascii_natives};
+#[cfg(unix)]
+use super::natives::ascii_natives_mirror;
 use super::*;
 
 #[test]
