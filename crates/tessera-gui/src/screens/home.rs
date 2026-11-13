@@ -5,62 +5,69 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
-    pub(crate) fn kind_color(kind: VersionKind) -> u32 {
+    pub(crate) fn kind_color(colors: &'static color::Palette, kind: VersionKind) -> u32 {
         match kind {
-            VersionKind::Snapshot => SNAPSHOT,
-            VersionKind::OldBeta | VersionKind::OldAlpha => LEGACY,
-            VersionKind::Release | VersionKind::Unknown => ACCENT,
+            VersionKind::Snapshot => colors.fill_neutral,
+            VersionKind::OldBeta | VersionKind::OldAlpha => colors.fill_neutral,
+            VersionKind::Release | VersionKind::Unknown => colors.fill_neutral,
         }
     }
 
     // ---- main screen ----
 
-    fn header(&self) -> impl IntoElement {
+    fn header(&self, colors: &'static color::Palette) -> impl IntoElement {
         div()
             .h_flex()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
+            .gap(px(space::MD))
+            .px(px(space::LG))
+            .py(px(space::MD))
+            .rounded(px(radius::MD))
+            .bg(rgb(colors.surface))
+            .border(px(stroke::THIN))
+            .border_color(rgb(colors.border_default))
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(TEXT))
+                    .text_size(px(font::TITLE))
+                    .line_height(relative(font::LINE_HEIGHT_TITLE))
+                    .font_weight(FontWeight(weight::SEMIBOLD))
+                    .text_color(rgb(colors.text_primary))
                     .child("主页"),
             )
             .child(div().flex_1())
-            .child(div().text_xs().text_color(rgb(DIM)).child(format!(
-                "{}  ·  {} 个版本  ·  {} 个账户",
-                self.state.root.display(),
-                self.state.versions.len(),
-                self.state.accounts.len()
-            )))
             .child(
                 div()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(ROW))
-                    .text_xs()
-                    .text_color(rgb(ACCENT))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(format!(
+                        "{}  ·  {} 个版本  ·  {} 个账户",
+                        self.state.root.display(),
+                        self.state.versions.len(),
+                        self.state.accounts.len()
+                    )),
+            )
+            .child(
+                div()
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(colors.raised))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_accent))
                     .child(self.state.account.label()),
             )
     }
 
     fn version_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let title = format!("版本 ({})", self.state.versions.len());
         let weak = cx.entity().downgrade();
         let mut list = div()
             .id("version-list")
             .relative()
             .v_flex()
-            .gap_1()
-            .p_2()
+            .gap(px(space::XS))
+            .p(px(space::MD))
             // Fill the panel body so right-clicking below the last row still
             // hits this list, not the panel behind it.
             .size_full()
@@ -84,9 +91,9 @@ impl Launcher {
         if self.state.versions.is_empty() {
             list = list.child(
                 div()
-                    .p_4()
-                    .text_sm()
-                    .text_color(rgb(DIM))
+                    .p(px(space::XL))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
                     .child("没有找到任何版本 —— 右键选择「刷新」重新扫描，或先下载一个版本"),
             );
         } else {
@@ -120,11 +127,18 @@ impl Launcher {
                         .id(format!("version-{index}"))
                         .h_flex()
                         .items_center()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
+                        .gap(px(space::MD))
+                        .px(px(space::MD))
+                        .py(px(space::SM))
+                        .rounded(px(radius::SM))
+                        .bg(if selected {
+                            rgb(colors.selected)
+                        } else {
+                            rgb(colors.surface)
+                        })
+                        .min_h(px(layout::ROW_HEIGHT))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(rgb(colors.hover)))
                         .on_click(cx.listener(
                             move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                                 this.state.selected = index;
@@ -137,23 +151,32 @@ impl Launcher {
                         ))
                         .child(
                             div()
-                                .w(px(8.0))
-                                .h(px(8.0))
-                                .rounded_full()
+                                .w(px(layout::STATUS_DOT))
+                                .h(px(layout::STATUS_DOT))
+                                .rounded(px(radius::PILL))
                                 .bg(rgb(if broken {
-                                    BROKEN
+                                    colors.fill_danger
                                 } else {
-                                    Self::kind_color(version.kind)
+                                    Self::kind_color(colors, version.kind)
                                 })),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .text_sm()
-                                .text_color(rgb(if selected { ACCENT } else { TEXT }))
+                                .text_size(px(font::BODY))
+                                .text_color(rgb(if selected {
+                                    colors.text_accent
+                                } else {
+                                    colors.text_primary
+                                }))
                                 .child(version.id.clone()),
                         )
-                        .child(div().text_xs().text_color(rgb(DIM)).child(java))
+                        .child(
+                            div()
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child(java),
+                        )
                         .context_menu({
                             let weak = weak.clone();
                             move |menu, _, _| {
@@ -168,18 +191,19 @@ impl Launcher {
             }
         }
 
-        panel(&title, list, true)
+        panel(colors, &title, list, true)
     }
 
-    fn details(&mut self) -> impl IntoElement {
-        let mut body = div().v_flex().gap_1().p_2();
+    fn details(&mut self, colors: &'static color::Palette) -> impl IntoElement {
+        let mut body = div().v_flex().gap(px(space::XS)).p(px(space::MD));
         let size = self.state.selected_size().map(discover::human_size);
         match self.state.selected_version() {
             Some(version) => {
                 body = body
-                    .child(field("目录", version.dir.clone()))
-                    .child(field("类型", version.kind.label().to_string()))
+                    .child(field(colors, "目录", version.dir.clone()))
+                    .child(field(colors, "类型", version.kind.label().to_string()))
                     .child(field(
+                        colors,
                         "Java",
                         self.state
                             .java_for(version)
@@ -187,68 +211,77 @@ impl Launcher {
                             .unwrap_or_else(|| "—".to_string()),
                     ))
                     .child(field(
+                        colors,
                         "AOT Cache",
                         if version.aot { "是" } else { "否" }.to_string(),
                     ))
                     .child(field(
+                        colors,
                         "主类",
                         version.main_class.clone().unwrap_or_else(|| "—".into()),
                     ))
                     .child(field(
+                        colors,
                         "继承",
                         version.inherits.clone().unwrap_or_else(|| "—".to_string()),
                     ))
                     .child(field(
+                        colors,
                         "客户端 jar",
                         if version.has_jar { "有" } else { "无" }.into(),
                     ))
-                    .child(field("大小", size.unwrap_or_else(|| "计算中…".into())));
+                    .child(field(
+                        colors,
+                        "大小",
+                        size.unwrap_or_else(|| "计算中…".into()),
+                    ));
             }
             None => {
                 body = body.child(
                     div()
-                        .p_2()
-                        .text_sm()
-                        .text_color(rgb(DIM))
+                        .p(px(space::MD))
+                        .text_size(px(font::BODY))
+                        .text_color(rgb(colors.text_secondary))
                         .child("未选择版本"),
                 );
             }
         }
-        panel("详情", body, false)
+        panel(colors, "详情", body, false)
     }
 
-    fn log_panel(&mut self) -> impl IntoElement {
-        log_pane("log", "日志", &self.state.log, &mut self.log)
+    fn log_panel(&mut self, colors: &'static color::Palette) -> impl IntoElement {
+        log_pane(colors, "log", "日志", &self.state.log, &mut self.log)
     }
 
     pub(crate) fn main_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         div()
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
-            .child(self.header())
+            .gap(px(space::MD))
+            .child(self.header(colors))
             .child(
                 div()
                     .h_flex()
                     .flex_1()
                     .items_stretch()
                     .min_h(px(0.0))
-                    .gap_2()
+                    .gap(px(space::MD))
                     .child(self.version_list(cx))
                     .child(
                         div()
                             .v_flex()
-                            .w(px(420.0))
+                            .w(px(layout::DETAILS))
                             .h_full()
-                            .gap_2()
+                            .gap(px(space::MD))
                             .min_h(px(0.0))
-                            .child(self.details())
-                            .child(self.log_panel()),
+                            .child(self.details(colors))
+                            .child(self.log_panel(colors)),
                     ),
             )
             .child(
-                footer_bar(&self.state.status)
+                footer_bar(colors, &self.state.status)
                     // Training is voluntary: it costs a game start and a cache
                     // the size of the client, and has to be redone after a Java
                     // upgrade, so it never happens behind the player's back.
@@ -270,6 +303,7 @@ impl Launcher {
     // ---- uninstall confirmation ----
 
     pub(crate) fn uninstall_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let colors = theme::colors(cx);
         // Only over the list the confirmation is about; switching screens drops
         // the question instead of leaving it floating on top of unrelated ones.
         if self.state.screen != Screen::Main {
@@ -278,36 +312,41 @@ impl Launcher {
         let (dir, dependents, size) = self.state.uninstall_plan()?;
         let mut body = div()
             .v_flex()
-            .gap_2()
-            .p_4()
-            .rounded_md()
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .w(px(460.0))
+            .gap(px(space::MD))
+            .p(px(space::XL))
+            .rounded(px(radius::MD))
+            .bg(rgb(colors.surface))
+            .border(px(stroke::THIN))
+            .border_color(rgb(colors.border_default))
+            .w(px(layout::DIALOG))
             .child(
                 div()
-                    .text_sm()
-                    .text_color(rgb(TEXT))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_primary))
                     .child(format!("卸载 {dir}？")),
             )
-            .child(div().text_xs().text_color(rgb(DIM)).child(format!(
-                "会删除 versions/{dir}（{}）",
-                size.map_or_else(|| "正在计算".to_string(), discover::human_size)
-            )));
+            .child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(format!(
+                        "会删除 versions/{dir}（{}）",
+                        size.map_or_else(|| "正在计算".to_string(), discover::human_size)
+                    )),
+            );
         if !dependents.is_empty() {
             body = body.child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(SNAPSHOT))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.status_warning))
                     .child(format!("依赖它的版本会一起删除：{}", dependents.join("、"))),
             );
         }
         body = body.child(
             div()
                 .h_flex()
-                .gap_2()
-                .child(primary_button(
+                .gap(px(space::MD))
+                .child(danger_button(
                     "确认卸载",
                     cx,
                     |this: &mut Launcher, cx| {
@@ -328,7 +367,7 @@ impl Launcher {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(rgba(0x00_00_00_b8))
+                .bg(rgba(colors.backdrop))
                 // `occlude` is the part that matters: it keeps a stray click from
                 // reaching the footer button underneath and answering the
                 // question by accident. The listener only consumes the event.

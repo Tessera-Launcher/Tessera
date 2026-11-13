@@ -1,0 +1,26 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/format.json",
+  "$description": "Generated durations. Edit generation/recipes/duration.json, then run npm run generate.",
+  "$extensions": {
+    "com.tessera.generation": {
+      "source": [
+        "generation/recipes/duration.json"
+      ]
+    }
+  },
+  "motion": {
+    "$type": "duration",
+    "fast": {
+      "$value": {
+        "value": 150,
+        "unit": "ms"
+      }
+    },
+    "standard": {
+      "$value": {
+        "value": 200,
+        "unit": "ms"
+      }
+    }
+  }
+}

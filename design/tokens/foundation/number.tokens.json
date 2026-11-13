@@ -1,0 +1,56 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/format.json",
+  "$description": "Generated numbers. Edit generation/recipes/{typography,opacity}.json, then run npm run generate.",
+  "$extensions": {
+    "com.tessera.generation": {
+      "source": [
+        "generation/recipes/typography.json",
+        "generation/recipes/opacity.json"
+      ]
+    }
+  },
+  "primitive": {
+    "number": {
+      "$type": "number",
+      "opacity": {
+        "0": {
+          "$value": 0
+        },
+        "150": {
+          "$value": 0.15
+        },
+        "250": {
+          "$value": 0.25
+        },
+        "400": {
+          "$value": 0.4
+        },
+        "600": {
+          "$value": 0.6
+        },
+        "1000": {
+          "$value": 1
+        },
+        "$type": "number"
+      }
+    }
+  },
+  "font": {
+    "lineHeightCaption": {
+      "$type": "number",
+      "$value": 1.333333
+    },
+    "lineHeight": {
+      "$type": "number",
+      "$value": 1.428571
+    },
+    "lineHeightTitle": {
+      "$type": "number",
+      "$value": 1.333333
+    },
+    "lineHeightDisplay": {
+      "$type": "number",
+      "$value": 1.25
+    }
+  }
+}

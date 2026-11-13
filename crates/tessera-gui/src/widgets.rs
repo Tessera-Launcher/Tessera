@@ -63,6 +63,7 @@ impl LogView {
 
 /// The scrolling log pane shared by the home screen and the install screen.
 pub(crate) fn log_pane(
+    colors: &'static color::Palette,
     id: &str,
     title: &str,
     lines: &VecDeque<String>,
@@ -74,17 +75,27 @@ pub(crate) fn log_pane(
     let mut body = div()
         .id(id.to_string())
         .v_flex()
-        .gap_0p5()
-        .p_2()
+        .gap(px(space::XXS))
+        .p(px(space::MD))
         .size_full()
         .min_h(px(0.0))
         .track_scroll(scroll)
         .overflow_y_scroll();
     if lines.is_empty() {
-        body = body.child(div().text_sm().text_color(rgb(DIM)).child("（空）"));
+        body = body.child(
+            div()
+                .text_size(px(font::BODY))
+                .text_color(rgb(colors.text_secondary))
+                .child("（空）"),
+        );
     }
     for line in lines.iter().rev().take(200).rev() {
-        body = body.child(div().text_xs().text_color(rgb(DIM)).child(line.clone()));
+        body = body.child(
+            div()
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_secondary))
+                .child(line.clone()),
+        );
     }
     // The scrollbar belongs to a non-scrolling shell around the list: as a child
     // of the scrolling element it would scroll away with the content.
@@ -95,130 +106,153 @@ pub(crate) fn log_pane(
                 .viewport_from_layout(),
         ),
     );
-    panel(title, shell, true)
+    panel(colors, title, shell, true)
 }
 
 /// A panel whose height follows its content (no fixed body height).
-pub(crate) fn panel_fit(title: &str, body: impl IntoElement) -> impl IntoElement {
+pub(crate) fn panel_fit(
+    colors: &'static color::Palette,
+    title: &str,
+    body: impl IntoElement,
+) -> impl IntoElement {
     div()
         .v_flex()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(PANEL))
+        .rounded(px(radius::MD))
+        .border(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
+        .bg(rgb(colors.surface))
         .overflow_hidden()
         .child(
             div()
-                .px_3()
-                .py_1()
-                .text_xs()
-                .text_color(rgb(DIM))
+                .px(px(space::LG))
+                .py(px(space::SM))
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_secondary))
                 .child(title.to_string()),
         )
         .child(body)
 }
 
-pub(crate) fn panel(title: &str, body: impl IntoElement, grow: bool) -> impl IntoElement {
+pub(crate) fn panel(
+    colors: &'static color::Palette,
+    title: &str,
+    body: impl IntoElement,
+    grow: bool,
+) -> impl IntoElement {
     let mut outer = div()
         .v_flex()
         .min_h(px(0.0))
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(PANEL))
+        .rounded(px(radius::MD))
+        .border(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
+        .bg(rgb(colors.surface))
         .overflow_hidden();
     outer = if grow {
         outer.flex_1().h_full()
     } else {
-        outer.h(px(232.0))
+        outer.h(px(layout::PANEL_HEIGHT))
     };
     outer
         .child(
             div()
-                .px_3()
-                .py_1()
-                .text_xs()
-                .text_color(rgb(DIM))
+                .px(px(space::LG))
+                .py(px(space::SM))
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_secondary))
                 .child(title.to_string()),
         )
         .child(div().flex_1().min_h(px(0.0)).child(body))
 }
 
-pub(crate) fn chip(label: &str, color: u32) -> impl IntoElement {
+pub(crate) fn chip(colors: &'static color::Palette, label: &str, color: u32) -> impl IntoElement {
     div()
-        .px_1()
-        .rounded_sm()
-        .bg(rgb(ROW))
-        .text_xs()
+        .px(px(space::SM))
+        .rounded(px(radius::SM))
+        .bg(rgb(colors.raised))
+        .text_size(px(font::CAPTION))
         .text_color(rgb(color))
         .child(label.to_string())
 }
 
-pub(crate) fn screen_title(text: &str) -> impl IntoElement {
+pub(crate) fn screen_title(colors: &'static color::Palette, text: &str) -> impl IntoElement {
     div()
         .h_flex()
         .items_center()
-        .gap_2()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(rgb(PANEL))
-        .border_1()
-        .border_color(rgb(BORDER))
+        .gap(px(space::MD))
+        .px(px(space::LG))
+        .py(px(space::MD))
+        .rounded(px(radius::MD))
+        .bg(rgb(colors.surface))
+        .border(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
         .child(
             div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(TEXT))
+                .text_size(px(font::TITLE))
+                .line_height(relative(font::LINE_HEIGHT_TITLE))
+                .font_weight(FontWeight(weight::SEMIBOLD))
+                .text_color(rgb(colors.text_primary))
                 .child(text.to_string()),
         )
 }
 
-pub(crate) fn footer_bar(status: &str) -> Div {
+pub(crate) fn footer_bar(colors: &'static color::Palette, status: &str) -> Div {
     div()
         .h_flex()
         .items_center()
-        .gap_2()
-        .px_3()
-        .py_1()
-        .text_xs()
+        .gap(px(space::MD))
+        .px(px(space::LG))
+        .py(px(space::SM))
+        .text_size(px(font::CAPTION))
         .child(
             div()
                 .flex_1()
-                .text_color(rgb(ACCENT))
+                .text_color(rgb(colors.text_accent))
                 .child(status.to_string()),
         )
 }
 
-pub(crate) fn field(label: &str, value: String) -> impl IntoElement {
+pub(crate) fn field(
+    colors: &'static color::Palette,
+    label: &str,
+    value: String,
+) -> impl IntoElement {
     div()
         .h_flex()
-        .gap_2()
+        .gap(px(space::MD))
         .child(
             div()
-                .w(px(72.0))
-                .text_xs()
-                .text_color(rgb(DIM))
+                .w(px(layout::LABEL_WIDTH))
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_secondary))
                 .child(label.to_string()),
         )
-        .child(div().flex_1().text_xs().text_color(rgb(TEXT)).child(value))
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_primary))
+                .child(value),
+        )
 }
 
 pub(crate) fn choice_row(
     title: String,
     subtitle: String,
-    enabled: bool,
+    selected: bool,
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
+    let colors = theme::colors(cx);
     div()
         .id(format!("choice-{title}"))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(colors.hover)))
         .v_flex()
-        .gap_0p5()
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .bg(rgb(ROW))
+        .gap(px(space::XXS))
+        .px(px(space::MD))
+        .py(px(space::SM))
+        .rounded(px(radius::SM))
+        .bg(rgb(colors.raised))
         .on_click(
             cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                 action(this, cx);
@@ -226,11 +260,20 @@ pub(crate) fn choice_row(
         )
         .child(
             div()
-                .text_sm()
-                .text_color(rgb(if enabled { TEXT } else { DIM }))
+                .text_size(px(font::BODY))
+                .text_color(rgb(if selected {
+                    colors.text_accent
+                } else {
+                    colors.text_primary
+                }))
                 .child(title),
         )
-        .child(div().text_xs().text_color(rgb(DIM)).child(subtitle))
+        .child(
+            div()
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_secondary))
+                .child(subtitle),
+        )
 }
 
 /// A one-line checkbox: a filled square plus a label, toggled by clicking it.
@@ -244,12 +287,13 @@ pub(crate) fn checkbox(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
+    let colors = theme::colors(cx);
     div()
         .id(format!("checkbox-{label}"))
         .h_flex()
         .items_center()
-        .gap_2()
-        .py_1()
+        .gap(px(space::MD))
+        .py(px(space::SM))
         .cursor_pointer()
         .on_click(
             cx.listener(move |this: &mut Launcher, _event, _window, cx| {
@@ -258,23 +302,69 @@ pub(crate) fn checkbox(
         )
         .child(
             div()
-                .w(px(14.0))
-                .h(px(14.0))
+                .w(px(layout::CHECKBOX))
+                .h(px(layout::CHECKBOX))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_sm()
-                .bg(rgb(if checked { ACCENT } else { ROW }))
-                .text_xs()
-                .text_color(rgb(if checked { 0x0b_0d_10 } else { DIM }))
+                .rounded(px(radius::SM))
+                .bg(rgb(if checked {
+                    colors.fill_primary
+                } else {
+                    colors.raised
+                }))
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(if checked {
+                    colors.text_on_fill
+                } else {
+                    colors.text_secondary
+                }))
                 .child(if checked { "✓" } else { "" }),
         )
         .child(
             div()
-                .text_xs()
-                .text_color(rgb(if checked { TEXT } else { DIM }))
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(if checked {
+                    colors.text_primary
+                } else {
+                    colors.text_secondary
+                }))
                 .child(label.to_string()),
         )
+}
+
+/// Shared button geometry; variants only choose semantic colors.
+fn action_button(
+    label: &str,
+    background: u32,
+    foreground: u32,
+    hover: u32,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(label.to_string())
+        .h_flex()
+        .items_center()
+        .justify_center()
+        .min_h(px(layout::CONTROL_HEIGHT))
+        .px(px(space::LG))
+        .py(px(space::SM))
+        .rounded(px(radius::SM))
+        .border(px(stroke::THIN))
+        .border_color(rgb(background))
+        .bg(rgb(background))
+        .text_size(px(font::BODY))
+        .text_color(rgb(foreground))
+        .font_weight(FontWeight(weight::SEMIBOLD))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(hover)).border_color(rgb(hover)))
+        .on_click(
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                action(this, cx);
+            }),
+        )
+        .child(label.to_string())
 }
 
 pub(crate) fn button(
@@ -282,19 +372,15 @@ pub(crate) fn button(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(label.to_string())
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .bg(rgb(ROW))
-        .text_color(rgb(ACCENT))
-        .on_click(
-            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                action(this, cx);
-            }),
-        )
-        .child(label.to_string())
+    let colors = theme::colors(cx);
+    action_button(
+        label,
+        colors.raised,
+        colors.text_primary,
+        colors.hover,
+        cx,
+        action,
+    )
 }
 
 pub(crate) fn primary_button(
@@ -302,18 +388,29 @@ pub(crate) fn primary_button(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(label.to_string())
-        .px_3()
-        .py_1()
-        .rounded_sm()
-        .bg(rgb(ACCENT))
-        .text_color(rgb(0x0b_0d_10))
-        .font_weight(FontWeight::SEMIBOLD)
-        .on_click(
-            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                action(this, cx);
-            }),
-        )
-        .child(label.to_string())
+    let colors = theme::colors(cx);
+    action_button(
+        label,
+        colors.fill_primary,
+        colors.text_on_fill,
+        colors.fill_primary_hover,
+        cx,
+        action,
+    )
+}
+
+pub(crate) fn danger_button(
+    label: &str,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    let colors = theme::colors(cx);
+    action_button(
+        label,
+        colors.raised,
+        colors.status_danger,
+        colors.hover,
+        cx,
+        action,
+    )
 }

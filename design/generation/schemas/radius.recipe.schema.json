@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Radius recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["basePx","steps","roles","fullPx"],
+  "properties": {
+  "$schema": {
+    "type": "string"
+  },
+  "basePx": {
+    "type": "number",
+    "exclusiveMinimum": 0
+  },
+  "steps": {
+    "type": "array",
+    "items": {
+      "type": "integer"
+    },
+    "minItems": 1
+  },
+  "roles": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "integer"
+    }
+  },
+  "fullPx": {
+    "type": "number",
+    "minimum": 1
+  }
+}
+}

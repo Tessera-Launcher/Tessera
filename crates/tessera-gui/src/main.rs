@@ -32,17 +32,13 @@ use tessera_core::{
     version_tree::RowKind,
 };
 
-const ACCENT: u32 = 0x6c_d6_7a;
-const SNAPSHOT: u32 = 0xe8_c9_6a;
-const LEGACY: u32 = 0xc4_8a_d8;
-const BROKEN: u32 = 0xe0_6c_6c;
-const DIM: u32 = 0x8a_8a_92;
-const BG: u32 = 0x14_16_1a;
-const PANEL: u32 = 0x1b_1e_24;
-const BORDER: u32 = 0x2a_2f_38;
-const TEXT: u32 = 0xff_ff_ff;
-const ROW: u32 = 0x26_28_2e;
+use crate::design_tokens::{color, font, layout, radius, space, stroke, weight};
 
+#[rustfmt::skip]
+mod design_tokens;
+mod theme;
+
+mod loading;
 mod menu;
 mod platform;
 mod runtime;
@@ -50,6 +46,8 @@ mod screens;
 mod sidebar;
 mod tasks;
 mod widgets;
+
+pub(crate) use loading::LoadingKey;
 
 struct Launcher {
     state: State,
@@ -63,6 +61,10 @@ struct Launcher {
     blocked: bool,
     /// Every background worker's channel, drained in one place.
     tasks: tasks::Tasks,
+    /// Delayed-show / minimum-visible state for network-backed lists.
+    loading: loading::LoadingGates,
+    /// One pending presentation wakeup, so timers do not pile up.
+    loading_wake: Option<Instant>,
     /// The home screen's log pane (scroll handle, follow state).
     log: LogView,
     /// The download screen's scrollbar.
@@ -210,6 +212,8 @@ impl Launcher {
             _instance: instance,
             blocked,
             tasks: tasks::Tasks::new(),
+            loading: loading::LoadingGates::new(),
+            loading_wake: None,
             log: LogView::default(),
             download_scroll: ScrollHandle::default(),
             install_log: LogView::default(),
@@ -239,6 +243,7 @@ impl Launcher {
 
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         if !self.focus_scheduled {
             self.focus_scheduled = true;
             cx.on_next_frame(window, |this, window, cx| {
@@ -269,9 +274,12 @@ impl Render for Launcher {
             .v_flex()
             .relative()
             .size_full()
-            .p_2()
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT))
+            .p(px(space::MD))
+            .bg(rgb(colors.canvas))
+            .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
+            .text_size(px(font::BODY))
+            .line_height(relative(font::LINE_HEIGHT))
+            .text_color(rgb(colors.text_primary))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_key(event, window, cx);
@@ -281,7 +289,7 @@ impl Render for Launcher {
                     .h_flex()
                     .flex_1()
                     .min_h(px(0.0))
-                    .gap_2()
+                    .gap(px(space::MD))
                     .children(sidebar)
                     .child(content),
             )
@@ -291,9 +299,7 @@ impl Render for Launcher {
 fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
-        // The window is a dark UI; the component library otherwise defaults to
-        // its light theme, which made context menus the only bright surface.
-        gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+        theme::install(cx);
         let launcher = cx.new(|cx| {
             let mut launcher = Launcher::new(cx);
             launcher.start(cx);
@@ -302,9 +308,10 @@ fn main() {
         let view = launcher.clone();
         gpui_kit::open_window(
             WindowOptions {
+                window_min_size: Some(size(px(layout::MIN_WIDTH), px(layout::MIN_HEIGHT))),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(120.0), px(90.0)),
-                    size: size(px(1000.0), px(640.0)),
+                    size: size(px(layout::WINDOW_WIDTH), px(layout::WINDOW_HEIGHT)),
                 })),
                 ..WindowOptions::default()
             },

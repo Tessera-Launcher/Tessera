@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Typography recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["steps","roles","lineHeight"],
+  "properties": {
+  "$schema": {
+    "type": "string"
+  },
+  "steps": {
+    "type": "array",
+    "items": {
+      "type": "integer"
+    },
+    "minItems": 1
+  },
+  "roles": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "integer"
+    }
+  },
+  "lineHeight": {
+    "type": "object",
+    "required": [
+      "anchors",
+      "gridTiers"
+    ],
+    "properties": {
+      "anchors": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "type": "object",
+          "required": [
+            "fontSizePx",
+            "ratio"
+          ],
+          "properties": {
+            "fontSizePx": {
+              "type": "number"
+            },
+            "ratio": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "gridTiers": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "minFontSizePx",
+            "gridPx"
+          ],
+          "properties": {
+            "minFontSizePx": {
+              "type": "number"
+            },
+            "gridPx": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+}

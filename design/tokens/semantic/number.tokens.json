@@ -1,0 +1,17 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/format.json",
+  "$description": "Mode-independent numeric roles.",
+  "$extensions": {
+    "com.tessera.generation": {
+      "source": [
+        "generation/recipes/opacity.json"
+      ]
+    }
+  },
+  "opacity": {
+    "$type": "number",
+    "disabled": {
+      "$value": "{primitive.number.opacity.400}"
+    }
+  }
+}

@@ -18,23 +18,24 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let transport = self.music_transport(window, cx);
         let music = &self.state.music;
 
         let mut versions = div()
             .id("music-versions")
             .v_flex()
-            .gap_1()
-            .p_2()
+            .gap(px(space::XS))
+            .p(px(space::MD))
             .size_full()
             .min_h(px(0.0))
             .overflow_y_scroll();
         if music.versions.is_empty() {
             versions = versions.child(
                 div()
-                    .p_3()
-                    .text_sm()
-                    .text_color(rgb(DIM))
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
                     .child("没有已安装的版本 —— 先下载一个"),
             );
         }
@@ -48,13 +49,24 @@ impl Launcher {
                     .id(id)
                     .h_flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(if focused { ROW } else { PANEL }))
-                    .text_sm()
-                    .text_color(rgb(if selected { ACCENT } else { TEXT }))
+                    .gap(px(space::MD))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(if focused {
+                        colors.selected
+                    } else {
+                        colors.surface
+                    }))
+                    .min_h(px(layout::ROW_HEIGHT))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.hover)))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(if selected {
+                        colors.text_accent
+                    } else {
+                        colors.text_primary
+                    }))
                     .child(name)
                     .on_click(
                         cx.listener(move |this: &mut Launcher, _event, _window, cx| {
@@ -68,8 +80,8 @@ impl Launcher {
         let mut tracks = div()
             .id("music-tracks")
             .v_flex()
-            .gap_1()
-            .p_2()
+            .gap(px(space::XS))
+            .p(px(space::MD))
             .size_full()
             .min_h(px(0.0))
             .overflow_y_scroll();
@@ -86,11 +98,21 @@ impl Launcher {
                         .id(row_id)
                         .h_flex()
                         .items_center()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(rgb(if focused { ROW } else { PANEL }))
+                        .gap(px(space::MD))
+                        .px(px(space::MD))
+                        .py(px(space::SM))
+                        .rounded(px(radius::SM))
+                        .bg(rgb(if focused {
+                            colors.selected
+                        } else {
+                            colors.surface
+                        }))
+                        .min_h(px(layout::ROW_HEIGHT))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(rgb(colors.hover)))
+                        .min_h(px(layout::ROW_HEIGHT))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(rgb(colors.hover)))
                         .on_click(cx.listener(
                             move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                                 this.state.music.focus = MusicFocus::Tracks;
@@ -105,37 +127,55 @@ impl Launcher {
                         ))
                         .child(
                             div()
-                                .w(px(3.0))
-                                .h(px(14.0))
-                                .rounded_full()
-                                .bg(rgb(if selected { ACCENT } else { PANEL })),
+                                .w(px(layout::INDICATOR_WIDTH))
+                                .h(px(layout::INDICATOR_HEIGHT))
+                                .rounded(px(radius::PILL))
+                                .bg(rgb(if selected {
+                                    colors.fill_primary
+                                } else {
+                                    colors.surface
+                                })),
                         )
                         .child(
                             div()
-                                .w(px(52.0))
-                                .text_xs()
-                                .text_color(rgb(DIM))
+                                .w(px(layout::TRACK_GROUP))
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
                                 .child(track.group.clone()),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .text_sm()
-                                .text_color(rgb(if selected { ACCENT } else { TEXT }))
+                                .text_size(px(font::BODY))
+                                .text_color(rgb(if selected {
+                                    colors.text_accent
+                                } else {
+                                    colors.text_primary
+                                }))
                                 .child(track.title.clone()),
                         )
-                        .child(div().w(px(64.0)).text_xs().text_color(rgb(DIM)).child(size))
-                        .children((!present).then(|| chip("缺失", BROKEN))),
+                        .child(
+                            div()
+                                .w(px(layout::METADATA_WIDTH))
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child(size),
+                        )
+                        .children((!present).then(|| chip(colors, "缺失", colors.status_danger))),
                 );
             }
         } else {
             tracks = tracks.child(
-                div().p_3().text_sm().text_color(rgb(DIM)).child(
-                    music
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "选一个版本".to_string()),
-                ),
+                div()
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(
+                        music
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "选一个版本".to_string()),
+                    ),
             );
         }
 
@@ -167,14 +207,19 @@ impl Launcher {
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
+            .gap(px(space::MD))
             .child(
                 div()
                     .h_flex()
                     .items_center()
-                    .gap_2()
-                    .child(screen_title("音乐"))
-                    .child(div().text_xs().text_color(rgb(DIM)).child(summary))
+                    .gap(px(space::MD))
+                    .child(screen_title(colors, "音乐"))
+                    .child(
+                        div()
+                            .text_size(px(font::CAPTION))
+                            .text_color(rgb(colors.text_secondary))
+                            .child(summary),
+                    )
                     .child(div().flex_1()),
             )
             .child(
@@ -183,14 +228,14 @@ impl Launcher {
                     .flex_1()
                     .items_stretch()
                     .min_h(px(0.0))
-                    .gap_2()
+                    .gap(px(space::MD))
                     .child(
                         div()
                             .v_flex()
-                            .w(px(240.0))
+                            .w(px(layout::MUSIC_VERSIONS))
                             .h_full()
                             .min_h(px(0.0))
-                            .child(panel(&versions_title, versions, true)),
+                            .child(panel(colors, &versions_title, versions, true)),
                     )
                     .child(
                         div()
@@ -199,7 +244,7 @@ impl Launcher {
                             .min_w(px(0.0))
                             .h_full()
                             .min_h(px(0.0))
-                            .child(panel(&tracks_title, tracks, true)),
+                            .child(panel(colors, &tracks_title, tracks, true)),
                     ),
             )
             .child(transport)
@@ -208,6 +253,7 @@ impl Launcher {
     /// The transport bar: the records/background switch on the left, then
     /// play/pause, the position, the volume and the play order.
     fn music_transport(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let (progress, volume) = self.ensure_music_sliders(window, cx);
         let kind = self.state.music.kind;
         let playing = self.state.music.playing;
@@ -233,21 +279,21 @@ impl Launcher {
         div()
             .h_flex()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
+            .gap(px(space::MD))
+            .px(px(space::LG))
+            .py(px(space::SM))
             .child(self.music_kind_switch(kind, cx))
             .child(
                 div()
                     .id("music-play")
-                    .h(px(24.0))
-                    .w(px(30.0))
+                    .h(px(layout::CONTROL_HEIGHT))
+                    .w(px(layout::CONTROL_HEIGHT))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_sm()
-                    .bg(rgb(ROW))
-                    .text_color(rgb(ACCENT))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(colors.raised))
+                    .text_color(rgb(colors.text_accent))
                     .child(if playing { "⏸" } else { "▶" })
                     .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
                         this.state.music_play_pause();
@@ -256,47 +302,49 @@ impl Launcher {
             )
             .child(
                 div()
-                    .w(px(42.0))
-                    .text_xs()
-                    .text_color(rgb(DIM))
+                    .w(px(layout::CLOCK_WIDTH))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
                     .child(position),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(80.0))
-                    .child(Slider::new(&progress).horizontal().bg(rgb(ACCENT))),
+                div().flex_1().min_w(px(layout::SLIDER_MIN)).child(
+                    Slider::new(&progress)
+                        .horizontal()
+                        .bg(rgb(colors.fill_primary)),
+                ),
             )
             .child(
                 div()
-                    .w(px(42.0))
-                    .text_xs()
-                    .text_color(rgb(DIM))
+                    .w(px(layout::CLOCK_WIDTH))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
                     .child(total),
             )
             .child(
                 div()
                     .flex_shrink_0()
-                    .text_xs()
-                    .text_color(rgb(DIM))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
                     .child("音量"),
             )
             .child(
-                div()
-                    .w(px(96.0))
-                    .flex_shrink_0()
-                    .child(Slider::new(&volume).horizontal().bg(rgb(ACCENT))),
+                div().w(px(layout::VOLUME_WIDTH)).flex_shrink_0().child(
+                    Slider::new(&volume)
+                        .horizontal()
+                        .bg(rgb(colors.fill_primary)),
+                ),
             )
             .child(
                 div()
                     .id("music-order")
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .text_xs()
-                    .text_color(rgb(ACCENT))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .border(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_accent))
                     .child(order)
                     .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
                         this.state.music_toggle_order();
@@ -307,20 +355,40 @@ impl Launcher {
 
     /// The 唱片 / 背景音乐 switch, leftmost in the transport bar.
     fn music_kind_switch(&self, active: MusicKind, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut switch = div().h_flex().flex_shrink_0().items_center().gap_1();
+        let colors = theme::colors(cx);
+        let mut switch = div()
+            .h_flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(space::XS));
         for kind in [MusicKind::Records, MusicKind::Bgm] {
             let picked = kind == active;
             switch = switch.child(
                 div()
                     .id(format!("music-kind-{kind:?}"))
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(if picked { ROW } else { PANEL }))
-                    .border_1()
-                    .border_color(rgb(if picked { ACCENT } else { BORDER }))
-                    .text_xs()
-                    .text_color(rgb(if picked { ACCENT } else { DIM }))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(if picked {
+                        colors.selected
+                    } else {
+                        colors.surface
+                    }))
+                    .min_h(px(layout::ROW_HEIGHT))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.hover)))
+                    .border(px(stroke::THIN))
+                    .border_color(rgb(if picked {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(if picked {
+                        colors.text_accent
+                    } else {
+                        colors.text_secondary
+                    }))
                     .child(kind.label())
                     .on_click(
                         cx.listener(move |this: &mut Launcher, _event, _window, cx| {

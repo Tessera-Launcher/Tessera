@@ -1,0 +1,5 @@
+{
+  "$schema": "../schemas/duration.recipe.schema.json",
+  "steps": [150, 200],
+  "roles": { "fast": 150, "standard": 200 }
+}

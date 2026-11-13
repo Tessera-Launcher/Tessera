@@ -1,0 +1,24 @@
+{
+  "$schema": "./config.schema.json",
+  "$description": "Design policy for generated semantic colors. Edit this file, not the generated token files.",
+  "color": {
+    "minimumContrast": { "text": 4.5, "control": 3 },
+    "neutralChroma": 0,
+    "lightness": {
+      "dark": {
+        "bg": 0.12, "panel": 0.16, "row": 0.21, "hover": 0.27, "selected": 0.26,
+        "border": 0.34, "borderStrong": 0.52,
+        "text": 0.98, "dim": 0.76,
+        "accent": 0.78, "accentHover": 0.84, "fillPrimary": 0.44, "fillPrimaryHover": 0.56,
+        "onAccent": 0.995, "status": 0.7, "scrim": 0.8
+      },
+      "light": {
+        "bg": 0.975, "panel": 0.995, "row": 0.95, "hover": 0.91, "selected": 0.95,
+        "border": 0.83, "borderStrong": 0.6,
+        "text": 0.2, "dim": 0.44,
+        "accent": 0.45, "accentHover": 0.4, "fillPrimary": 0.44, "fillPrimaryHover": 0.38,
+        "onAccent": 0.995, "status": 0.47, "scrim": 0.4
+      }
+    }
+  }
+}

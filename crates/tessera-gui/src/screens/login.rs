@@ -9,7 +9,8 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mut body = div().v_flex().gap_2().p_3();
+        let colors = theme::colors(cx);
+        let mut body = div().v_flex().gap(px(space::MD)).p(px(space::LG));
         let hint: String;
 
         match self.state.login.step.clone() {
@@ -47,13 +48,13 @@ impl Launcher {
                 // The overlay is rebuilt on every open while the entity keeps
                 // its text, so the field is pulled back to the state machine.
                 self.sync_login_input(&input, &self.state.login.app_id.clone(), window, cx);
-                let mut list = div().v_flex().gap_1();
+                let mut list = div().v_flex().gap(px(space::XS));
                 if let Some(error) = &self.state.login.app_ids_error {
                     list = list.child(
                         div()
-                            .p_2()
-                            .text_sm()
-                            .text_color(rgb(BROKEN))
+                            .p(px(space::MD))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.status_danger))
                             .child(error.clone()),
                     );
                 }
@@ -70,12 +71,22 @@ impl Launcher {
                     ));
                 }
                 body = body
-                    .child(div().p_2().text_sm().text_color(rgb(DIM)).child(
-                        "填一个 Azure 应用的 client id（Graph 权限只用于拿皮肤）；\
+                    .child(
+                        div()
+                            .p(px(space::MD))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.text_secondary))
+                            .child(
+                                "填一个 Azure 应用的 client id（Graph 权限只用于拿皮肤）；\
                                  留空则用下面选中的现有凭据。",
-                    ))
-                    .child(Input::new(&input).appearance(false).text_sm())
-                    .child(div().h_flex().gap_2().child(primary_button(
+                            ),
+                    )
+                    .child(
+                        Input::new(&input)
+                            .appearance(true)
+                            .text_size(px(font::BODY)),
+                    )
+                    .child(div().h_flex().gap(px(space::MD)).child(primary_button(
                         "用这个 id 登录",
                         cx,
                         |this: &mut Launcher, cx| {
@@ -93,12 +104,16 @@ impl Launcher {
                 body = body
                     .child(
                         div()
-                            .p_2()
-                            .text_sm()
-                            .text_color(rgb(DIM))
+                            .p(px(space::MD))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.text_secondary))
                             .child("离线模式没有会话：能进单机，联机会被服务器拒绝。"),
                     )
-                    .child(Input::new(&input).appearance(false).text_sm())
+                    .child(
+                        Input::new(&input)
+                            .appearance(true)
+                            .text_size(px(font::BODY)),
+                    )
                     .child(checkbox(
                         "允许任意用户名（中文、空格等，不要求符合原版规则）",
                         allow_any,
@@ -109,9 +124,14 @@ impl Launcher {
                         },
                     ));
                 if let Some(error) = &self.state.login.offline_error {
-                    body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
+                    body = body.child(
+                        div()
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.status_danger))
+                            .child(error.clone()),
+                    );
                 }
-                body = body.child(div().h_flex().gap_2().child(primary_button(
+                body = body.child(div().h_flex().gap(px(space::MD)).child(primary_button(
                     "离线登录",
                     cx,
                     |this: &mut Launcher, cx| {
@@ -126,20 +146,21 @@ impl Launcher {
                 body = body.child(if ready {
                     div()
                         .v_flex()
-                        .gap_2()
-                        .child(field("链接", url.clone()))
+                        .gap(px(space::MD))
+                        .child(field(colors, "链接", url.clone()))
                         .child(
                             div()
-                                .mt_2()
-                                .text_2xl()
-                                .text_color(rgb(ACCENT))
-                                .font_weight(FontWeight::BOLD)
+                                .mt(px(space::MD))
+                                .text_size(px(font::DISPLAY))
+                                .line_height(relative(font::LINE_HEIGHT_DISPLAY))
+                                .text_color(rgb(colors.text_accent))
+                                .font_weight(FontWeight(weight::BOLD))
                                 .child(user_code.clone()),
                         )
                         .child(
                             div()
                                 .h_flex()
-                                .gap_2()
+                                .gap(px(space::MD))
                                 .child(button("复制链接", cx, {
                                     let url = url.clone();
                                     move |this: &mut Launcher, cx| {
@@ -165,9 +186,9 @@ impl Launcher {
                         .into_any_element()
                 } else {
                     div()
-                        .p_2()
-                        .text_sm()
-                        .text_color(rgb(DIM))
+                        .p(px(space::MD))
+                        .text_size(px(font::BODY))
+                        .text_color(rgb(colors.text_secondary))
                         .child("正在向 Microsoft 申请设备代码…")
                         .into_any_element()
                 });
@@ -179,8 +200,8 @@ impl Launcher {
             } => {
                 body = body.child(
                     div()
-                        .text_sm()
-                        .text_color(rgb(ACCENT))
+                        .text_size(px(font::BODY))
+                        .text_color(rgb(colors.text_accent))
                         .child(format!("登录成功：{player} · {application}")),
                 );
                 hint = "点「关闭」返回".to_string();
@@ -188,9 +209,9 @@ impl Launcher {
             LoginStep::Failed(reason) => {
                 body = body.child(
                     div()
-                        .p_2()
-                        .text_sm()
-                        .text_color(rgb(BROKEN))
+                        .p(px(space::MD))
+                        .text_size(px(font::BODY))
+                        .text_color(rgb(colors.status_danger))
                         .child(format!("登录失败：{reason}")),
                 );
                 hint = "可以关闭后重试".to_string();
@@ -201,15 +222,17 @@ impl Launcher {
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
-            .child(screen_title("登录"))
-            .child(panel("身份 / 等待授权", body, true))
-            .child(
-                footer_bar(&hint).child(button("关闭", cx, |this: &mut Launcher, cx| {
+            .gap(px(space::MD))
+            .child(screen_title(colors, "登录"))
+            .child(panel(colors, "身份 / 等待授权", body, true))
+            .child(footer_bar(colors, &hint).child(button(
+                "关闭",
+                cx,
+                |this: &mut Launcher, cx| {
                     this.state.close_login();
                     this.refresh(cx);
-                })),
-            )
+                },
+            )))
     }
 
     /// Keep a login text field in step with the state machine.

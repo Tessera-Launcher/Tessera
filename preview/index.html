@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script src="theme.js"></script>
+  <meta name="description" content="Tessera 深蓝设计系统交互预览，无需 Rust。">
+  <title>Tessera · 界面预览</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="preview-bar">
+    <span><strong>TESSERA</strong><span class="divider">/</span>界面预览 <span class="preview-note">· 示例数据，不连接游戏服务</span></span>
+    <div class="toolbar">
+      <label for="theme-mode">外观</label>
+      <select id="theme-mode"><option value="dark">深色</option><option value="light">浅色</option></select>
+      <label for="scenario">预览状态</label>
+      <select id="scenario"><option value="normal">默认</option><option value="empty">空列表</option><option value="loading">加载中</option><option value="error">错误提示</option></select>
+      <button class="quiet" data-action="tokens">设计规范 ↗</button>
+    </div>
+  </div>
+  <div id="app" class="app"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <div id="context-menu" class="context-menu" role="menu" hidden></div>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+  <noscript>请启用 JavaScript 以切换页面和体验交互。预览完全在本机运行。</noscript>
+</body>
+</html>

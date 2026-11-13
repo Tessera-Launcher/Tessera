@@ -1,0 +1,71 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/resolver.json",
+  "name": "Tessera Design Tokens",
+  "version": "2025.10",
+  "description": "Native desktop design tokens: mode-independent foundations plus generated light and dark semantic colors.",
+  "sets": {
+    "foundation": {
+      "description": "Raw values and mode-independent roles. Components read these directly; there is one tier because Tessera ships one brand and no responsive rem scale.",
+      "sources": [
+        {
+          "$ref": "./foundation/color.tokens.json"
+        },
+        {
+          "$ref": "./foundation/dimension.tokens.json"
+        },
+        {
+          "$ref": "./foundation/number.tokens.json"
+        },
+        {
+          "$ref": "./foundation/fontFamily.tokens.json"
+        },
+        {
+          "$ref": "./foundation/fontWeight.tokens.json"
+        },
+        {
+          "$ref": "./foundation/duration.tokens.json"
+        },
+        {
+          "$ref": "./foundation/cubicBezier.tokens.json"
+        }
+      ]
+    },
+    "semantic-static": {
+      "description": "Mode-independent semantic roles.",
+      "sources": [
+        {
+          "$ref": "./semantic/number.tokens.json"
+        }
+      ]
+    }
+  },
+  "modifiers": {
+    "colorScheme": {
+      "description": "Selects the generated semantic colors for the active appearance.",
+      "contexts": {
+        "dark": [
+          {
+            "$ref": "./semantic/color/dark.tokens.json"
+          }
+        ],
+        "light": [
+          {
+            "$ref": "./semantic/color/light.tokens.json"
+          }
+        ]
+      },
+      "default": "light"
+    }
+  },
+  "resolutionOrder": [
+    {
+      "$ref": "#/sets/foundation"
+    },
+    {
+      "$ref": "#/sets/semantic-static"
+    },
+    {
+      "$ref": "#/modifiers/colorScheme"
+    }
+  ]
+}

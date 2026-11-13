@@ -9,6 +9,7 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let proxy = if self.state.java.source == java::Source::Github {
             Some(self.ensure_proxy(window, cx))
         } else {
@@ -16,78 +17,117 @@ impl Launcher {
         };
 
         let java = &self.state.java;
+        let show_loading = self.loading_visible(crate::LoadingKey::Java);
         let mut runtimes = div()
             .id("java-runtimes")
             .v_flex()
-            .gap_1()
-            .p_2()
+            .gap(px(space::XS))
+            .p(px(space::MD))
             .overflow_y_scroll();
-        if java.runtimes.is_empty() {
-            runtimes = runtimes.child(div().p_3().text_sm().text_color(rgb(DIM)).child(
-                match java.stage {
-                    JavaStage::Loading => "正在查询 Adoptium…",
-                    _ => "没有可下载的运行时",
-                },
-            ));
-        }
-        for (index, runtime) in java.runtimes.iter().enumerate() {
-            let selected = index == java.selected;
-            let installed = java.is_installed(runtime.major);
-            let update = java.update_for(runtime).is_some();
-            let major = runtime.major;
-            let version = runtime.version();
-            let size = discover::human_size(runtime.size);
-            let ea = runtime.ea;
+        if show_loading {
             runtimes = runtimes.child(
                 div()
-                    .id(format!("java-{index}"))
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
-                    .on_click(cx.listener(
-                        move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
-                            this.state.java.selected = index;
-                            // Double click installs, like Enter in the state machine.
-                            if event.click_count() > 1 {
-                                this.state.handle_java_key(Key::Enter, Modifiers::NONE);
-                            }
-                            // `refresh` also runs the effect the key just queued.
-                            this.refresh(cx);
-                        },
-                    ))
-                    .child(
-                        div()
-                            .w(px(8.0))
-                            .h(px(8.0))
-                            .rounded_full()
-                            .bg(rgb(if installed { ACCENT } else { DIM })),
-                    )
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .text_sm()
-                            .text_color(rgb(if selected { ACCENT } else { TEXT }))
-                            .child(format!("Java {major}")),
-                    )
-                    .child(div().flex_1().text_xs().text_color(rgb(DIM)).child(version))
-                    .child(div().w(px(64.0)).text_xs().text_color(rgb(DIM)).child(size))
-                    .children(update.then(|| chip("可更新", SNAPSHOT)))
-                    .children(installed.then(|| chip("已装", ACCENT)))
-                    .children(ea.then(|| chip("EA", LEGACY))),
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
+                    .child("正在查询 Adoptium…"),
+            );
+        } else if java.runtimes.is_empty() && java.stage != JavaStage::Loading {
+            runtimes = runtimes.child(
+                div()
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
+                    .child("没有可下载的运行时"),
             );
         }
+        if !show_loading {
+            for (index, runtime) in java.runtimes.iter().enumerate() {
+                let selected = index == java.selected;
+                let installed = java.is_installed(runtime.major);
+                let update = java.update_for(runtime).is_some();
+                let major = runtime.major;
+                let version = runtime.version();
+                let size = discover::human_size(runtime.size);
+                let ea = runtime.ea;
+                runtimes = runtimes.child(
+                    div()
+                        .id(format!("java-{index}"))
+                        .h_flex()
+                        .items_center()
+                        .gap(px(space::MD))
+                        .px(px(space::MD))
+                        .py(px(space::SM))
+                        .rounded(px(radius::SM))
+                        .bg(if selected {
+                            rgb(colors.selected)
+                        } else {
+                            rgb(colors.surface)
+                        })
+                        .min_h(px(layout::ROW_HEIGHT))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(rgb(colors.hover)))
+                        .on_click(cx.listener(
+                            move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
+                                this.state.java.selected = index;
+                                // Double click installs, like Enter in the state machine.
+                                if event.click_count() > 1 {
+                                    this.state.handle_java_key(Key::Enter, Modifiers::NONE);
+                                }
+                                // `refresh` also runs the effect the key just queued.
+                                this.refresh(cx);
+                            },
+                        ))
+                        .child(
+                            div()
+                                .w(px(layout::STATUS_DOT))
+                                .h(px(layout::STATUS_DOT))
+                                .rounded(px(radius::PILL))
+                                .bg(rgb(if installed {
+                                    colors.fill_primary
+                                } else {
+                                    colors.text_secondary
+                                })),
+                        )
+                        .child(
+                            div()
+                                .w(px(layout::METADATA_WIDTH))
+                                .text_size(px(font::BODY))
+                                .text_color(rgb(if selected {
+                                    colors.text_accent
+                                } else {
+                                    colors.text_primary
+                                }))
+                                .child(format!("Java {major}")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child(version),
+                        )
+                        .child(
+                            div()
+                                .w(px(layout::METADATA_WIDTH))
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child(size),
+                        )
+                        .children(update.then(|| chip(colors, "可更新", colors.status_warning)))
+                        .children(installed.then(|| chip(colors, "已装", colors.status_success)))
+                        .children(ea.then(|| chip(colors, "EA", colors.text_secondary))),
+                );
+            }
+        }
 
-        let mut installed = div().v_flex().gap_1().p_2();
+        let mut installed = div().v_flex().gap(px(space::XS)).p(px(space::MD));
         if java.installed.is_empty() {
             installed = installed.child(
                 div()
-                    .p_2()
-                    .text_sm()
-                    .text_color(rgb(DIM))
+                    .p(px(space::MD))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
                     .child("运行时目录还是空的"),
             );
         }
@@ -96,36 +136,38 @@ impl Launcher {
                 div()
                     .h_flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(PANEL))
+                    .gap(px(space::MD))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(colors.surface))
                     .child(
                         div()
-                            .w(px(64.0))
-                            .text_sm()
-                            .text_color(rgb(TEXT))
+                            .w(px(layout::METADATA_WIDTH))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.text_primary))
                             .child(format!("Java {}", runtime.major)),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .text_xs()
-                            .text_color(rgb(DIM))
+                            .text_size(px(font::CAPTION))
+                            .text_color(rgb(colors.text_secondary))
                             .child(runtime.version.clone()),
                     )
-                    .children((!runtime.managed).then(|| chip("手装", DIM))),
+                    .children(
+                        (!runtime.managed).then(|| chip(colors, "手装", colors.text_secondary)),
+                    ),
             );
         }
 
-        let mut progress = div().v_flex().gap_1().p_2();
+        let mut progress = div().v_flex().gap(px(space::XS)).p(px(space::MD));
         let text = java.progress_text();
         if text.is_empty() {
             progress = progress.child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(DIM))
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
                     .child(format!("源：{}", java.source.label())),
             );
         } else {
@@ -135,19 +177,34 @@ impl Launcher {
                 0.0
             };
             progress = progress
-                .child(div().text_xs().text_color(rgb(TEXT)).child(text))
                 .child(
-                    div().w_full().h(px(8.0)).rounded_sm().bg(rgb(ROW)).child(
-                        div()
-                            .h_full()
-                            .rounded_sm()
-                            .bg(rgb(ACCENT))
-                            .w(relative(fraction.max(0.001))),
-                    ),
+                    div()
+                        .text_size(px(font::CAPTION))
+                        .text_color(rgb(colors.text_primary))
+                        .child(text),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(layout::STATUS_DOT))
+                        .rounded(px(radius::SM))
+                        .bg(rgb(colors.raised))
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded(px(radius::SM))
+                                .bg(rgb(colors.fill_primary))
+                                .w(relative(fraction.max(0.001))),
+                        ),
                 );
         }
         if let Some(message) = &java.message {
-            progress = progress.child(div().text_xs().text_color(rgb(DIM)).child(message.clone()));
+            progress = progress.child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(message.clone()),
+            );
         }
 
         let source = java.source.label();
@@ -156,26 +213,36 @@ impl Launcher {
         let proxy = proxy.map(|proxy| {
             div()
                 .v_flex()
-                .gap_1()
-                .p_2()
-                .child(div().text_xs().text_color(rgb(DIM)).child("GitHub Proxy"))
-                .child(Input::new(&proxy).appearance(false).text_sm())
+                .gap(px(space::XS))
+                .p(px(space::MD))
+                .child(
+                    div()
+                        .text_size(px(font::CAPTION))
+                        .text_color(rgb(colors.text_secondary))
+                        .child("GitHub Proxy"),
+                )
+                .child(
+                    Input::new(&proxy)
+                        .appearance(true)
+                        .text_size(px(font::BODY)),
+                )
         });
 
         div()
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
-            .child(screen_title("Java 运行时"))
+            .gap(px(space::MD))
+            .child(screen_title(colors, "Java 运行时"))
             .child(
                 div()
                     .h_flex()
                     .flex_1()
                     .items_stretch()
                     .min_h(px(0.0))
-                    .gap_2()
+                    .gap(px(space::MD))
                     .child(panel(
+                        colors,
                         &format!("运行时 ({})", self.state.java.runtimes.len()),
                         runtimes,
                         true,
@@ -183,17 +250,17 @@ impl Launcher {
                     .child(
                         div()
                             .v_flex()
-                            .w(px(300.0))
+                            .w(px(layout::INSPECTOR))
                             .h_full()
-                            .gap_2()
+                            .gap(px(space::MD))
                             .min_h(px(0.0))
-                            .child(panel("已装", installed, true))
-                            .child(panel("进度", progress, false))
+                            .child(panel(colors, "已装", installed, true))
+                            .child(panel(colors, "进度", progress, false))
                             .children(proxy),
                     ),
             )
             .child(
-                footer_bar(&self.state.status)
+                footer_bar(colors, &self.state.status)
                     .child(primary_button("下载", cx, |this: &mut Launcher, cx| {
                         this.state.handle_java_key(Key::Enter, Modifiers::NONE);
                         this.refresh(cx);
@@ -214,7 +281,7 @@ impl Launcher {
                             this.refresh(cx);
                         },
                     ))
-                    .children(busy.then(|| chip("下载中", SNAPSHOT))),
+                    .children(busy.then(|| chip(colors, "下载中", colors.status_warning))),
             )
     }
 

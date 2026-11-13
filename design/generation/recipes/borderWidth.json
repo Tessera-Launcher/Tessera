@@ -1,0 +1,6 @@
+{
+  "$schema": "../schemas/borderWidth.recipe.schema.json",
+  "basePx": 1,
+  "steps": [100, 200],
+  "roles": { "thin": 100, "focus": 200 }
+}

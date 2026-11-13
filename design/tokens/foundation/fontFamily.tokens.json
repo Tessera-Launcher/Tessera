@@ -1,0 +1,23 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/format.json",
+  "$description": "Font stacks; the serializer picks the first installed family.",
+  "font": {
+    "family": {
+      "$type": "fontFamily",
+      "$value": [
+        "Segoe UI",
+        "Microsoft YaHei",
+        "Noto Sans CJK SC",
+        "sans-serif"
+      ]
+    },
+    "mono": {
+      "$type": "fontFamily",
+      "$value": [
+        "Cascadia Code",
+        "Consolas",
+        "monospace"
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "tessera-design",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "preview": "npm run build && node scripts/serve-preview.mjs",
+    "generate": "node design/scripts/generate.mjs",
+    "generate:check": "node design/scripts/generate.mjs --check",
+    "build": "npm run generate && node design/scripts/build.mjs",
+    "build:check": "node design/scripts/build.mjs --check",
+    "check:schema": "node design/scripts/validate-tokens.mjs",
+    "check:contrast": "node design/scripts/check-usage.mjs --contrast",
+    "check:descriptions": "node design/scripts/check-usage.mjs --descriptions",
+    "check:usage": "node design/scripts/check-usage.mjs --usage",
+    "test": "node --test design/scripts/tokens.test.mjs",
+    "check": "npm run check:schema && npm run generate:check && npm run build:check && npm run check:contrast && npm run check:descriptions && npm run check:usage && npm test"
+  },
+  "devDependencies": {
+    "@terrazzo/parser": "2.10.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "colorjs.io": "0.7.1"
+  }
+}

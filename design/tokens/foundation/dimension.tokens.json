@@ -1,0 +1,296 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/format.json",
+  "$description": "Generated dimensions. Edit generation/recipes/{dimension,radius,typography,borderWidth}.json, then run npm run generate.",
+  "$extensions": {
+    "com.tessera.generation": {
+      "source": [
+        "generation/recipes/dimension.json",
+        "generation/recipes/radius.json",
+        "generation/recipes/typography.json",
+        "generation/recipes/borderWidth.json"
+      ]
+    }
+  },
+  "space": {
+    "$type": "dimension",
+    "xxs": {
+      "$value": {
+        "value": 2,
+        "unit": "px"
+      }
+    },
+    "xs": {
+      "$value": {
+        "value": 4,
+        "unit": "px"
+      }
+    },
+    "sm": {
+      "$value": {
+        "value": 8,
+        "unit": "px"
+      }
+    },
+    "md": {
+      "$value": {
+        "value": 12,
+        "unit": "px"
+      }
+    },
+    "lg": {
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
+    },
+    "xl": {
+      "$value": {
+        "value": 24,
+        "unit": "px"
+      }
+    },
+    "xxl": {
+      "$value": {
+        "value": 32,
+        "unit": "px"
+      }
+    },
+    "xxxl": {
+      "$value": {
+        "value": 48,
+        "unit": "px"
+      }
+    }
+  },
+  "layout": {
+    "$type": "dimension",
+    "windowWidth": {
+      "$value": {
+        "value": 1160,
+        "unit": "px"
+      }
+    },
+    "windowHeight": {
+      "$value": {
+        "value": 760,
+        "unit": "px"
+      }
+    },
+    "minWidth": {
+      "$value": {
+        "value": 960,
+        "unit": "px"
+      }
+    },
+    "minHeight": {
+      "$value": {
+        "value": 640,
+        "unit": "px"
+      }
+    },
+    "sidebar": {
+      "$value": {
+        "value": 208,
+        "unit": "px"
+      }
+    },
+    "details": {
+      "$value": {
+        "value": 380,
+        "unit": "px"
+      }
+    },
+    "inspector": {
+      "$value": {
+        "value": 280,
+        "unit": "px"
+      }
+    },
+    "musicVersions": {
+      "$value": {
+        "value": 240,
+        "unit": "px"
+      }
+    },
+    "dialog": {
+      "$value": {
+        "value": 480,
+        "unit": "px"
+      }
+    },
+    "panelHeight": {
+      "$value": {
+        "value": 272,
+        "unit": "px"
+      }
+    },
+    "progressMax": {
+      "$value": {
+        "value": 280,
+        "unit": "px"
+      }
+    },
+    "rowHeight": {
+      "$value": {
+        "value": 40,
+        "unit": "px"
+      }
+    },
+    "controlHeight": {
+      "$value": {
+        "value": 36,
+        "unit": "px"
+      }
+    },
+    "checkbox": {
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
+    },
+    "statusDot": {
+      "$value": {
+        "value": 8,
+        "unit": "px"
+      }
+    },
+    "loaderDot": {
+      "$value": {
+        "value": 6,
+        "unit": "px"
+      }
+    },
+    "indicatorWidth": {
+      "$value": {
+        "value": 3,
+        "unit": "px"
+      }
+    },
+    "indicatorHeight": {
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
+    },
+    "labelWidth": {
+      "$value": {
+        "value": 80,
+        "unit": "px"
+      }
+    },
+    "metadataWidth": {
+      "$value": {
+        "value": 64,
+        "unit": "px"
+      }
+    },
+    "trackGroup": {
+      "$value": {
+        "value": 52,
+        "unit": "px"
+      }
+    },
+    "clockWidth": {
+      "$value": {
+        "value": 44,
+        "unit": "px"
+      }
+    },
+    "volumeWidth": {
+      "$value": {
+        "value": 96,
+        "unit": "px"
+      }
+    },
+    "sliderMin": {
+      "$value": {
+        "value": 80,
+        "unit": "px"
+      }
+    },
+    "progressHeight": {
+      "$value": {
+        "value": 8,
+        "unit": "px"
+      }
+    },
+    "treeIndent": {
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
+    }
+  },
+  "radius": {
+    "$type": "dimension",
+    "sm": {
+      "$value": {
+        "value": 3,
+        "unit": "px"
+      }
+    },
+    "md": {
+      "$value": {
+        "value": 6,
+        "unit": "px"
+      }
+    },
+    "lg": {
+      "$value": {
+        "value": 12,
+        "unit": "px"
+      }
+    },
+    "pill": {
+      "$value": {
+        "value": 1600,
+        "unit": "px"
+      }
+    }
+  },
+  "stroke": {
+    "$type": "dimension",
+    "thin": {
+      "$value": {
+        "value": 1,
+        "unit": "px"
+      }
+    },
+    "focus": {
+      "$value": {
+        "value": 2,
+        "unit": "px"
+      }
+    }
+  },
+  "font": {
+    "caption": {
+      "$type": "dimension",
+      "$value": {
+        "value": 12,
+        "unit": "px"
+      }
+    },
+    "body": {
+      "$type": "dimension",
+      "$value": {
+        "value": 14,
+        "unit": "px"
+      }
+    },
+    "title": {
+      "$type": "dimension",
+      "$value": {
+        "value": 21,
+        "unit": "px"
+      }
+    },
+    "display": {
+      "$type": "dimension",
+      "$value": {
+        "value": 32,
+        "unit": "px"
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Duration recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["steps","roles"],
+  "properties": {
+  "$schema": {
+    "type": "string"
+  },
+  "steps": {
+    "type": "array",
+    "items": {
+      "type": "integer"
+    },
+    "minItems": 1
+  },
+  "roles": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "integer"
+    }
+  }
+}
+}

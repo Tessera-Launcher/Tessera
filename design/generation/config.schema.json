@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tessera.invalid/schemas/color-generation-config.json",
+  "title": "Tessera color generation config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["color"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "$description": {
+      "type": "string"
+    },
+    "color": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimumContrast", "neutralChroma", "lightness"],
+      "properties": {
+        "minimumContrast": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text", "control"],
+          "properties": {
+            "text": {
+              "type": "number",
+              "minimum": 1
+            },
+            "control": {
+              "type": "number",
+              "minimum": 1
+            }
+          }
+        },
+        "neutralChroma": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.4
+        },
+        "lightness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dark", "light"],
+          "properties": {
+            "dark": {
+              "$ref": "#/$defs/tones"
+            },
+            "light": {
+              "$ref": "#/$defs/tones"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "tones": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bg",
+        "panel",
+        "row",
+        "hover",
+        "selected",
+        "border",
+        "borderStrong",
+        "text",
+        "dim",
+        "accent",
+        "accentHover",
+        "fillPrimary",
+        "fillPrimaryHover",
+        "onAccent",
+        "status",
+        "scrim"
+      ],
+      "properties": {
+        "bg": {"type": "number", "minimum": 0, "maximum": 1},
+        "panel": {"type": "number", "minimum": 0, "maximum": 1},
+        "row": {"type": "number", "minimum": 0, "maximum": 1},
+        "hover": {"type": "number", "minimum": 0, "maximum": 1},
+        "selected": {"type": "number", "minimum": 0, "maximum": 1},
+        "border": {"type": "number", "minimum": 0, "maximum": 1},
+        "borderStrong": {"type": "number", "minimum": 0, "maximum": 1},
+        "text": {"type": "number", "minimum": 0, "maximum": 1},
+        "dim": {"type": "number", "minimum": 0, "maximum": 1},
+        "accent": {"type": "number", "minimum": 0, "maximum": 1},
+        "accentHover": {"type": "number", "minimum": 0, "maximum": 1},
+        "fillPrimary": {"type": "number", "minimum": 0, "maximum": 1},
+        "fillPrimaryHover": {"type": "number", "minimum": 0, "maximum": 1},
+        "onAccent": {"type": "number", "minimum": 0, "maximum": 1},
+        "status": {"type": "number", "minimum": 0, "maximum": 1},
+        "scrim": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}

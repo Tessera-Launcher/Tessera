@@ -1,0 +1,42 @@
+{
+  "$schema": "../schemas/color.recipe.schema.json",
+  "resolution": 5,
+  "colors": [
+    {
+      "name": "brand",
+      "key": {
+        "colorSpace": "srgb",
+        "components": [0.1843137254901961, 0.4980392156862745, 0.7568627450980392],
+        "hex": "#2F7FC1"
+      },
+      "saturation": { "min": 0.35, "max": 0.95 }
+    },
+    {
+      "name": "neutral",
+      "key": {
+        "colorSpace": "srgb",
+        "components": [0.43137254901960786, 0.43137254901960786, 0.43137254901960786],
+        "hex": "#6E6E6E"
+      },
+      "saturation": { "min": 0, "max": 0 }
+    },
+    {
+      "name": "warning",
+      "key": {
+        "colorSpace": "srgb",
+        "components": [0.8784313725490196, 0.6509803921568628, 0.23529411764705882],
+        "hex": "#E0A63C"
+      },
+      "saturation": { "min": 0.35, "max": 0.95 }
+    },
+    {
+      "name": "danger",
+      "key": {
+        "colorSpace": "srgb",
+        "components": [0.8509803921568627, 0.39215686274509803, 0.3568627450980392],
+        "hex": "#D9645B"
+      },
+      "saturation": { "min": 0.35, "max": 0.95 }
+    }
+  ]
+}

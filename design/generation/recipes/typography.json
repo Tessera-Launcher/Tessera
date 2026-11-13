@@ -1,0 +1,16 @@
+{
+  "$schema": "../schemas/typography.recipe.schema.json",
+  "steps": [200, 300, 600, 900],
+  "roles": { "caption": 200, "body": 300, "title": 600, "display": 900 },
+  "lineHeight": {
+    "anchors": [
+      { "fontSizePx": 10, "ratio": 1.2 },
+      { "fontSizePx": 16, "ratio": 1.45 },
+      { "fontSizePx": 84, "ratio": 1.1 }
+    ],
+    "gridTiers": [
+      { "minFontSizePx": 0, "gridPx": 4 },
+      { "minFontSizePx": 48, "gridPx": 8 }
+    ]
+  }
+}

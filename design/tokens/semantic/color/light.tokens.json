@@ -1,0 +1,126 @@
+{
+  "$schema": "https://designtokens.org/schemas/2025.10/format.json",
+  "$description": "Generated light semantic roles. Edit generation/recipes/color.json or generation/config.json, then run npm run generate.",
+  "$extensions": {
+    "com.tessera.generation": {
+      "mode": "light",
+      "source": "generation/recipes/color.json"
+    }
+  },
+  "background": {
+    "$type": "color",
+    "$description": "Surface roles.",
+    "canvas": {
+      "$value": "{primitive.color.neutral.30}",
+      "$description": "Page background behind all content."
+    },
+    "surface": {
+      "$value": "{primitive.color.neutral.5}",
+      "$description": "Standard containers such as cards, panels, and sections."
+    },
+    "raised": {
+      "$value": "{primitive.color.neutral.60}",
+      "$description": "Rows and controls that sit above a surface."
+    },
+    "hover": {
+      "$value": "{primitive.color.neutral.105}",
+      "$description": "Hover state for rows and secondary controls."
+    },
+    "selected": {
+      "$value": "{primitive.color.brand.60}",
+      "$description": "Selected row or navigation item."
+    },
+    "backdrop": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.06666666666666667,
+          0.06666666666666667,
+          0.06666666666666667
+        ],
+        "alpha": 0.4
+      },
+      "$description": "Scrim behind modal dialogs and blocking overlays."
+    }
+  },
+  "text": {
+    "$type": "color",
+    "$description": "Text roles.",
+    "primary": {
+      "$value": "{primitive.color.neutral.900}",
+      "$description": "Default body and label text."
+    },
+    "secondary": {
+      "$value": "{primitive.color.neutral.650}",
+      "$description": "Supporting text, metadata, and muted icons."
+    },
+    "accent": {
+      "$value": "{primitive.color.brand.635}",
+      "$description": "Links, selected labels, and accent icons on neutral surfaces."
+    },
+    "accentHover": {
+      "$value": "{primitive.color.brand.690}",
+      "$description": "Hover state for accent text and links."
+    },
+    "onFill": {
+      "$value": "{primitive.color.neutral.5}",
+      "$description": "Text and icons placed on a primary fill."
+    }
+  },
+  "fill": {
+    "$type": "color",
+    "$description": "Fill roles.",
+    "primary": {
+      "$value": "{primitive.color.brand.645}",
+      "$description": "High-prominence filled controls such as primary buttons."
+    },
+    "primaryHover": {
+      "$value": "{primitive.color.brand.715}",
+      "$description": "Hover state for a primary fill."
+    },
+    "neutral": {
+      "$value": "{primitive.color.neutral.650}",
+      "$description": "Neutral indicators and muted fills."
+    },
+    "warning": {
+      "$value": "{primitive.color.warning.610}",
+      "$description": "Warning indicators and progress bars."
+    },
+    "danger": {
+      "$value": "{primitive.color.danger.615}",
+      "$description": "Destructive filled indicators."
+    }
+  },
+  "border": {
+    "$type": "color",
+    "$description": "Border roles.",
+    "default": {
+      "$value": "{primitive.color.neutral.200}",
+      "$description": "Dividers, input borders, and container outlines."
+    },
+    "strong": {
+      "$value": "{primitive.color.neutral.465}",
+      "$description": "Control boundaries and scrollbar thumbs that need more emphasis."
+    },
+    "focus": {
+      "$value": "{primitive.color.brand.635}",
+      "$description": "Keyboard focus ring."
+    }
+  },
+  "status": {
+    "$type": "color",
+    "$description": "Status roles.",
+    "success": {
+      "$value": "{primitive.color.brand.635}",
+      "$description": "Successful outcome text and icons."
+    },
+    "warning": {
+      "$value": "{primitive.color.warning.610}",
+      "$description": "Warning text and icons."
+    },
+    "danger": {
+      "$value": "{primitive.color.danger.615}",
+      "$description": "Error and destructive text and icons."
+    }
+  }
+}

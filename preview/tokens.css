@@ -1,0 +1,115 @@
+/* Generated from design/tokens. Run npm run build. */
+:root {
+  --font-body: 14px;
+  --font-caption: 12px;
+  --font-display: 32px;
+  --font-family: "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-line-height: 1.428571;
+  --font-line-height-caption: 1.333333;
+  --font-line-height-display: 1.25;
+  --font-line-height-title: 1.333333;
+  --font-mono: "Cascadia Code", "Consolas", monospace;
+  --font-title: 21px;
+  --layout-checkbox: 16px;
+  --layout-clock-width: 44px;
+  --layout-control-height: 36px;
+  --layout-details: 380px;
+  --layout-dialog: 480px;
+  --layout-indicator-height: 16px;
+  --layout-indicator-width: 3px;
+  --layout-inspector: 280px;
+  --layout-label-width: 80px;
+  --layout-loader-dot: 6px;
+  --layout-metadata-width: 64px;
+  --layout-min-height: 640px;
+  --layout-min-width: 960px;
+  --layout-music-versions: 240px;
+  --layout-panel-height: 272px;
+  --layout-progress-height: 8px;
+  --layout-progress-max: 280px;
+  --layout-row-height: 40px;
+  --layout-sidebar: 208px;
+  --layout-slider-min: 80px;
+  --layout-status-dot: 8px;
+  --layout-track-group: 52px;
+  --layout-tree-indent: 16px;
+  --layout-volume-width: 96px;
+  --layout-window-height: 760px;
+  --layout-window-width: 1160px;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --motion-fast: 150ms;
+  --motion-standard: 200ms;
+  --opacity-disabled: 0.4;
+  --radius-lg: 12px;
+  --radius-md: 6px;
+  --radius-pill: 1600px;
+  --radius-sm: 3px;
+  --space-lg: 16px;
+  --space-md: 12px;
+  --space-sm: 8px;
+  --space-xl: 24px;
+  --space-xs: 4px;
+  --space-xxl: 32px;
+  --space-xxs: 2px;
+  --space-xxxl: 48px;
+  --stroke-focus: 2px;
+  --stroke-thin: 1px;
+  --weight-bold: 700;
+  --weight-medium: 500;
+  --weight-regular: 400;
+  --weight-semibold: 600;
+}
+
+/* Generated from design/tokens. Run npm run build. */
+:root, :root[data-theme="light"] {
+  color-scheme: light;
+  --color-background-backdrop: #11111166;
+  --color-background-canvas: #f6f6f6;
+  --color-background-hover: #e1e1e1;
+  --color-background-raised: #eeeeee;
+  --color-background-selected: #e7eff7;
+  --color-background-surface: #fefefe;
+  --color-border-default: #c7c7c7;
+  --color-border-focus: #10598f;
+  --color-border-strong: #808080;
+  --color-fill-danger: #a02725;
+  --color-fill-neutral: #525252;
+  --color-fill-primary: #11568b;
+  --color-fill-primary-hover: #15456c;
+  --color-fill-warning: #77540d;
+  --color-status-danger: #a02725;
+  --color-status-success: #10598f;
+  --color-status-warning: #77540d;
+  --color-text-accent: #10598f;
+  --color-text-accent-hover: #144b77;
+  --color-text-on-fill: #fefefe;
+  --color-text-primary: #161616;
+  --color-text-secondary: #525252;
+}
+
+/* Generated from design/tokens. Run npm run build. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-background-backdrop: #111111cc;
+  --color-background-canvas: #060606;
+  --color-background-hover: #262626;
+  --color-background-raised: #191919;
+  --color-background-selected: #112538;
+  --color-background-surface: #0d0d0d;
+  --color-border-default: #373737;
+  --color-border-focus: #89bdef;
+  --color-border-strong: #696969;
+  --color-fill-danger: #f07268;
+  --color-fill-neutral: #b1b1b1;
+  --color-fill-primary: #0e629e;
+  --color-fill-primary-hover: #0c79c4;
+  --color-fill-warning: #ca9329;
+  --color-status-danger: #f07268;
+  --color-status-success: #89bdef;
+  --color-status-warning: #ca9329;
+  --color-text-accent: #89bdef;
+  --color-text-accent-hover: #aecfee;
+  --color-text-on-fill: #fefefe;
+  --color-text-primary: #f8f8f8;
+  --color-text-secondary: #b1b1b1;
+}

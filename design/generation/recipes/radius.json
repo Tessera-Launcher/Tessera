@@ -1,0 +1,7 @@
+{
+  "$schema": "../schemas/radius.recipe.schema.json",
+  "basePx": 3,
+  "steps": [100, 200, 300],
+  "roles": { "sm": 100, "md": 200, "lg": 300 },
+  "fullPx": 1600
+}

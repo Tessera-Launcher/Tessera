@@ -1,0 +1,5 @@
+{
+  "$schema": "../schemas/opacity.recipe.schema.json",
+  "steps": [0, 150, 250, 400, 600, 1000],
+  "role": { "name": "disabled", "step": 400 }
+}

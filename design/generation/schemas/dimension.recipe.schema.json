@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Dimension recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["basePx", "spacing", "layout"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "basePx": { "type": "number", "exclusiveMinimum": 0 },
+    "spacing": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 25, "multipleOf": 25 }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 25, "multipleOf": 25 }
+    }
+  }
+}

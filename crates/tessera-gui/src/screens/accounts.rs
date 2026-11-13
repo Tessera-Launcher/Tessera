@@ -5,21 +5,22 @@ use crate::*;
 
 impl Launcher {
     pub(crate) fn accounts_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         // One row per account file: sessions first, offline accounts among them
         // (the list is sorted by player name, not by kind).
         let current = self.state.account.file().map(|path| path.to_path_buf());
         let mut list = div()
             .id("accounts")
             .v_flex()
-            .gap_1()
-            .p_2()
+            .gap(px(space::XS))
+            .p(px(space::MD))
             .overflow_y_scroll();
         if self.state.accounts.is_empty() {
             list = list.child(
                 div()
-                    .p_3()
-                    .text_sm()
-                    .text_color(rgb(DIM))
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
                     .child("还没有账户：按 l 登录"),
             );
         }
@@ -34,11 +35,18 @@ impl Launcher {
                     .id(format!("account-{index}"))
                     .h_flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(if selected { rgb(ROW) } else { rgb(PANEL) })
+                    .gap(px(space::MD))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(if selected {
+                        rgb(colors.selected)
+                    } else {
+                        rgb(colors.surface)
+                    })
+                    .min_h(px(layout::ROW_HEIGHT))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.hover)))
                     .on_click(cx.listener(
                         move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                             this.state.accounts_ui.selected = index;
@@ -52,19 +60,32 @@ impl Launcher {
                     ))
                     .child(
                         div()
-                            .w(px(8.0))
-                            .h(px(8.0))
-                            .rounded_full()
-                            .bg(rgb(if active { ACCENT } else { DIM })),
+                            .w(px(layout::STATUS_DOT))
+                            .h(px(layout::STATUS_DOT))
+                            .rounded(px(radius::PILL))
+                            .bg(rgb(if active {
+                                colors.fill_primary
+                            } else {
+                                colors.text_secondary
+                            })),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
-                            .text_color(rgb(if active { ACCENT } else { TEXT }))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(if active {
+                                colors.text_accent
+                            } else {
+                                colors.text_primary
+                            }))
                             .child(name),
                     )
-                    .child(div().text_xs().text_color(rgb(DIM)).child(application)),
+                    .child(
+                        div()
+                            .text_size(px(font::CAPTION))
+                            .text_color(rgb(colors.text_secondary))
+                            .child(application),
+                    ),
             );
         }
 
@@ -78,16 +99,16 @@ impl Launcher {
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
-            .child(screen_title("账户"))
-            .child(panel("已保存的会话", list, true))
+            .gap(px(space::MD))
+            .child(screen_title(colors, "账户"))
+            .child(panel(colors, "已保存的会话", list, true))
             .child(
-                footer_bar(confirm)
+                footer_bar(colors, confirm)
                     .child(primary_button("切换", cx, |this: &mut Launcher, cx| {
                         this.state.activate_selected_account();
                         this.refresh(cx);
                     }))
-                    .child(button("移除", cx, |this: &mut Launcher, cx| {
+                    .child(danger_button("移除", cx, |this: &mut Launcher, cx| {
                         this.state.remove_selected_account();
                         this.refresh(cx);
                     }))

@@ -78,7 +78,7 @@ impl Launcher {
             self.state.take_ui_requests();
             return;
         }
-        let mut changed = false;
+        let mut changed = self.observe_loading();
 
         // Desktop requests first: they are cheap and one of them starts the
         // audio worker, which the effects below never touch.
@@ -215,9 +215,64 @@ impl Launcher {
         if self.flush_log() {
             changed = true;
         }
+        self.schedule_loading(cx);
         if changed {
             cx.notify();
         }
+    }
+
+    /// Map the state machine's stages to presentation phases. Only an empty
+    /// first load is gated; a refresh keeps showing the cached rows.
+    fn observe_loading(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let java = if self.state.java.stage == tessera_core::app::JavaStage::Loading
+            && self.state.java.runtimes.is_empty()
+        {
+            loading::Phase::Loading
+        } else if self.state.java.stage == tessera_core::app::JavaStage::Failed {
+            loading::Phase::Failed
+        } else {
+            loading::Phase::Ready
+        };
+        let versions = if self.state.download.stage
+            == tessera_core::app::DownloadStage::LoadingVersions
+            && self.state.download.rows.is_empty()
+        {
+            loading::Phase::Loading
+        } else if self.state.download.stage == tessera_core::app::DownloadStage::Failed {
+            loading::Phase::Failed
+        } else {
+            loading::Phase::Ready
+        };
+        let java_changed = self.loading.observe(loading::LoadingKey::Java, java, now);
+        let versions_changed = self
+            .loading
+            .observe(loading::LoadingKey::Versions, versions, now);
+        java_changed || versions_changed
+    }
+
+    /// Keep one presentation wakeup pending for the next reveal/hold deadline.
+    fn schedule_loading(&mut self, cx: &mut Context<Self>) {
+        let Some(deadline) = self.loading.next_wake() else {
+            self.loading_wake = None;
+            return;
+        };
+        if self
+            .loading_wake
+            .is_some_and(|scheduled| scheduled <= deadline)
+        {
+            return;
+        }
+        self.loading_wake = Some(deadline);
+        let after = deadline.saturating_duration_since(std::time::Instant::now());
+        self.tasks.schedule(after, |this, cx| {
+            this.loading_wake = None;
+            this.step(cx);
+        });
+    }
+
+    pub(crate) fn loading_visible(&self, key: loading::LoadingKey) -> bool {
+        self.loading.visible(key)
     }
 
     /// Repaint, and run whatever the handler just queued.

@@ -1,0 +1,14 @@
+{
+  "$schema": "../schemas/dimension.recipe.schema.json",
+  "basePx": 8,
+  "spacing": { "xxs": 50, "xs": 100, "sm": 200, "md": 300, "lg": 400, "xl": 600, "xxl": 800, "xxxl": 1200 },
+  "layout": {
+    "windowWidth": 29000, "windowHeight": 19000, "minWidth": 24000, "minHeight": 16000,
+    "sidebar": 5200, "details": 9500, "inspector": 7000, "musicVersions": 6000,
+    "dialog": 12000, "panelHeight": 6800, "progressMax": 7000, "rowHeight": 1000,
+    "controlHeight": 900, "checkbox": 400, "statusDot": 200, "loaderDot": 150,
+    "indicatorWidth": 75, "indicatorHeight": 400, "labelWidth": 2000, "metadataWidth": 1600,
+    "trackGroup": 1300, "clockWidth": 1100, "volumeWidth": 2400, "sliderMin": 2000,
+    "progressHeight": 200, "treeIndent": 400
+  }
+}

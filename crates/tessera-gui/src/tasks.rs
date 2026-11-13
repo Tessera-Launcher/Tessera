@@ -87,6 +87,29 @@ impl Tasks {
             .expect("failed to start a worker bridge");
     }
 
+    /// Wake the UI once after `after`, without a worker channel.
+    ///
+    /// Used by presentation timers such as the loading gate. The job runs on
+    /// the UI thread, and a quitting window discards it.
+    pub(crate) fn schedule<F>(&self, after: Duration, job: F)
+    where
+        F: FnOnce(&mut Launcher, &mut Context<Launcher>) + Send + 'static,
+    {
+        let wake = self.wake.clone();
+        let stop = self.stop.clone();
+        std::thread::Builder::new()
+            .name("tessera-delay".into())
+            .spawn(move || {
+                std::thread::sleep(after);
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let job: Job = Box::new(job);
+                let _ = wake.unbounded_send(job);
+            })
+            .expect("failed to schedule a UI wakeup");
+    }
+
     /// Whether a worker of this kind is still running.
     pub(crate) fn running(&self, kind: TaskKind) -> bool {
         self.live.contains(&kind)

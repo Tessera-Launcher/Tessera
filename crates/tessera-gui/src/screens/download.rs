@@ -18,7 +18,8 @@ impl Launcher {
     }
 
     fn filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut bar = div().h_flex().items_center().gap_1();
+        let colors = theme::colors(cx);
+        let mut bar = div().h_flex().items_center().gap(px(space::XS));
         for filter in [
             VersionFilter::All,
             VersionFilter::Release,
@@ -29,12 +30,20 @@ impl Launcher {
             bar = bar.child(
                 div()
                     .id(format!("filter-{}", filter.label()))
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(if picked { ACCENT } else { ROW }))
-                    .text_color(rgb(if picked { 0x0b_0d_10 } else { DIM }))
-                    .text_xs()
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(if picked {
+                        colors.fill_primary
+                    } else {
+                        colors.raised
+                    }))
+                    .text_color(rgb(if picked {
+                        colors.text_on_fill
+                    } else {
+                        colors.text_secondary
+                    }))
+                    .text_size(px(font::CAPTION))
                     .on_click(
                         cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                             this.state.set_download_filter(filter);
@@ -48,23 +57,26 @@ impl Launcher {
     }
 
     fn download_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let search = self.ensure_search(window, cx);
+        let show_loading = self.loading_visible(crate::LoadingKey::Versions);
         let toolbar = div()
             .h_flex()
             .items_center()
-            .gap_2()
-            .mb_2()
+            .gap(px(space::MD))
+            .mb(px(space::MD))
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .child(Input::new(&search).appearance(false).text_sm()),
+                div().flex_1().min_w(px(0.0)).child(
+                    Input::new(&search)
+                        .appearance(true)
+                        .text_size(px(font::BODY)),
+                ),
             )
             .child(self.filter_bar(cx));
         let download = &self.state.download;
         // Rows are fixed-height so the list can keep a full-height scrollbar
         // while only building the page around the current viewport.
-        const ROW_HEIGHT: f32 = 30.0;
+        const ROW_HEIGHT: f32 = layout::ROW_HEIGHT;
         const VISIBLE_ROWS: usize = 18;
         const OVERSCAN: usize = 10;
         let mut versions = div()
@@ -72,135 +84,173 @@ impl Launcher {
             .v_flex()
             .size_full()
             .min_h(px(0.0))
-            .p_2()
+            .p(px(space::MD))
             .track_scroll(&self.download_scroll)
             .overflow_y_scroll();
 
-        if download.rows.is_empty() {
-            versions = versions.child(div().p_3().text_sm().text_color(rgb(DIM)).child(
-                match download.stage {
-                    DownloadStage::LoadingVersions => "正在取版本列表…",
-                    _ => "没有可安装的版本",
-                },
-            ));
-        }
-
-        let total_rows = download.rows.len();
-        let cursor = download.cursor().min(total_rows.saturating_sub(1));
-        let mut first = if total_rows == 0 {
-            0
-        } else {
-            ((-self.download_scroll.offset().y).as_f32().max(0.0) / ROW_HEIGHT).floor() as usize
-        }
-        .min(total_rows.saturating_sub(1));
-        // A changed keyboard/click selection scrolls into view; wheel and
-        // scrollbar drag leave the cursor alone and only move the viewport.
-        if cursor != self.download_cursor_seen {
-            self.download_cursor_seen = cursor;
-            if total_rows > 0 && (cursor < first || cursor >= first + VISIBLE_ROWS) {
-                let target = cursor
-                    .saturating_sub(VISIBLE_ROWS / 2)
-                    .min(total_rows.saturating_sub(VISIBLE_ROWS));
-                self.download_scroll
-                    .set_offset(point(px(0.), px(-(target as f32 * ROW_HEIGHT))));
-                first = target;
-            }
-        }
-        let start = first.saturating_sub(OVERSCAN);
-        let end = (first + VISIBLE_ROWS + OVERSCAN).min(total_rows);
-        if start > 0 {
-            versions = versions.child(div().h(px(start as f32 * ROW_HEIGHT)).flex_shrink_0());
-        }
-        for drawn in start..end {
-            let row = &download.rows[drawn];
-            let indent = f32::from(row.depth) * 14.0;
-            match row.kind.clone() {
-                RowKind::Version(index) => {
-                    let version = download.version(index);
-                    let picked = index == download.picked;
-                    let id = version.id.clone();
-                    let kind = version.kind;
-                    versions = versions.child(
-                        div()
-                            .id(format!("dl-{drawn}"))
-                            .h_flex()
-                            .items_center()
-                            .gap_2()
-                            .ml(px(indent))
-                            .px_2()
-                            .h(px(ROW_HEIGHT))
-                            .flex_shrink_0()
-                            .rounded_sm()
-                            .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
-                            .on_click(cx.listener(
-                                move |this: &mut Launcher, _event, _window, cx| {
-                                    this.state.download.picked = index;
-                                    this.state.download.refresh_loaders();
-                                    this.refresh(cx);
-                                },
-                            ))
-                            .child(
-                                div()
-                                    .w(px(8.0))
-                                    .h(px(8.0))
-                                    .rounded_full()
-                                    .bg(rgb(Launcher::kind_color(kind))),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_sm()
-                                    .text_color(rgb(if picked { ACCENT } else { TEXT }))
-                                    .child(id),
-                            ),
-                    );
-                }
-                RowKind::Group {
-                    key,
-                    first,
-                    expanded,
-                    ..
-                } => {
-                    let count = download.rows.len();
-                    let _ = count;
-                    let label = if expanded {
-                        format!("▾ {key}")
-                    } else {
-                        format!("▸ {key}")
-                    };
-                    versions = versions.child(
-                        div()
-                            .id(format!("dl-{drawn}"))
-                            .h_flex()
-                            .items_center()
-                            .gap_2()
-                            .ml(px(indent))
-                            .px_2()
-                            .h(px(ROW_HEIGHT))
-                            .flex_shrink_0()
-                            .rounded_sm()
-                            .bg(rgb(PANEL))
-                            .on_click(cx.listener(
-                                move |this: &mut Launcher, _event, _window, cx| {
-                                    this.state.download.picked = first;
-                                    this.state.toggle_row(drawn);
-                                    this.refresh(cx);
-                                },
-                            ))
-                            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(SNAPSHOT)))
-                            .child(div().flex_1().text_sm().text_color(rgb(DIM)).child(label)),
-                    );
-                }
-            }
-        }
-
-        if end < total_rows {
+        if show_loading {
             versions = versions.child(
                 div()
-                    .h(px((total_rows - end) as f32 * ROW_HEIGHT))
-                    .flex_shrink_0(),
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
+                    .child("正在取版本列表…"),
+            );
+        } else if download.rows.is_empty() && download.stage != DownloadStage::LoadingVersions {
+            versions = versions.child(
+                div()
+                    .p(px(space::LG))
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_secondary))
+                    .child("没有可安装的版本"),
             );
         }
+
+        if !show_loading {
+            let total_rows = download.rows.len();
+            let cursor = download.cursor().min(total_rows.saturating_sub(1));
+            let mut first = if total_rows == 0 {
+                0
+            } else {
+                ((-self.download_scroll.offset().y).as_f32().max(0.0) / ROW_HEIGHT).floor() as usize
+            }
+            .min(total_rows.saturating_sub(1));
+            // A changed keyboard/click selection scrolls into view; wheel and
+            // scrollbar drag leave the cursor alone and only move the viewport.
+            if cursor != self.download_cursor_seen {
+                self.download_cursor_seen = cursor;
+                if total_rows > 0 && (cursor < first || cursor >= first + VISIBLE_ROWS) {
+                    let target = cursor
+                        .saturating_sub(VISIBLE_ROWS / 2)
+                        .min(total_rows.saturating_sub(VISIBLE_ROWS));
+                    self.download_scroll
+                        .set_offset(point(px(0.), px(-(target as f32 * ROW_HEIGHT))));
+                    first = target;
+                }
+            }
+            let start = first.saturating_sub(OVERSCAN);
+            let end = (first + VISIBLE_ROWS + OVERSCAN).min(total_rows);
+            if start > 0 {
+                versions = versions.child(div().h(px(start as f32 * ROW_HEIGHT)).flex_shrink_0());
+            }
+            for drawn in start..end {
+                let row = &download.rows[drawn];
+                let indent = f32::from(row.depth) * layout::TREE_INDENT;
+                match row.kind.clone() {
+                    RowKind::Version(index) => {
+                        let version = download.version(index);
+                        let picked = index == download.picked;
+                        let id = version.id.clone();
+                        let kind = version.kind;
+                        versions = versions.child(
+                            div()
+                                .id(format!("dl-{drawn}"))
+                                .h_flex()
+                                .items_center()
+                                .gap(px(space::MD))
+                                .ml(px(indent))
+                                .px(px(space::MD))
+                                .h(px(ROW_HEIGHT))
+                                .flex_shrink_0()
+                                .rounded(px(radius::SM))
+                                .bg(if picked {
+                                    rgb(colors.selected)
+                                } else {
+                                    rgb(colors.surface)
+                                })
+                                .min_h(px(layout::ROW_HEIGHT))
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(rgb(colors.hover)))
+                                .min_h(px(layout::ROW_HEIGHT))
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(rgb(colors.hover)))
+                                .on_click(cx.listener(
+                                    move |this: &mut Launcher, _event, _window, cx| {
+                                        this.state.download.picked = index;
+                                        this.state.download.refresh_loaders();
+                                        this.refresh(cx);
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .w(px(layout::STATUS_DOT))
+                                        .h(px(layout::STATUS_DOT))
+                                        .rounded(px(radius::PILL))
+                                        .bg(rgb(Launcher::kind_color(colors, kind))),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(font::BODY))
+                                        .text_color(rgb(if picked {
+                                            colors.text_accent
+                                        } else {
+                                            colors.text_primary
+                                        }))
+                                        .child(id),
+                                ),
+                        );
+                    }
+                    RowKind::Group {
+                        key,
+                        first,
+                        expanded,
+                        ..
+                    } => {
+                        let count = download.rows.len();
+                        let _ = count;
+                        let label = if expanded {
+                            format!("▾ {key}")
+                        } else {
+                            format!("▸ {key}")
+                        };
+                        versions = versions.child(
+                            div()
+                                .id(format!("dl-{drawn}"))
+                                .h_flex()
+                                .items_center()
+                                .gap(px(space::MD))
+                                .ml(px(indent))
+                                .px(px(space::MD))
+                                .h(px(ROW_HEIGHT))
+                                .flex_shrink_0()
+                                .rounded(px(radius::SM))
+                                .bg(rgb(colors.surface))
+                                .on_click(cx.listener(
+                                    move |this: &mut Launcher, _event, _window, cx| {
+                                        this.state.download.picked = first;
+                                        this.state.toggle_row(drawn);
+                                        this.refresh(cx);
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .w(px(layout::STATUS_DOT))
+                                        .h(px(layout::STATUS_DOT))
+                                        .rounded(px(radius::PILL))
+                                        .bg(rgb(colors.border_strong)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(font::BODY))
+                                        .text_color(rgb(colors.text_secondary))
+                                        .child(label),
+                                ),
+                        );
+                    }
+                }
+            }
+
+            if end < total_rows {
+                versions = versions.child(
+                    div()
+                        .h(px((total_rows - end) as f32 * ROW_HEIGHT))
+                        .flex_shrink_0(),
+                );
+            }
+        }
+
         let versions_shell = div()
             .relative()
             .flex_1()
@@ -215,7 +265,7 @@ impl Launcher {
                 ),
             );
 
-        let mut loaders = div().v_flex().gap_1().p_2();
+        let mut loaders = div().v_flex().gap(px(space::XS)).p(px(space::MD));
         for (index, loader) in download.loaders.iter().enumerate() {
             let picked = index == download.loader_pick;
             let label = loader.label();
@@ -224,11 +274,18 @@ impl Launcher {
                     .id(format!("loader-{index}"))
                     .h_flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(if picked { rgb(ROW) } else { rgb(PANEL) })
+                    .gap(px(space::MD))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
+                    .rounded(px(radius::SM))
+                    .bg(if picked {
+                        rgb(colors.selected)
+                    } else {
+                        rgb(colors.surface)
+                    })
+                    .min_h(px(layout::ROW_HEIGHT))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.hover)))
                     .on_click(
                         cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                             this.state.download.loader_pick = index;
@@ -237,15 +294,23 @@ impl Launcher {
                     )
                     .child(
                         div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .rounded_full()
-                            .bg(rgb(if picked { ACCENT } else { DIM })),
+                            .w(px(layout::LOADER_DOT))
+                            .h(px(layout::LOADER_DOT))
+                            .rounded(px(radius::PILL))
+                            .bg(rgb(if picked {
+                                colors.fill_primary
+                            } else {
+                                colors.text_secondary
+                            })),
                     )
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(if picked { ACCENT } else { TEXT }))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(if picked {
+                                colors.text_accent
+                            } else {
+                                colors.text_primary
+                            }))
                             .child(label),
                     ),
             );
@@ -262,37 +327,40 @@ impl Launcher {
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
-            .child(screen_title("下载"))
+            .gap(px(space::MD))
+            .child(screen_title(colors, "下载"))
             .child(
                 div()
                     .h_flex()
                     .flex_1()
                     .items_stretch()
                     .min_h(px(0.0))
-                    .gap_2()
+                    .gap(px(space::MD))
                     .child(panel(
+                        colors,
                         &format!("版本 ({})", self.state.download.matched()),
                         div()
                             .v_flex()
                             .size_full()
                             .min_h(px(0.0))
-                            .p_2()
+                            .p(px(space::MD))
                             .child(toolbar)
                             .child(versions_shell),
                         true,
                     ))
-                    .child(div().v_flex().w(px(260.0)).gap_2().child(panel(
-                        "安装内容",
-                        loaders,
-                        true,
-                    ))),
+                    .child(
+                        div()
+                            .v_flex()
+                            .w(px(layout::INSPECTOR))
+                            .gap(px(space::MD))
+                            .child(panel(colors, "安装内容", loaders, true)),
+                    ),
             )
             .child(
-                footer_bar(&format!(
-                    "选中：{picked} · 下载源 {}",
-                    self.state.source_label()
-                ))
+                footer_bar(
+                    colors,
+                    &format!("选中：{picked} · 下载源 {}", self.state.source_label()),
+                )
                 .child(primary_button("安装", cx, |this: &mut Launcher, cx| {
                     this.state.start_install();
                     this.refresh(cx);
@@ -304,8 +372,9 @@ impl Launcher {
             )
     }
 
-    fn activity_log(&mut self) -> impl IntoElement {
+    fn activity_log(&mut self, colors: &'static color::Palette) -> impl IntoElement {
         log_pane(
+            colors,
             "install-log",
             "活动",
             &self.state.log,
@@ -314,31 +383,42 @@ impl Launcher {
     }
 
     fn download_progress(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let download = &self.state.download;
         let fraction = download.fraction() as f32;
         let mut body = div()
             .id("install-progress")
             .v_flex()
-            .gap_2()
-            .p_3()
-            .max_h(px(280.0))
+            .gap(px(space::MD))
+            .p(px(space::LG))
+            .max_h(px(layout::PROGRESS_MAX))
             .overflow_y_scroll();
 
         body = body
-            .child(div().text_sm().text_color(rgb(TEXT)).child(format!(
-                "{}%   {} / {} 个文件",
-                download.percent(),
-                download.done,
-                download.total
-            )))
             .child(
-                div().w_full().h(px(10.0)).rounded_sm().bg(rgb(ROW)).child(
-                    div()
-                        .h_full()
-                        .rounded_sm()
-                        .bg(rgb(ACCENT))
-                        .w(relative(fraction.max(0.001))),
-                ),
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_primary))
+                    .child(format!(
+                        "{}%   {} / {} 个文件",
+                        download.percent(),
+                        download.done,
+                        download.total
+                    )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(layout::PROGRESS_HEIGHT))
+                    .rounded(px(radius::SM))
+                    .bg(rgb(colors.raised))
+                    .child(
+                        div()
+                            .h_full()
+                            .rounded(px(radius::SM))
+                            .bg(rgb(colors.fill_primary))
+                            .w(relative(fraction.max(0.001))),
+                    ),
             );
 
         if download.speed > 0.0 {
@@ -353,16 +433,31 @@ impl Launcher {
                     download.batch_total_bytes as f64 / 1_048_576.0
                 ));
             }
-            body = body.child(div().text_xs().text_color(rgb(DIM)).child(line));
+            body = body.child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(line),
+            );
         }
         if let Some(error) = &download.error {
-            body = body.child(div().text_sm().text_color(rgb(BROKEN)).child(error.clone()));
+            body = body.child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.status_danger))
+                    .child(error.clone()),
+            );
         }
         if let Some((version, loader)) = &download.installed {
-            body = body.child(div().text_sm().text_color(rgb(ACCENT)).child(match loader {
-                Some(loader) => format!("安装完成：{version} · {loader}"),
-                None => format!("安装完成：{version}"),
-            }));
+            body = body.child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_accent))
+                    .child(match loader {
+                        Some(loader) => format!("安装完成：{version} · {loader}"),
+                        None => format!("安装完成：{version}"),
+                    }),
+            );
         }
         if let Some(summary) = &download.summary {
             body = body.child(div().text_sm().text_color(rgb(TEXT)).child(summary.text()));
@@ -373,11 +468,11 @@ impl Launcher {
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .gap_2()
-            .child(screen_title(title))
-            .child(self.activity_log())
-            .child(panel_fit("进度", body))
-            .child(footer_bar(&self.state.status).child(button(
+            .gap(px(space::MD))
+            .child(screen_title(colors, title))
+            .child(self.activity_log(colors))
+            .child(panel_fit(colors, "进度", body))
+            .child(footer_bar(colors, &self.state.status).child(button(
                 "返回",
                 cx,
                 |this: &mut Launcher, cx| {

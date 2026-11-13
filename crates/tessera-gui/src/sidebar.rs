@@ -1,6 +1,7 @@
 //! Sidebar pages and the switch between the five screens.
 
 use super::*;
+use crate::widgets::button;
 
 /// The sidebar's pages, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +74,9 @@ impl Launcher {
     }
 
     pub(crate) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
         let active = Page::of(self.state.screen);
-        let mut nav = div().v_flex().gap_1();
+        let mut nav = div().v_flex().gap(px(space::XS));
         for page in Page::ALL {
             let picked = page == active;
             nav = nav.child(
@@ -82,22 +84,37 @@ impl Launcher {
                     .id(page.id())
                     .h_flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(if picked { ROW } else { PANEL }))
+                    .gap(px(space::MD))
+                    .px(px(space::MD))
+                    .py(px(space::MD))
+                    .rounded(px(radius::MD))
+                    .bg(rgb(if picked {
+                        colors.selected
+                    } else {
+                        colors.surface
+                    }))
+                    .min_h(px(layout::ROW_HEIGHT))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.hover)))
                     .child(
                         div()
-                            .w(px(3.0))
-                            .h(px(14.0))
-                            .rounded_full()
-                            .bg(rgb(if picked { ACCENT } else { PANEL })),
+                            .w(px(layout::INDICATOR_WIDTH))
+                            .h(px(layout::INDICATOR_HEIGHT))
+                            .rounded(px(radius::PILL))
+                            .bg(rgb(if picked {
+                                colors.fill_primary
+                            } else {
+                                colors.surface
+                            })),
                     )
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(if picked { TEXT } else { DIM }))
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(if picked {
+                                colors.text_primary
+                            } else {
+                                colors.text_secondary
+                            }))
                             .child(page.label()),
                     )
                     .on_click(
@@ -110,47 +127,56 @@ impl Launcher {
 
         div()
             .v_flex()
-            .w(px(168.0))
+            .w(px(layout::SIDEBAR))
             .h_full()
-            .p_2()
-            .gap_3()
-            .rounded_md()
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
+            .p(px(space::MD))
+            .gap(px(space::XL))
+            .rounded(px(radius::MD))
+            .bg(rgb(colors.surface))
+            .border(px(stroke::THIN))
+            .border_color(rgb(colors.border_default))
             .child(
                 div()
                     .v_flex()
-                    .gap_0p5()
-                    .px_2()
-                    .py_1()
+                    .gap(px(space::XXS))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
                     .child(
                         div()
-                            .text_lg()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(ACCENT))
+                            .text_size(px(font::TITLE))
+                            .line_height(relative(font::LINE_HEIGHT_TITLE))
+                            .font_weight(FontWeight(weight::BOLD))
+                            .text_color(rgb(colors.text_accent))
                             .child("Tessera"),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(rgb(DIM))
-                            .child("Minecraft Java 版启动器"),
+                            .text_size(px(font::CAPTION))
+                            .text_color(rgb(colors.text_secondary))
+                            .child("Minecraft 启动器"),
                     ),
             )
             .child(nav)
             .child(div().flex_1())
+            .child(button(
+                if gpui_kit::component::Theme::global(cx).is_dark() {
+                    "切换到浅色"
+                } else {
+                    "切换到深色"
+                },
+                cx,
+                |_, cx| theme::toggle(cx),
+            ))
             .child(
                 div()
                     .v_flex()
-                    .gap_0p5()
-                    .px_2()
-                    .py_1()
-                    .child(div().text_xs().text_color(rgb(DIM)).child("当前账户"))
+                    .gap(px(space::XXS))
+                    .px(px(space::MD))
+                    .py(px(space::SM))
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(rgb(ACCENT))
+                            .text_size(px(font::CAPTION))
+                            .text_color(rgb(colors.text_accent))
                             .child(self.state.account.label()),
                     ),
             )
