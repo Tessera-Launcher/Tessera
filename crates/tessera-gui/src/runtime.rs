@@ -252,7 +252,7 @@ impl Launcher {
     }
 
     /// Keep one presentation wakeup pending for the next reveal/hold deadline.
-    fn schedule_loading(&mut self, cx: &mut Context<Self>) {
+    fn schedule_loading(&mut self, _cx: &mut Context<Self>) {
         let Some(deadline) = self.loading.next_wake() else {
             self.loading_wake = None;
             return;

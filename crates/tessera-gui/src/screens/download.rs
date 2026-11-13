@@ -460,7 +460,12 @@ impl Launcher {
             );
         }
         if let Some(summary) = &download.summary {
-            body = body.child(div().text_sm().text_color(rgb(TEXT)).child(summary.text()));
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(colors.text_secondary))
+                    .child(summary.text()),
+            );
         }
 
         let title = "安装";
