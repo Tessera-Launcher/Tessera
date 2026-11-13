@@ -160,7 +160,6 @@ impl Launcher {
         state.launch_options.memory_mb = settings.memory_mb;
         state.launch_options.width = settings.window_width;
         state.launch_options.height = settings.window_height;
-        state.launch_options.lwjgl3 = settings.lwjgl3;
         state.settings = settings;
         for note in startup_notes {
             state.log(note);

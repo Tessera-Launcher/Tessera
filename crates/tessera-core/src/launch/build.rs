@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-use super::agents::{ensure_asset, LEGACY_AGENT};
+use super::agents::{ensure_asset, LEGACY_AGENT, LWJGL3_AGENT};
 use super::aot_cache::aot_cache;
 use super::java::{find_java, java_kind, required_java, JavaKind, LEGACY_MAIN};
 use super::manifest::{client_jar, features, merge_chain, resolve_argument, substitute};
@@ -47,7 +47,7 @@ pub(super) fn prepare_inner(
     // also chooses the Java here. Training itself passes an explicit override.
     // A cache is keyed by the class path it was trained on, and the modern-LWJGL
     // mode changes that class path, so a trained cache is not used with it.
-    let aot = if java_override.is_none() && !options.lwjgl3 {
+    let aot = if java_override.is_none() && merged.lwjgl3.is_none() {
         aot_cache(&version_dir, version_dir_name, &runtimes)
     } else {
         None
@@ -64,15 +64,15 @@ pub(super) fn prepare_inner(
     // version, whose client jar it borrows), so the lookup walks the parent
     // chain too. A trained vanilla profile uses the unsigned copy the cache was
     // built from.
-    // The modern-LWJGL mode runs vanilla on LWJGL 3: the three LWJGL 2 libraries
-    // the version JSON lists are dropped and the 3.4.3 jars are appended below.
-    // Loader profiles are untouched — their own metadata already pins libraries.
-    let lwjgl3 = options.lwjgl3 && !merged.loader;
-    let client_jar = if lwjgl3 {
+    // A version the installer put on LWJGL 3 says so in its own JSON (`mdtLwjgl3`),
+    // and its library list already names the LWJGL 3 jars: the class path needs no
+    // special case here, only the agent and the flags below.
+    let lwjgl3 = merged.lwjgl3.clone();
+    let client_jar = if lwjgl3.is_some() {
         // The agent rewrites classes in the client jar, and a rewritten class
         // cannot satisfy the jar's signature: launch from an unsigned copy.
         let source = version_dir.join(format!("{version_dir_name}.jar"));
-        crate::lwjgl3::unsigned_client_jar(&version_dir, version_dir_name, &source)?
+        unsigned_client_jar(&version_dir, version_dir_name, &source)?
     } else if let Some(selection) = &aot {
         selection.unsigned_jar.clone()
     } else {
@@ -90,10 +90,9 @@ pub(super) fn prepare_inner(
     let features = features(true);
 
     let libraries_dir = root.join("libraries");
-    let skip_lwjgl2 = |name: &str| lwjgl3 && name.starts_with("org.lwjgl.lwjgl:");
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut missing = 0usize;
-    for path in merged.classpath_paths(&libraries_dir, &features, &skip_lwjgl2) {
+    for path in merged.classpath_paths(&libraries_dir, &features) {
         if path.is_file() {
             classpath.push(path);
         } else {
@@ -104,28 +103,6 @@ pub(super) fn prepare_inner(
         return Err(Error::missing(format!(
             "{missing} 个依赖文件缺失（重新安装这个版本）"
         )));
-    }
-    // LWJGL 3.4.3 replaces everything the dropped libraries provided. The shim
-    // in the agent answers the LWJGL 2 API; these jars are what it runs on.
-    let lwjgl3_dir = if lwjgl3 {
-        let runtimes = options
-            .runtimes
-            .clone()
-            .ok_or_else(|| Error::internal("没有配置 Java 运行时目录"))?;
-        Some(crate::lwjgl3::dir(&runtimes))
-    } else {
-        None
-    };
-    if let Some(dir) = &lwjgl3_dir {
-        for jar in crate::lwjgl3::jars(dir)? {
-            if !jar.is_file() {
-                return Err(Error::missing(format!(
-                    "LWJGL 3 还没下载：{}（关掉配置里的 lwjgl3，或先启动一次让启动器下载）",
-                    jar.display()
-                )));
-            }
-            classpath.push(jar);
-        }
     }
     classpath.push(client_jar);
     // LaunchWrapper 1.5/1.12 casts the system class loader to `URLClassLoader`,
@@ -153,7 +130,7 @@ pub(super) fn prepare_inner(
     // LWJGL 3 unpacks its native libraries from the class path itself, so the
     // `-natives` directory (and the ASCII mirror for LWJGL 3.1/3.2) is only
     // needed in the original layout.
-    let natives = if lwjgl3 {
+    let natives = if lwjgl3.is_some() {
         None
     } else {
         find_natives(&version_dir, version_dir_name, &merged.parents)
@@ -227,16 +204,17 @@ pub(super) fn prepare_inner(
 
     // Required no matter what the profile claimed.
     args.push(format!("-Xmx{}M", options.memory_mb));
-    if let Some(dir) = &lwjgl3_dir {
+    if lwjgl3.is_some() {
         // The agent carries the LWJGL 2 shim and rewrites the call sites LWJGL 3
         // renamed; `--enable-native-access` is what LWJGL 3 asks for on JDK 24+.
-        let agent = crate::lwjgl3::agent(dir)?;
+        let agent = version_dir.join(format!("{version_dir_name}.lwjgl3-agent.jar"));
+        ensure_asset(&agent, LWJGL3_AGENT)?;
         args.push(format!("-javaagent:{}", agent.display()));
         args.push("--enable-native-access=ALL-UNNAMED".to_string());
     }
     // Only if the profile did not ask for a natives directory itself: ours is the
     // same path, but a duplicate `-D` reads like a conflict when debugging
-    if !lwjgl3
+    if lwjgl3.is_none()
         && !args
             .iter()
             .any(|arg| arg.starts_with("-Djava.library.path="))
@@ -338,5 +316,30 @@ pub(super) fn prepare_inner(
         classpath_entries: classpath.len(),
         natives,
         main_class,
+        lwjgl3,
     })
+}
+
+/// A client jar without its signature files, for the agent-rewritten launch.
+///
+/// The LWJGL 3 agent rewrites call sites inside the game's classes, and a
+/// rewritten class no longer matches the jar's signature: the JVM then refuses
+/// the whole package with "signer information does not match". The AOT path has
+/// the same problem, so this reuses its helper under a name of its own.
+pub(super) fn unsigned_client_jar(
+    version_dir: &Path,
+    version_id: &str,
+    source: &Path,
+) -> Result<PathBuf> {
+    let destination = version_dir.join(format!("{version_id}.lwjgl3.jar"));
+    if let (Ok(copy), Ok(original)) = (
+        std::fs::metadata(&destination).and_then(|meta| meta.modified()),
+        std::fs::metadata(source).and_then(|meta| meta.modified()),
+    ) {
+        if copy >= original {
+            return Ok(destination);
+        }
+    }
+    crate::aot::make_unsigned_jar(source, &destination)?;
+    Ok(destination)
 }

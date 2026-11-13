@@ -11,6 +11,9 @@ use crate::error::{Error, Result};
 /// The compiled agent; its sources live in `assets/legacy-agent-src`.
 pub(super) const LEGACY_AGENT: &[u8] = include_bytes!("../../assets/legacy-agent.jar");
 
+/// The LWJGL 3 shim agent; sources live in `assets/lwjgl3-agent-src`.
+pub(super) const LWJGL3_AGENT: &[u8] = include_bytes!("../../assets/lwjgl3-agent.jar");
+
 /// Write an embedded asset next to the version, but only if it changed.
 ///
 /// The AOT cache validates every class path entry by size and timestamp, so

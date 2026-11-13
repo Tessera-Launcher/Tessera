@@ -317,6 +317,28 @@ The old entry points stay: `install_modloader`/`full_install` still install the
 vanilla version first and write an `inheritsFrom` profile, for callers that want
 that layout.
 
+### 14. 1.8.9 installs with LWJGL 3 instead of LWJGL 2
+
+Tessera runs 1.8.9 on LWJGL 3.4.3 through a shim agent in the launcher, so the
+LWJGL 2.9.4 artifacts the manifest lists are dead weight.
+
+- `lwjgl3::swap_lwjgl2_for_3` runs inside `install_vanilla_with_assets` before the
+  profile is written: it removes every `org.lwjgl.lwjgl:*` entry (natives
+  included), downloads the four 3.4.3 modules plus the natives for this machine
+  into `libraries/` in Maven layout, and adds them to the profile with the
+  SHA-1 Maven publishes and the size of the file on disk. No LWJGL 2 jar is ever
+  requested.
+- The profile gets `"mdtLwjgl3": "3.4.3"`, the only thing a launcher needs to
+  know to add the shim agent and its flags.
+- Only [`lwjgl3::SUPPORTED`] (`1.8.9`) is rewritten: the shim's API surface comes
+  from that version, and silently swapping the library set of anything else
+  would turn a clear failure into a mystery.
+- The regular download tasks then see the files already present with matching
+  size and SHA-1, so they are skipped rather than fetched twice.
+
+Covered by `lwjgl3::tests::the_lwjgl2_group_is_replaced_by_the_3_4_3_jars` and
+`other_versions_are_left_alone` (a fake downloader, no network).
+
 ## Example
 
 `examples/download_bench.rs` installs 1.8.9 from a chosen mirror into a directory passed on the

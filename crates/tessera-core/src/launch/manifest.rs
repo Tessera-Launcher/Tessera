@@ -31,6 +31,9 @@ pub(super) struct RawVersion {
     /// Present on a self-contained loader profile: `{"id": "fabric", "version": "…"}`.
     #[serde(rename = "mdtLoader", default)]
     loader_marker: Option<serde_json::Value>,
+    /// Set by the installer on a version that runs on LWJGL 3 instead of LWJGL 2.
+    #[serde(rename = "mdtLwjgl3", default)]
+    lwjgl3_version: Option<String>,
     #[serde(rename = "type", default)]
     version_type: Option<String>,
     #[serde(default)]
@@ -117,6 +120,9 @@ pub(super) struct Merged {
     /// A mod-loader profile, self-contained or inheriting: it gets the loader
     /// Java pin and is refused by AOT training.
     pub(super) loader: bool,
+    /// The version installed with LWJGL 3 instead of LWJGL 2 (the launcher's
+    /// shim agent supplies the LWJGL 2 API), or `None`.
+    pub(super) lwjgl3: Option<String>,
 }
 
 impl Merged {
@@ -129,18 +135,11 @@ impl Merged {
         &self,
         libraries_dir: &Path,
         features: &HashMap<&'static str, bool>,
-        skip: &dyn Fn(&str) -> bool,
     ) -> Vec<PathBuf> {
         let mut seen: Vec<String> = Vec::new();
         let mut paths = Vec::new();
         for library in &self.libraries {
             if !rules_allow(&library.rules, features) {
-                continue;
-            }
-            // The modern-LWJGL mode replaces these by name, not by path: the
-            // LWJGL 2 group (`org.lwjgl.lwjgl`) and the LWJGL 3 one
-            // (`org.lwjgl`) share a directory prefix.
-            if skip(&library.name) {
                 continue;
             }
             // A natives jar is extracted, not put on the classpath; the library
@@ -434,6 +433,9 @@ pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged>
         // A marker in the profile itself, or anything it inherits from, makes
         // this a loader launch.
         merged.loader |= version.loader_marker.is_some() || index > 0;
+        if merged.lwjgl3.is_none() {
+            merged.lwjgl3 = version.lwjgl3_version.clone();
+        }
         if merged.main_class.is_empty() {
             if let Some(main_class) = &version.main_class {
                 merged.main_class = main_class.clone();

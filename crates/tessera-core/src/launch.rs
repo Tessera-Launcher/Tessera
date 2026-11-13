@@ -123,9 +123,6 @@ pub struct Options {
     /// way to point a launch at some other Java — every instance runs on a runtime
     /// the launcher downloaded, so the version is known and explainable.
     pub runtimes: Option<PathBuf>,
-    /// Run vanilla on LWJGL 3 (the shim in `assets/lwjgl3-agent.jar`) instead of
-    /// the LWJGL 2 the version JSON lists.
-    pub lwjgl3: bool,
 }
 
 impl Default for Options {
@@ -136,7 +133,6 @@ impl Default for Options {
             width: 854,
             height: 480,
             runtimes: None,
-            lwjgl3: false,
         }
     }
 }
@@ -158,6 +154,9 @@ pub struct Launch {
     pub classpath_entries: usize,
     pub natives: Option<PathBuf>,
     pub main_class: String,
+    /// The LWJGL version this launch runs on instead of the LWJGL 2 in its
+    /// profile, when the installer substituted it (`mdtLwjgl3`).
+    pub lwjgl3: Option<String>,
 }
 
 /// Merge the chain, resolve Java and build the command.
@@ -227,31 +226,6 @@ pub fn spawn_game(
         // The game keeps reading libraries/assets for its whole lifetime; a
         // sweep must wait until it exits rather than delete the files under it.
         let _maintenance = crate::task::read();
-        // The modern-LWJGL jars are downloaded on first use rather than being
-        // part of the install: a version that never launches that way pays
-        // nothing for them.
-        if options.lwjgl3 {
-            if let Some(runtimes) = options.runtimes.clone() {
-                let dir = crate::lwjgl3::dir(&runtimes);
-                if !crate::lwjgl3::is_installed(&dir) {
-                    let reporter = sender.clone();
-                    let mut note = move |line: String| {
-                        let _ = reporter.send(GameEvent::Note(line));
-                    };
-                    if let Err(error) = crate::lwjgl3::ensure(&dir, &mut note) {
-                        let _ = sender.send(GameEvent::Failed {
-                            reason: format!("LWJGL 3 下载失败：{error}"),
-                        });
-                        return;
-                    }
-                    let _ = sender.send(GameEvent::Note(format!(
-                        "LWJGL {} 已就绪：{}",
-                        crate::lwjgl3::VERSION,
-                        dir.display()
-                    )));
-                }
-            }
-        }
         let prepared = match prepare(&root, &version_dir, &credentials, &options) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -261,6 +235,13 @@ pub fn spawn_game(
                 return;
             }
         };
+        if let Some(version) = &prepared.lwjgl3 {
+            // One line, so a player who wonders why the game now runs on LWJGL 3
+            // can see it in the launcher's log instead of guessing.
+            let _ = sender.send(GameEvent::Note(format!(
+                "{version_dir} 用 LWJGL {version} 启动（Tessera 的兼容层，替代原版 LWJGL 2.9.4）"
+            )));
+        }
         let mut command = std::process::Command::new(&prepared.command.exe);
         command
             .args(&prepared.command.args)

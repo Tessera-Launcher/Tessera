@@ -201,9 +201,27 @@ impl MdtClient {
         self.reporter
             .status(&format!("Updating {} index", self.mirror.label()));
         self.reporter.status(&format!("读取 {version} 的版本清单…"));
-        let (text, version_json) =
+        let (mut text, mut version_json) =
             manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, version).await?;
         let urls = ManifestUrls::try_new(&self.mirror)?;
+
+        // Versions that run on LWJGL 3 install with it: the LWJGL 2 entries are
+        // dropped from the profile and the 3.4.3 jars are downloaded instead, so
+        // the launcher never has to special-case the library list.
+        {
+            let mut profile: serde_json::Value = serde_json::from_str(&text)?;
+            if crate::lwjgl3::swap_lwjgl2_for_3(
+                self.downloader.as_ref(),
+                &self.root,
+                &mut profile,
+                self.reporter.as_ref(),
+            )
+            .await?
+            {
+                text = serde_json::to_string_pretty(&profile)?;
+                version_json = serde_json::from_str(&text)?;
+            }
+        }
 
         // Save the vanilla version JSON.
         let vdir = self.root.join("versions").join(&version_json.id);

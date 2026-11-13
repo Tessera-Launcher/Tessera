@@ -373,7 +373,7 @@ pub const ASSET_CONCURRENCY: usize = 16;
 pub(crate) const HASH_BUF_SIZE: usize = 256 * 1024;
 
 /// Stream a file in chunks and compute its SHA-1, avoiding loading the whole file into memory.
-async fn sha1_file(path: &Path) -> Result<String, MdtError> {
+pub(crate) async fn sha1_file(path: &Path) -> Result<String, MdtError> {
     #[cfg(not(feature = "tokio"))]
     {
         use std::io::Read;
