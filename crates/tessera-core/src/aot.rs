@@ -14,7 +14,7 @@
 //! cannot cache.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -157,9 +157,7 @@ fn train(
             .map_err(|error| Error::io(format!("无法创建 {}", parent.display()), error))?;
     }
 
-    let original_jar = version_dir.join(format!("{version}.jar"));
-    let unsigned_jar = version_dir.join(format!("{version}.unsigned.jar"));
-    make_unsigned_jar(&original_jar, &unsigned_jar)?;
+    let training_jar = version_dir.join(format!("{version}.jar"));
     let agent = version_dir.join(format!("{version}.aot-agent.jar"));
     fs::write(&agent, PRELOADER)
         .map_err(|error| Error::io(format!("无法写入 {}", agent.display()), error))?;
@@ -174,30 +172,13 @@ fn train(
         java.major,
     )?;
     let mut args = prepared.command.args.clone();
-    // The prepare step may already have put an unsigned copy of the client jar
-    // on the class path (an LWJGL 3 install uses `<version>.lwjgl3.jar` because
-    // its agent rewrites classes). Training still has to run from the exact jar
-    // the finished cache names, so accept either name as the thing to replace.
-    let mut client_jars = vec![original_jar.clone()];
-    if prepared.lwjgl3.is_some() {
-        client_jars.push(version_dir.join(format!("{version}.lwjgl3.jar")));
-    }
-    if !swap_client_jar(&mut args, &client_jars, &unsigned_jar) {
-        let expected = client_jars
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(" / ");
-        return Err(Error::invalid(format!(
-            "启动 classpath 里没有 {expected}，无法换成去签名副本"
-        )));
-    }
     // A cache cannot replay classes from a sealed jar: the cached class defines
     // its package with the cache as its code source, so the first class from
     // that package which missed the cache trips a sealing violation at launch.
     // LWJGL 2.9.4 (every pre-1.13 version) is sealed, so a 1.8.9 cache would
     // crash the game while a 26.3 one would not.
-    unseal_classpath(&mut args)?;
+    mdt::jar::unseal_classpath(&mut args)
+        .map_err(|error| Error::invalid(format!("无法解除库 jar 的 sealing: {error}")))?;
     let total = classpath_classes(&args);
     let _ = sender.send(Event::Progress {
         version: version.to_string(),
@@ -310,7 +291,7 @@ fn train(
     let meta = serde_json::json!({
         "java_major": java.major,
         "java_version": java.version,
-        "unsigned_jar": unsigned_jar.file_name().and_then(|name| name.to_str()),
+        "unsigned_jar": training_jar.file_name().and_then(|name| name.to_str()),
         "agent": agent.file_name().and_then(|name| name.to_str()),
     });
     let body = serde_json::to_vec(&meta).map_err(|error| Error::internal(error.to_string()))?;
@@ -506,170 +487,9 @@ fn wait_for_exit(child: &mut Child, timeout: Duration, cancel: &AtomicBool) -> R
 /// Source and manifest live in `assets/aot-preloader.java` / `.jar`.
 const PRELOADER: &[u8] = include_bytes!("../assets/aot-preloader.jar");
 
-/// Strip `Sealed: true` from every jar on the classpath that has it.
-///
-/// The rewrite keeps every other entry byte-for-byte, so the jar keeps working
-/// for a normal launch; what it loses is the JVM's promise that all classes in
-/// a package come from this one file, which the cache cannot honour.
-fn unseal_classpath(args: &mut [String]) -> Result<usize> {
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    let Some(classpath) = args
-        .windows(2)
-        .rev()
-        .find(|pair| pair[0] == "-cp" || pair[0] == "-classpath")
-        .map(|pair| pair[1].clone())
-    else {
-        return Ok(0);
-    };
-    let mut count = 0;
-    for entry in classpath.split(separator) {
-        if !entry.ends_with(".jar") {
-            continue;
-        }
-        let path = Path::new(entry);
-        if !is_sealed(path) {
-            continue;
-        }
-        let tmp = path.with_extension("jar.unsealed");
-        make_unsigned_jar(path, &tmp)?;
-        fs::rename(&tmp, path)
-            .map_err(|error| Error::io(format!("无法替换 {}", path.display()), error))?;
-        count += 1;
-    }
-    Ok(count)
-}
-
-/// Whether a jar's manifest seals one or more packages.
-fn is_sealed(path: &Path) -> bool {
-    let Ok(file) = File::open(path) else {
-        return false;
-    };
-    let Ok(mut archive) = zip::ZipArchive::new(file) else {
-        return false;
-    };
-    let Ok(mut manifest) = archive.by_name("META-INF/MANIFEST.MF") else {
-        return false;
-    };
-    let mut text = String::new();
-    manifest.read_to_string(&mut text).is_ok()
-        && text
-            .lines()
-            .any(|line| line.trim().to_ascii_lowercase().starts_with("sealed:"))
-}
-
-/// Copy the client jar without its signature files, so its classes are eligible
-/// for the AOT cache.
-///
-/// The manifest also loses any `Sealed:` attribute: signature and sealing rules
-/// are exactly what a cached class cannot satisfy, and a client jar that keeps
-/// either one makes the whole cache unusable instead of merely uncached.
-pub(crate) fn make_unsigned_jar(source: &Path, destination: &Path) -> Result<()> {
-    let file = File::open(source)
-        .map_err(|error| Error::io(format!("无法读取客户端 jar {}", source.display()), error))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|error| Error::invalid(format!("无法解析客户端 jar: {error}")))?;
-    let tmp = destination.with_extension("jar.tmp");
-    let _ = fs::remove_file(&tmp);
-    let output = File::create(&tmp)
-        .map_err(|error| Error::io(format!("无法写入 {}", tmp.display()), error))?;
-    let mut writer = zip::ZipWriter::new(output);
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|error| Error::invalid(format!("无法读取 jar 条目: {error}")))?;
-        let name = entry
-            .name()
-            .map_err(|error| Error::invalid(format!("无法读取 jar 条目名: {error}")))?
-            .to_string();
-        if is_signature_entry(&name) {
-            continue;
-        }
-        let options =
-            zip::write::SimpleFileOptions::default().compression_method(entry.compression());
-        if name.eq_ignore_ascii_case("META-INF/MANIFEST.MF") {
-            let mut text = String::new();
-            entry
-                .read_to_string(&mut text)
-                .map_err(|error| Error::invalid(format!("无法读取 {name}: {error}")))?;
-            let body: String = text
-                .lines()
-                .filter(|line| !line.trim().to_ascii_lowercase().starts_with("sealed:"))
-                .map(|line| format!("{line}\n"))
-                .collect();
-            writer
-                .start_file(&name, options)
-                .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
-            writer
-                .write_all(body.as_bytes())
-                .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
-            continue;
-        }
-        if entry.is_dir() {
-            writer
-                .add_directory(&name, options)
-                .map_err(|error| Error::invalid(format!("无法写入 jar 目录 {name}: {error}")))?;
-        } else {
-            writer
-                .start_file(&name, options)
-                .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
-            io::copy(&mut entry, &mut writer)
-                .map_err(|error| Error::invalid(format!("无法复制 jar 条目 {name}: {error}")))?;
-        }
-    }
-    writer
-        .finish()
-        .map_err(|error| Error::invalid(format!("无法完成 {}: {error}", tmp.display())))?;
-    if destination.exists() {
-        let _ = fs::remove_file(destination);
-    }
-    fs::rename(&tmp, destination)
-        .map_err(|error| Error::io(format!("无法重命名 {}", destination.display()), error))?;
-    Ok(())
-}
-
-fn is_signature_entry(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    upper.starts_with("META-INF/")
-        && (upper.ends_with(".SF")
-            || upper.ends_with(".RSA")
-            || upper.ends_with(".DSA")
-            || upper.ends_with(".EC"))
-}
-
-fn swap_client_jar(args: &mut [String], originals: &[PathBuf], unsigned: &Path) -> bool {
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    let originals: Vec<String> = originals
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect();
-    let unsigned = unsigned.to_string_lossy();
-    let Some(index) = args
-        .windows(2)
-        .rposition(|pair| pair[0] == "-cp" || pair[0] == "-classpath")
-        .map(|index| index + 1)
-    else {
-        return false;
-    };
-    let mut replaced = false;
-    let entries: Vec<String> = args[index]
-        .split(separator)
-        .map(|entry| {
-            if originals.iter().any(|original| entry == *original) {
-                replaced = true;
-                unsigned.to_string()
-            } else {
-                entry.to_string()
-            }
-        })
-        .collect();
-    args[index] = entries.join(&separator.to_string());
-    replaced
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[cfg(unix)]
     #[test]
@@ -683,142 +503,6 @@ mod tests {
         assert_eq!(error.kind(), crate::error::Kind::Process);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(child.try_wait().unwrap().is_some(), "the child was reaped");
-    }
-
-    #[test]
-    fn the_unsigned_copy_drops_only_signature_entries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("26.3.jar");
-        let unsigned = tmp.path().join("26.3.unsigned.jar");
-        {
-            let mut zip = zip::ZipWriter::new(File::create(&source).unwrap());
-            let options = zip::write::SimpleFileOptions::default();
-            for name in [
-                "net/minecraft/client/Main.class",
-                "META-INF/MANIFEST.MF",
-                "META-INF/MOJANGCS.SF",
-                "META-INF/MOJANGCS.RSA",
-                "META-INF/services/example.Service",
-            ] {
-                zip.start_file(name, options).unwrap();
-                zip.write_all(b"x").unwrap();
-            }
-            zip.finish().unwrap();
-        }
-        make_unsigned_jar(&source, &unsigned).unwrap();
-        let mut archive = zip::ZipArchive::new(File::open(&unsigned).unwrap()).unwrap();
-        let names: Vec<String> = (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().unwrap().to_string())
-            .collect();
-        assert!(names.iter().any(|name| name.ends_with(".class")));
-        assert!(names.iter().any(|name| name == "META-INF/MANIFEST.MF"));
-        assert!(names
-            .iter()
-            .any(|name| name == "META-INF/services/example.Service"));
-        assert!(!names.iter().any(|name| name.ends_with(".SF")));
-        assert!(!names.iter().any(|name| name.ends_with(".RSA")));
-    }
-
-    #[test]
-    fn a_sealed_library_jar_is_unsealed_in_place() {
-        let tmp = tempfile::tempdir().unwrap();
-        let jar = tmp.path().join("lwjgl.jar");
-        {
-            let mut zip = zip::ZipWriter::new(File::create(&jar).unwrap());
-            let options = zip::write::SimpleFileOptions::default();
-            zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
-            zip.write_all(b"Manifest-Version: 1.0\r\nCreated-By: 1.6\r\nSealed: true\r\n")
-                .unwrap();
-            zip.start_file("org/lwjgl/opengl/GL11.class", options)
-                .unwrap();
-            zip.write_all(b"x").unwrap();
-            zip.finish().unwrap();
-        }
-        assert!(is_sealed(&jar));
-
-        let mut args = vec![
-            "-cp".to_string(),
-            format!(
-                "{}:{}",
-                jar.display(),
-                tmp.path().join("other.jar").display()
-            ),
-        ];
-        assert_eq!(unseal_classpath(&mut args).unwrap(), 1);
-        assert!(!is_sealed(&jar), "the manifest no longer seals the package");
-        // The class path still points at the same file, and the class survived.
-        assert_eq!(
-            args[1],
-            format!(
-                "{}:{}",
-                jar.display(),
-                tmp.path().join("other.jar").display()
-            )
-        );
-        let mut archive = zip::ZipArchive::new(File::open(&jar).unwrap()).unwrap();
-        assert!(archive.by_name("org/lwjgl/opengl/GL11.class").is_ok());
-        assert!(archive.by_name("META-INF/MANIFEST.MF").is_ok());
-    }
-
-    #[test]
-    fn an_unsealed_classpath_is_left_alone() {
-        let tmp = tempfile::tempdir().unwrap();
-        let jar = tmp.path().join("plain.jar");
-        {
-            let mut zip = zip::ZipWriter::new(File::create(&jar).unwrap());
-            let options = zip::write::SimpleFileOptions::default();
-            zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
-            zip.write_all(b"Manifest-Version: 1.0\r\n").unwrap();
-            zip.finish().unwrap();
-        }
-        let before = fs::read(&jar).unwrap();
-        let mut args = vec!["-cp".to_string(), jar.display().to_string()];
-        assert_eq!(unseal_classpath(&mut args).unwrap(), 0);
-        assert_eq!(fs::read(&jar).unwrap(), before, "nothing was rewritten");
-    }
-
-    #[test]
-    fn the_training_args_swap_the_signed_jar_for_the_unsigned_one() {
-        let mut args = vec![
-            "-cp".to_string(),
-            "/game/libraries/a.jar:/game/versions/26.3/26.3.jar".to_string(),
-        ];
-        let signed = PathBuf::from("/game/versions/26.3/26.3.jar");
-        let unsigned = PathBuf::from("/game/versions/26.3/26.3.unsigned.jar");
-        assert!(swap_client_jar(
-            &mut args,
-            std::slice::from_ref(&signed),
-            &unsigned,
-        ));
-        assert!(args[1].ends_with("/26.3.unsigned.jar"));
-        assert!(!swap_client_jar(
-            &mut args,
-            std::slice::from_ref(&signed),
-            &unsigned,
-        ));
-    }
-
-    #[test]
-    fn training_swaps_the_lwjgl3_client_jar_when_prepare_chose_it() {
-        // An LWJGL 3 install puts `<id>.lwjgl3.jar` on the class path, not the
-        // signed jar. Training still has to end up on its own unsigned copy.
-        let mut args = vec![
-            "-cp".to_string(),
-            "/game/libraries/a.jar:/game/versions/1.8.9/1.8.9.lwjgl3.jar".to_string(),
-        ];
-        let candidates = [
-            PathBuf::from("/game/versions/1.8.9/1.8.9.jar"),
-            PathBuf::from("/game/versions/1.8.9/1.8.9.lwjgl3.jar"),
-        ];
-        assert!(swap_client_jar(
-            &mut args,
-            &candidates,
-            Path::new("/game/versions/1.8.9/1.8.9.unsigned.jar"),
-        ));
-        assert_eq!(
-            args[1],
-            "/game/libraries/a.jar:/game/versions/1.8.9/1.8.9.unsigned.jar"
-        );
     }
 
     #[test]

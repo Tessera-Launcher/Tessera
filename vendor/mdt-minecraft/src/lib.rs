@@ -101,6 +101,7 @@ mod error;
 #[cfg(feature = "tokio")]
 mod http;
 mod io;
+pub mod jar;
 mod lwjgl3;
 mod macros;
 mod safe_path;

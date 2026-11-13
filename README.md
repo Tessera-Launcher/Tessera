@@ -111,7 +111,7 @@ SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换
 
 **AOT**：训练由主页的「开始 AOT 训练」手动触发，安装不会背着玩家启动游戏。任何原版
 都可以训练（Loader profile 除外，自定义类加载器加载的类进不了缓存）：强制 Java 28 EA、
-去签名客户端副本、unseal 密封库、`-javaagent` 全量预加载，缓存写
+unseal 密封库、`-javaagent` 全量预加载（客户端 jar 在下载时已经去签名），缓存写
 `versions/<id>/<id>.aot`。只有同一 Java build 与 agent 都在时才在启动时启用；Java 升级
 后需要重训。26.x（含 Loader profile）启动还带 `fastmenu-agent.jar` 跳过菜单淡入。
 训练失败不影响安装本身。
@@ -155,9 +155,10 @@ SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换
   名字改成 LWJGL3 名字的 agent），加 `-javaagent:` 和
   `--enable-native-access=ALL-UNNAMED`；
 - 不再设 `-Djava.library.path`、不用 natives 目录（LWJGL 3 自己解压原生库）；
-- 客户端 jar 改用去签名的副本 `<版本>.lwjgl3.jar`（agent 改写过的类过不了签名校验）；
-- AOT 缓存照常可用：训练和启动走同一套 LWJGL 3 classpath，训练时把
-  `<版本>.lwjgl3.jar` 换成缓存的 `<版本>.unsigned.jar`，启动时也用这一份；
+- 客户端 jar 在 MDT 下载时就已去掉签名和 sealing，不再生成 `<版本>.lwjgl3.jar`
+  或 `<版本>.unsigned.jar` 副本；升级前装好的旧版本需要重装一次；
+- AOT 缓存照常可用：训练和启动走同一套 LWJGL 3 classpath，都直接用
+  `<版本>.jar`；
 - 日志里一行：`1.8.9 用 LWJGL 3.4.3 启动（Tessera 的兼容层，替代原版 LWJGL 2.9.4）`。
 
 只有 1.8.9 适用（shim 的接口面就是按它扫出来的）；别的版本仍按原样用 LWJGL 2。

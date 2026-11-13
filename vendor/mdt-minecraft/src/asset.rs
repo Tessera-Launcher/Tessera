@@ -425,6 +425,7 @@ async fn fetch_index_file(
         extract_to: None,
         label: Some(format!("{}.json", asset_index.id)),
         by: None,
+        strip_signatures: false,
     };
     downloader::execute_downloads(downloader, vec![task], 1, mirror, urls, reporter).await?;
     reporter.status(&format!("资源索引 {}.json 已下载", asset_index.id));
@@ -962,6 +963,7 @@ mod tests {
             extract_to: None,
             label: None,
             by: None,
+            strip_signatures: false,
         }];
 
         label_asset_tasks(&mut tasks, &objects, "1.12.2");

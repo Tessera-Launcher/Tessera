@@ -74,10 +74,9 @@ pub(super) fn prepare_inner(
         // other jar would trip the JVM's class-path validation.
         selection.unsigned_jar.clone()
     } else if lwjgl3.is_some() {
-        // The agent rewrites classes in the client jar, and a rewritten class
-        // cannot satisfy the jar's signature: launch from an unsigned copy.
-        let source = version_dir.join(format!("{version_dir_name}.jar"));
-        unsigned_client_jar(&version_dir, version_dir_name, &source)?
+        // MDT stores the client jar unsigned, so the rewrite agent can use it
+        // directly.
+        version_dir.join(format!("{version_dir_name}.jar"))
     } else {
         client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
             Error::missing(format!(
@@ -321,28 +320,4 @@ pub(super) fn prepare_inner(
         main_class,
         lwjgl3,
     })
-}
-
-/// A client jar without its signature files, for the agent-rewritten launch.
-///
-/// The LWJGL 3 agent rewrites call sites inside the game's classes, and a
-/// rewritten class no longer matches the jar's signature: the JVM then refuses
-/// the whole package with "signer information does not match". The AOT path has
-/// the same problem, so this reuses its helper under a name of its own.
-pub(super) fn unsigned_client_jar(
-    version_dir: &Path,
-    version_id: &str,
-    source: &Path,
-) -> Result<PathBuf> {
-    let destination = version_dir.join(format!("{version_id}.lwjgl3.jar"));
-    if let (Ok(copy), Ok(original)) = (
-        std::fs::metadata(&destination).and_then(|meta| meta.modified()),
-        std::fs::metadata(source).and_then(|meta| meta.modified()),
-    ) {
-        if copy >= original {
-            return Ok(destination);
-        }
-    }
-    crate::aot::make_unsigned_jar(source, &destination)?;
-    Ok(destination)
 }

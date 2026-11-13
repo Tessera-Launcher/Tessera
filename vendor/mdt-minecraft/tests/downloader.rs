@@ -127,9 +127,18 @@ fn test_build_tasks_from_version_json() {
 
     assert_eq!(tasks.len(), expected_count, "任务数量不对");
 
-    assert!(tasks
+    let client = tasks
         .iter()
-        .any(|t| t.dest_path.ends_with("versions/1.20.1/1.20.1.jar")));
+        .find(|t| t.dest_path.ends_with("versions/1.20.1/1.20.1.jar"))
+        .expect("client jar task");
+    assert!(client.strip_signatures, "client jars are stored unsigned");
+    assert!(
+        tasks
+            .iter()
+            .filter(|t| t.dest_path != client.dest_path)
+            .all(|t| !t.strip_signatures),
+        "libraries keep their signatures"
+    );
 
     assert!(tasks.iter().any(|t| t
         .dest_path

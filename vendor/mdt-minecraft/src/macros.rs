@@ -60,6 +60,7 @@ macro_rules! download_task {
             extract_to: None,
             label: None,
             by: None,
+            strip_signatures: false,
         }
     };
     ($url:expr, $dest:expr, $sha1:expr, $size:expr $(,)?) => {
@@ -71,6 +72,7 @@ macro_rules! download_task {
             extract_to: None,
             label: None,
             by: None,
+            strip_signatures: false,
         }
     };
     ($url:expr, $dest:expr, $sha1:expr, $size:expr, extract_to = $extract:expr $(,)?) => {
@@ -82,6 +84,7 @@ macro_rules! download_task {
             extract_to: Some(::std::path::PathBuf::from($extract)),
             label: None,
             by: None,
+            strip_signatures: false,
         }
     };
 }

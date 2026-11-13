@@ -359,6 +359,20 @@ it only after a file actually arrived over the network — including the
 JSON — so a launcher can compute an honest average speed without counting
 cached, skipped or locally copied files.
 
+### 17. Client jars are stored unsigned
+
+The client JAR task in `build_tasks_from_version_json_into` carries a new
+`DownloadTask::strip_signatures` flag. A successful download is verified against
+the upstream SHA-1, then `jar::strip_signatures` removes `META-INF/*.SF`,
+`*.RSA`, `*.DSA`, `*.EC` and the `Sealed:` manifest attribute before the file is
+renamed into place. A `<jar>.mdt-unsigned` sidecar stores the upstream and
+rewritten SHA-1 so the next install can verify and skip the file instead of
+re-downloading it (the upstream hash no longer matches the stored jar).
+
+`jar::unseal_classpath` also moved here from Tessera's AOT code. The launcher no
+longer implements JAR rewriting; its only remaining call is the AOT classpath
+unseal, which is a use of this module rather than a second implementation.
+
 ## Example
 
 `examples/download_bench.rs` installs 1.8.9 from a chosen mirror into a directory passed on the

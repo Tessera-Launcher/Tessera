@@ -1258,9 +1258,9 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
             .any(|arg| arg.starts_with("-Djava.library.path=")),
         "{args:?}"
     );
-    // The signed jar would reject the rewritten classes.
+    // MDT installs the client jar unsigned, so no derived copy is needed.
     assert!(
-        args.iter().any(|arg| arg.ends_with("1.8.9.lwjgl3.jar")),
+        args.iter().any(|arg| arg.ends_with("1.8.9.jar")),
         "{args:?}"
     );
 }

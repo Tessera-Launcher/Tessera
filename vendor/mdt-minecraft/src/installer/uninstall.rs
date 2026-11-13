@@ -106,6 +106,7 @@ async fn execute_restore(
                 .and_then(|n| n.to_str())
                 .map(str::to_string),
             by: None,
+            strip_signatures: false,
         })
         .collect();
 

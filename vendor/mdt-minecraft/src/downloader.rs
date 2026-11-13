@@ -169,6 +169,9 @@ pub struct DownloadTask {
     pub label: Option<String>,
     /// Attribution for progress output, e.g. `Minecraft 1.16.5`.
     pub by: Option<String>,
+    /// Rewrite the verified download without JAR signature files and `Sealed:`
+    /// before placing it at `dest_path`.
+    pub strip_signatures: bool,
 }
 
 // ===== 3. rule evaluation =====
@@ -512,6 +515,7 @@ async fn download_from_url(
     downloader: &dyn Downloader,
 ) -> Result<(), MdtError> {
     let tmp = temp_path(&task.dest_path);
+    let sidecar = unsigned_sidecar(&task.dest_path);
 
     let result = async {
         downloader.download(url, &tmp).await?;
@@ -523,20 +527,54 @@ async fn download_from_url(
                 actual,
             });
         }
-        crate::io::rename(&tmp, &task.dest_path).await?;
-        Ok::<_, MdtError>(())
+
+        if task.strip_signatures {
+            let unsigned = PathBuf::from(format!("{}.unsigned", tmp.display()));
+            let source = tmp.clone();
+            let destination = unsigned.clone();
+            crate::io::spawn_blocking(move || crate::jar::strip_signatures(&source, &destination))
+                .await??;
+            let _ = crate::io::remove_file(&tmp).await;
+            crate::io::rename(&unsigned, &task.dest_path).await?;
+            let unsigned_sha1 = sha1_file(&task.dest_path).await?;
+            crate::io::write(&sidecar, format!("{} {}\n", task.sha1, unsigned_sha1)).await?;
+        } else {
+            crate::io::rename(&tmp, &task.dest_path).await?;
+        }
+        Ok::<(), MdtError>(())
     }
     .await;
 
     if result.is_err() {
         let _ = crate::io::remove_file(&tmp).await;
+        let _ = crate::io::remove_file(PathBuf::from(format!("{}.unsigned", tmp.display()))).await;
+        let _ = crate::io::remove_file(&sidecar).await;
     }
     result
 }
 
-/// The temporary sibling path used while a file is being downloaded and verified.
+/// The temporary sibling path used while a file is downloaded and verified.
 fn temp_path(dest: &Path) -> PathBuf {
     PathBuf::from(format!("{}.mdt-download", dest.display()))
+}
+
+/// Sidecar recording the upstream SHA-1 and the rewritten SHA-1 of a JAR.
+///
+/// The upstream hash cannot be checked against the file after signature
+/// stripping, so a task that rewrites its download would otherwise re-download
+/// the client jar on every install.
+fn unsigned_sidecar(dest: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.mdt-unsigned", dest.display()))
+}
+
+fn parse_unsigned_sidecar(text: &str) -> Option<(String, String)> {
+    let mut parts = text.split_whitespace();
+    let source = parts.next()?;
+    let output = parts.next()?;
+    if !is_sha1_hex(source) || !is_sha1_hex(output) {
+        return None;
+    }
+    Some((source.to_string(), output.to_string()))
 }
 
 /// How many times to retry a failed download (after the initial attempt) before soft-failing it.
@@ -607,19 +645,40 @@ async fn download_single_file(
     failed: Arc<Mutex<Vec<FailedDownload>>>,
     reporter: &dyn ProgressReporter,
 ) -> Result<bool, MdtError> {
-    // 1. Pre-check: skip if the file already exists and its SHA-1 matches.
+    // 1. Pre-check: skip a plain file whose SHA-1 matches, or a rewritten JAR
+    //    whose sidecar names this task's upstream hash and whose current hash
+    //    matches the rewritten one.
+    let sidecar = unsigned_sidecar(&task.dest_path);
     let mut need_download = true;
     if task.dest_path.exists() {
-        let meta = crate::io::metadata(&task.dest_path).await?;
-        if meta.len() == task.size {
-            let hash = sha1_file(&task.dest_path).await?;
-            if hash == task.sha1 {
-                need_download = false;
+        if task.strip_signatures {
+            if let Ok(text) = crate::io::read_to_string(&sidecar).await {
+                if let Some((source_sha1, output_sha1)) = parse_unsigned_sidecar(&text) {
+                    if source_sha1 == task.sha1 {
+                        let hash = sha1_file(&task.dest_path).await?;
+                        if hash == output_sha1 {
+                            need_download = false;
+                        }
+                    }
+                }
+            }
+        } else {
+            let meta = crate::io::metadata(&task.dest_path).await?;
+            if meta.len() == task.size {
+                let hash = sha1_file(&task.dest_path).await?;
+                if hash == task.sha1 {
+                    need_download = false;
+                }
             }
         }
         if need_download {
             crate::io::remove_file(&task.dest_path).await?;
+            if task.strip_signatures {
+                let _ = crate::io::remove_file(&sidecar).await;
+            }
         }
+    } else if task.strip_signatures {
+        let _ = crate::io::remove_file(&sidecar).await;
     }
 
     // 2. Download if necessary, retrying transient failures with exponential backoff.
@@ -737,7 +796,8 @@ pub fn build_tasks_from_version_json_into(
                 sha1: &str,
                 size: u64,
                 label: Option<String>,
-                extract_to: Option<PathBuf>| {
+                extract_to: Option<PathBuf>,
+                strip_signatures: bool| {
         if !is_sha1_hex(sha1) || !is_safe_http_url(url) {
             return;
         }
@@ -749,6 +809,7 @@ pub fn build_tasks_from_version_json_into(
             extract_to,
             label,
             by: Some(by.clone()),
+            strip_signatures,
         });
     };
 
@@ -766,6 +827,7 @@ pub fn build_tasks_from_version_json_into(
                 client.size,
                 Some("client.jar".to_string()),
                 None,
+                true,
             );
         }
     }
@@ -794,6 +856,7 @@ pub fn build_tasks_from_version_json_into(
                         artifact.size,
                         Some(maven_file_name(path).to_string()),
                         None,
+                        false,
                     );
                 }
             }
@@ -812,6 +875,7 @@ pub fn build_tasks_from_version_json_into(
                             art.size,
                             Some(maven_file_name(path).to_string()),
                             Some(natives_dir.clone()),
+                            false,
                         );
                     }
                 }
@@ -947,6 +1011,7 @@ pub fn build_tasks_from_assets(objects: &[AssetObject], objects_dir: &Path) -> V
                 // wants per-file lines; a bare task only counts in the bar.
                 label: None,
                 by: None,
+                strip_signatures: false,
             }
         })
         .collect()
@@ -969,12 +1034,13 @@ mod tests {
     use super::{
         build_tasks_from_assets, build_tasks_from_version_json, dedupe_by_destination,
         download_from_candidates, download_from_url, evaluate_rules, execute_downloads,
-        select_native_artifact, should_report, Artifact, AssetObject, DownloadTask, Library,
-        LibraryDownloads, MirrorChain, OsRule, Rule, VersionJson,
+        parse_unsigned_sidecar, select_native_artifact, should_report, unsigned_sidecar, Artifact,
+        AssetObject, DownloadTask, Library, LibraryDownloads, MirrorChain, OsRule, Rule,
+        VersionJson,
     };
     #[cfg(feature = "tokio")]
     use crate::customize::HttpDownloader;
-    use crate::customize::{ProgressReporter, StderrReporter};
+    use crate::customize::{NoopReporter, ProgressReporter, StderrReporter};
     use crate::error::MdtError;
     use crate::mirror::Mirror;
     use crate::urls::ManifestUrls;
@@ -1008,6 +1074,7 @@ mod tests {
             extract_to: None,
             label: None,
             by: None,
+            strip_signatures: false,
         }
     }
 
@@ -1101,6 +1168,57 @@ mod tests {
 
         assert_eq!(std::fs::read(&dest).unwrap(), content);
         let _ = std::fs::remove_file(&dest);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn a_client_jar_download_is_stored_unsigned_and_skipped_next_time() {
+        let signed = zip_bytes(&[
+            (
+                "META-INF/MANIFEST.MF",
+                b"Manifest-Version: 1.0\r\nSealed: true\r\n",
+            ),
+            ("net/minecraft/client/Main.class", b"class"),
+            ("META-INF/MOJANGCS.SF", b"signature"),
+            ("META-INF/MOJANGCS.RSA", b"signature"),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/client.jar"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(signed.clone()))
+            .mount(&server)
+            .await;
+
+        let dest = unique_path("unsigned");
+        let mut task = test_task(&format!("{}/client.jar", server.uri()), &dest, &signed);
+        task.strip_signatures = true;
+        let urls = ManifestUrls::try_new(&Mirror::Mojang).unwrap();
+        let http = test_client();
+
+        execute_downloads(
+            &http,
+            vec![task.clone()],
+            1,
+            &Mirror::Mojang,
+            &urls,
+            &NoopReporter,
+        )
+        .await
+        .unwrap();
+        assert!(!crate::jar::is_signed(&dest));
+        let sidecar = unsigned_sidecar(&dest);
+        assert!(sidecar.is_file(), "sidecar missing");
+        assert!(parse_unsigned_sidecar(&std::fs::read_to_string(&sidecar).unwrap()).is_some());
+
+        // The upstream SHA-1 no longer matches the rewritten file. The sidecar
+        // must make the second install skip it instead of downloading again.
+        drop(server);
+        execute_downloads(&http, vec![task], 1, &Mirror::Mojang, &urls, &NoopReporter)
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&sidecar);
     }
 
     #[cfg(feature = "tokio")]
@@ -1801,6 +1919,7 @@ mod tests {
             extract_to: None,
             label: None,
             by: None,
+            strip_signatures: false,
         };
         let mut second = first.clone();
         second.url = "https://example.com/b.jar".into();
