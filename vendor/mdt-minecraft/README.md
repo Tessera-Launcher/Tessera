@@ -1,6 +1,6 @@
 # MDT — Minecraft Download Toolkit
 
-Download and install Minecraft versions and mod loaders from Rust.
+Download and install Minecraft versions and Fabric from Rust.
 
 [![Crates.io](https://img.shields.io/crates/v/mdt-minecraft.svg?style=flat-square)](https://crates.io/crates/mdt-minecraft)
 [![docs.rs](https://docs.rs/mdt-minecraft/badge.svg)](https://docs.rs/mdt-minecraft)
@@ -16,14 +16,14 @@ We've handled a lot of the behind-the-scenes work for you, hiding many of the im
 
 ## Features
 
-- Vanilla Minecraft, plus Forge, Fabric, Quilt, NeoForge, and LiteLoader.
+- Vanilla Minecraft, plus the Fabric mod loader.
 - Isolated installs — each loader lands in its own `versions/<mc>+<Loader><ver>` folder, so a
   broken loader never touches your vanilla game.
 - Uninstall — revert a loader back to pure vanilla with a SHA-1 manifest comparison.
 - SHA-1 verified downloads with automatic mirror fallback when a source is slow or blocked.
 - Custom mirrors via a `providers.compile.toml` you can edit (compiled in at build time).
-- Minimal builds — the `minimal` feature strips the mod-loader, asset, and dual-loader modules,
-  leaving a compact vanilla-only core for resource-constrained environments.
+- Minimal builds — the `minimal` feature strips the mod-loader and asset modules, leaving a
+  compact vanilla-only core for resource-constrained environments.
 - No terminal dependencies in the core; `cli` and `tui` are opt-in features.
 
 ## Install
@@ -62,10 +62,10 @@ let vanilla = client.root_dir().join("versions").join("1.20.1");
 client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", true).await?;
 
 // Install directly inside versions/1.20.1 (mutates it).
-client.install_modloader(&vanilla, ModLoader::Quilt, "0.24.0", false).await?;
+client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", false).await?;
 
 // Revert a loader back to vanilla.
-client.uninstall_modloader(&vanilla, ModLoader::Quilt).await?;
+client.uninstall_modloader(&vanilla, ModLoader::Fabric).await?;
 ```
 
 ## Isolation
@@ -86,7 +86,7 @@ You don't have to enforce this yourself — the library does it.
 
 | Variant                  | What it is                                                                       |
 |--------------------------|----------------------------------------------------------------------------------|
-| `Mirror::BMCLAPI`        | Community mirror (default). Proxies Mojang, Fabric, Forge, NeoForge, LiteLoader. |
+| `Mirror::BMCLAPI`        | Community mirror (default). Proxies Mojang and Fabric.                           |
 | `Mirror::Mojang`         | Official servers.                                                                |
 | `Mirror::Custom("name")` | Your own provider, declared as `[name]` in `providers.compile.toml`.                     |
 
@@ -96,15 +96,9 @@ Failed requests fall back to the opposite mirror automatically (custom mirrors f
 
 ## Loaders
 
-| Loader                  | Method                  | Notes                                        |
-|-------------------------|-------------------------|----------------------------------------------|
-| `ModLoader::Forge`      | A (1.13+) / B (1.12.2-) | Official installer + Java, or manual unpack. |
-| `ModLoader::Neoforge`   | A                       | Official installer + Java.                   |
-| `ModLoader::Fabric`     | B                       | No Java needed.                              |
-| `ModLoader::Quilt`      | B                       | No Java needed.                              |
-| `ModLoader::Liteloader` | B                       | 1.12.2 and earlier.                          |
-
-Method A needs a local Java runtime (`JAVA_HOME` or `java` on `PATH`).
+| Loader              | Method | Notes           |
+|---------------------|--------|-----------------|
+| `ModLoader::Fabric` | B      | No Java needed. |
 
 ## Errors
 
@@ -112,10 +106,9 @@ Every fallible call returns `Result<T, MdtError>`, so you can match on exactly w
 
 ```rust
 let vanilla = client.root_dir().join("versions").join("1.20.1");
-match client.install_modloader(&vanilla, ModLoader::Forge, "47.2.0", true).await {
+match client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", true).await {
     Ok(v)   => println!("installed {} via {}", v.id, v.method),
     Err(e)  => match e {
-        mdt::MdtError::JavaNotFound          => eprintln!("install Java first"),
         mdt::MdtError::ChecksumMismatch{..}  => eprintln!("corrupt download"),
         other                                => eprintln!("{other}"),
     },
@@ -150,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11").await?;
 
     // Pass `false` to install the loader in place, mutating the vanilla directory.
-    full_install!(client, "1.20.1", ModLoader::Quilt, "0.24.0", false).await?;
+    full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11", false).await?;
 
     Ok(())
 }

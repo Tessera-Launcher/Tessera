@@ -10,7 +10,7 @@
 pub enum Mirror {
     /// Official Mojang servers.
     Mojang,
-    /// The BMCLAPI community mirror (proxies Mojang, Fabric, Forge, NeoForge, and LiteLoader).
+    /// The BMCLAPI community mirror (proxies Mojang and Fabric).
     #[default]
     BMCLAPI,
     /// A custom mirror provider, keyed by its `[provider_name]` section in `providers.compile.toml`.

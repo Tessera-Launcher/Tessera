@@ -275,7 +275,7 @@ pub async fn execute_downloads(
                 let name = label.clone().or_else(|| file_name.clone());
                 if let Some(name) = name {
                     let mut l = largest.lock().unwrap();
-                    if l.as_ref().map_or(true, |(_, s)| size > *s) {
+                    if l.as_ref().is_none_or(|(_, s)| size > *s) {
                         *l = Some((name, size));
                     }
                 }

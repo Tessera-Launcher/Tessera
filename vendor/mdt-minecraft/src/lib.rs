@@ -42,7 +42,7 @@
 //! # Mirrors and custom providers
 //!
 //! Pick a source with [`Mirror`]: [`Mirror::BMCLAPI`] (the default — a community mirror that
-//! proxies Mojang, Fabric, Forge, NeoForge, and LiteLoader), [`Mirror::Mojang`] (official), or
+//! proxies Mojang and Fabric), [`Mirror::Mojang`] (official), or
 //! [`Mirror::Custom`] (your own). Endpoints and rewrite rules live in `providers.compile.toml` and
 //! get compiled into static tables by the `mdt_macros::providers!` macro, so nothing is parsed at
 //! runtime — unless you also ship a `providers.runtime.toml` (or point `MDT_RUNTIME_PROVIDERS` at
@@ -111,8 +111,6 @@ pub mod asset;
 #[cfg(all(feature = "blocking", not(feature = "minimal")))]
 pub mod blocking;
 pub mod downloader;
-#[cfg(not(feature = "minimal"))]
-pub mod dual_loader;
 pub mod installer;
 pub mod manifest;
 pub mod mc_version;
@@ -146,16 +144,13 @@ pub use customize::{
 pub use downloader::{
     AssetIndex, AssetIndexInfo, AssetObject, DownloadTask, VersionJson, VirtualAssets,
 };
-#[cfg(not(feature = "minimal"))]
-pub use dual_loader::{DualLoaderInfo, DualLoaderState};
 pub use error::{FailedDownload, MdtError};
 #[cfg(not(feature = "minimal"))]
 pub use installer::{InstallMethod, InstallRequest, InstalledVersion};
 pub use manifest::{
     fetch_all_manifests, latest_stable_loader_version, loader_versions_from_data,
-    neoforge_mc_prefix, FabricVersionsList, ForgeVersionsList, LatestMinecraftVersion,
-    LiteLoaderVersionEntry, LoaderVersionEntry, ManifestData, MavenMetadata, MinecraftVersionsList,
-    QuiltVersionsList, VersionEntry, VersionType,
+    FabricVersionsList, LatestMinecraftVersion, LoaderVersionEntry, ManifestData,
+    MinecraftVersionsList, VersionEntry, VersionType,
 };
 pub use mc_version::McVersion;
 pub use mirror::Mirror;

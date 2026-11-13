@@ -1,14 +1,10 @@
 //! Version-manifest types and fetch logic for Minecraft and its mod loaders.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::customize::Downloader;
 use crate::error::MdtError;
-use crate::mc_version::McVersion;
 use crate::mirror::Mirror;
-use crate::modloader::ModLoader;
 use crate::urls::ManifestUrls;
 
 // ===== Minecraft version manifest =====
@@ -51,16 +47,13 @@ pub enum VersionType {
     Other,
 }
 
-// ===== Forge / Fabric / Quilt manifests =====
+// ===== Fabric manifest =====
 
-/// Forge version manifest: `mc_version -> [full version strings]`.
-pub type ForgeVersionsList = HashMap<String, Vec<String>>;
-
-/// A single loader version entry (Fabric / Quilt).
+/// A single Fabric loader version entry.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct LoaderVersionEntry {
     pub version: String,
-    /// Whether this is a stable release (Fabric / Quilt mark betas and snapshots with
+    /// Whether this is a stable release (Fabric marks betas and snapshots with
     /// `stable: false`).
     #[serde(default)]
     pub stable: bool,
@@ -71,61 +64,6 @@ pub struct LoaderVersionEntry {
 pub struct FabricVersionsList {
     #[serde(default)]
     pub loader: Vec<LoaderVersionEntry>,
-}
-
-/// Quilt meta v3 manifest (only `loader` is consumed).
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
-pub struct QuiltVersionsList {
-    #[serde(default)]
-    pub loader: Vec<LoaderVersionEntry>,
-}
-
-// ===== Maven XML manifests (NeoForge / LiteLoader) =====
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct MavenMetadata {
-    pub versioning: MavenVersioning,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct MavenVersioning {
-    pub latest: Option<String>,
-    pub release: Option<String>,
-    pub versions: MavenVersions,
-    #[serde(rename = "lastUpdated")]
-    pub last_updated: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct MavenVersions {
-    #[serde(rename = "version", default)]
-    pub version: Vec<String>,
-}
-
-// ===== LiteLoader (cross-mirror normalized) =====
-
-/// A LiteLoader version entry, normalized across mirror formats.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiteLoaderVersionEntry {
-    pub mcversion: String,
-    pub loader_version: String,
-    pub file: Option<String>,
-    pub md5: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BmclapiLiteLoaderBuild {
-    file: String,
-    version: String,
-    md5: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BmclapiLiteLoaderItem {
-    mcversion: String,
-    build: BmclapiLiteLoaderBuild,
-    #[allow(dead_code)]
-    version: String,
 }
 
 // ===== fetching =====
@@ -190,18 +128,6 @@ pub async fn fetch_version_json(
     Ok((text, version_json))
 }
 
-/// Fetch the Forge version manifest.
-pub async fn fetch_forge_manifest(
-    downloader: &dyn Downloader,
-    mirror: &Mirror,
-) -> Result<ForgeVersionsList, MdtError> {
-    let primary = ManifestUrls::try_new(mirror)?;
-    let fallback = ManifestUrls::try_new(&mirror.other())?;
-    let candidates = [primary.forge.as_str(), fallback.forge.as_str()];
-    let text = fetch_text(downloader, &candidates, "Forge manifest").await?;
-    Ok(serde_json::from_str(&text)?)
-}
-
 /// Fetch the Fabric version manifest.
 pub async fn fetch_fabric_manifest(
     downloader: &dyn Downloader,
@@ -214,103 +140,12 @@ pub async fn fetch_fabric_manifest(
     Ok(serde_json::from_str(&text)?)
 }
 
-/// Fetch the Quilt version manifest.
-pub async fn fetch_quilt_manifest(
-    downloader: &dyn Downloader,
-    mirror: &Mirror,
-) -> Result<QuiltVersionsList, MdtError> {
-    let primary = ManifestUrls::try_new(mirror)?;
-    let fallback = ManifestUrls::try_new(&mirror.other())?;
-    let candidates = [primary.quilt.as_str(), fallback.quilt.as_str()];
-    let text = fetch_text(downloader, &candidates, "Quilt manifest").await?;
-    Ok(serde_json::from_str(&text)?)
-}
-
-/// Fetch the NeoForge version manifest (Maven XML).
-pub async fn fetch_neoforge_manifest(
-    downloader: &dyn Downloader,
-    mirror: &Mirror,
-) -> Result<MavenMetadata, MdtError> {
-    let primary = ManifestUrls::try_new(mirror)?;
-    let fallback = ManifestUrls::try_new(&mirror.other())?;
-    let candidates = [primary.neoforge.as_str(), fallback.neoforge.as_str()];
-    let text = fetch_text(downloader, &candidates, "NeoForge manifest").await?;
-    Ok(quick_xml::de::from_str(&text)?)
-}
-
-/// Fetch the LiteLoader version manifest, falling back to the opposite mirror on failure.
-pub async fn fetch_liteloader_manifest(
-    downloader: &dyn Downloader,
-    mirror: &Mirror,
-) -> Result<Vec<LiteLoaderVersionEntry>, MdtError> {
-    match fetch_liteloader_as(downloader, mirror).await {
-        Ok(entries) => Ok(entries),
-        Err(_) => fetch_liteloader_as(downloader, &mirror.other()).await,
-    }
-}
-
-async fn fetch_liteloader_as(
-    downloader: &dyn Downloader,
-    mirror: &Mirror,
-) -> Result<Vec<LiteLoaderVersionEntry>, MdtError> {
-    let urls = ManifestUrls::try_new(mirror)?;
-    match mirror {
-        // Custom mirrors are assumed to serve the official Maven-XML format, like Mojang.
-        Mirror::Mojang | Mirror::Custom(_) => {
-            let text = fetch_text(
-                downloader,
-                &[urls.liteloader.as_str()],
-                "LiteLoader manifest",
-            )
-            .await?;
-            let meta: MavenMetadata = quick_xml::de::from_str(&text)?;
-            Ok(meta
-                .versioning
-                .versions
-                .version
-                .into_iter()
-                .map(|ver| {
-                    let mcversion = ver.split('-').next().unwrap_or(&ver).to_string();
-                    LiteLoaderVersionEntry {
-                        mcversion,
-                        loader_version: ver,
-                        file: None,
-                        md5: None,
-                    }
-                })
-                .collect())
-        }
-        Mirror::BMCLAPI => {
-            let text = fetch_text(
-                downloader,
-                &[urls.liteloader.as_str()],
-                "LiteLoader manifest",
-            )
-            .await?;
-            let entries: Vec<BmclapiLiteLoaderItem> = serde_json::from_str(&text)?;
-            Ok(entries
-                .into_iter()
-                .map(|e| LiteLoaderVersionEntry {
-                    mcversion: e.mcversion,
-                    loader_version: e.build.version,
-                    file: Some(e.build.file),
-                    md5: Some(e.build.md5),
-                })
-                .collect())
-        }
-    }
-}
-
 // ===== aggregated manifests =====
 
-/// All manifests, fetched concurrently.
+/// The manifests the installer needs, fetched concurrently.
 pub struct ManifestData {
     pub minecraft: MinecraftVersionsList,
-    pub forge: ForgeVersionsList,
     pub fabric: FabricVersionsList,
-    pub quilt: QuiltVersionsList,
-    pub neoforge: MavenMetadata,
-    pub liteloader: Vec<LiteLoaderVersionEntry>,
 }
 
 /// Fetch every manifest concurrently.
@@ -318,87 +153,26 @@ pub async fn fetch_all_manifests(
     downloader: &dyn Downloader,
     mirror: &Mirror,
 ) -> Result<ManifestData, MdtError> {
-    let (minecraft, forge, fabric, quilt, neoforge, liteloader) = futures::try_join!(
+    let (minecraft, fabric) = futures::try_join!(
         fetch_minecraft_version_manifest(downloader, mirror),
-        fetch_forge_manifest(downloader, mirror),
         fetch_fabric_manifest(downloader, mirror),
-        fetch_quilt_manifest(downloader, mirror),
-        fetch_neoforge_manifest(downloader, mirror),
-        fetch_liteloader_manifest(downloader, mirror),
     )?;
 
-    Ok(ManifestData {
-        minecraft,
-        forge,
-        fabric,
-        quilt,
-        neoforge,
-        liteloader,
-    })
+    Ok(ManifestData { minecraft, fabric })
 }
 
-/// Derive, in memory, the loader versions compatible with a Minecraft version.
+/// Derive, in memory, the Fabric loader versions compatible with a Minecraft version.
 ///
-/// * **Forge** — read directly from the version map, stripping the `{mc}-` prefix.
-/// * **Fabric / Quilt** — return the full loader version list (decoupled from MC versions).
-/// * **NeoForge** — filter Maven versions by the [`neoforge_mc_prefix`] heuristic.
-/// * **LiteLoader** — filter by the manifest's `mcversion`.
-pub fn loader_versions_from_data(
-    loader: ModLoader,
-    mc_version: &str,
-    data: &ManifestData,
-) -> Vec<String> {
-    match loader {
-        ModLoader::Forge => {
-            let prefix = format!("{mc_version}-");
-            let Some(versions) = data.forge.get(mc_version) else {
-                return Vec::new();
-            };
-            versions
-                .iter()
-                .map(|v| {
-                    v.strip_prefix(&prefix)
-                        .map(str::to_string)
-                        .unwrap_or_else(|| v.clone())
-                })
-                .collect()
-        }
-        ModLoader::Fabric => data
-            .fabric
-            .loader
-            .iter()
-            .map(|l| l.version.clone())
-            .collect(),
-        ModLoader::Quilt => data
-            .quilt
-            .loader
-            .iter()
-            .map(|l| l.version.clone())
-            .collect(),
-        ModLoader::Neoforge => {
-            let prefix = neoforge_mc_prefix(mc_version);
-            data.neoforge
-                .versioning
-                .versions
-                .version
-                .iter()
-                .filter(|v| match &prefix {
-                    Some(p) => v.starts_with(p.as_str()),
-                    None => true,
-                })
-                .cloned()
-                .collect()
-        }
-        ModLoader::Liteloader => data
-            .liteloader
-            .iter()
-            .filter(|e| e.mcversion == mc_version)
-            .map(|e| e.loader_version.clone())
-            .collect(),
-    }
+/// Fabric decouples the loader from Minecraft versions, so the full list applies.
+pub fn loader_versions_from_data(data: &ManifestData) -> Vec<String> {
+    data.fabric
+        .loader
+        .iter()
+        .map(|entry| entry.version.clone())
+        .collect()
 }
 
-/// The latest stable loader version from a Fabric/Quilt manifest, falling back to the newest
+/// The latest stable Fabric loader version, falling back to the newest
 /// entry when none are marked stable. The list is expected to be ordered newest-first (the meta
 /// endpoints return it that way).
 #[must_use]
@@ -408,40 +182,6 @@ pub fn latest_stable_loader_version(entries: &[LoaderVersionEntry]) -> Option<St
         .find(|e| e.stable)
         .or_else(|| entries.first())
         .map(|e| e.version.clone())
-}
-
-/// Derive the NeoForge Maven version prefix from a Minecraft version (heuristic).
-///
-/// NeoForge's numbering:
-/// * `1.20.1` → `47.x`, `1.20.2` → `48.x`, `1.20.3` → `49.x` (carried over from Forge).
-/// * Old-style `1.minor[.patch]` → `minor[.patch].` (e.g. `1.20.4` → `20.4.`).
-/// * New-style `[year].minor[.patch]` (26.x onward) → `year.minor[.patch].` verbatim.
-///
-/// This mapping is not guaranteed to be exact; pass an explicit loader version when in doubt.
-pub fn neoforge_mc_prefix(mc_version: &str) -> Option<String> {
-    match mc_version {
-        "1.20.1" => return Some("47.".to_string()),
-        "1.20.2" => return Some("48.".to_string()),
-        "1.20.3" => return Some("49.".to_string()),
-        _ => {}
-    }
-
-    let v = McVersion::parse(mc_version)?;
-    if v.major == 1 {
-        // Old-style: strip the leading `1.`
-        if v.patch > 0 {
-            Some(format!("{}.{}.", v.minor, v.patch))
-        } else {
-            Some(format!("{}.", v.minor))
-        }
-    } else {
-        // New-style (26.x onward): keep the full `year.minor[.patch]`
-        if v.patch > 0 {
-            Some(format!("{}.{}.{}.", v.major, v.minor, v.patch))
-        } else {
-            Some(format!("{}.{}.", v.major, v.minor))
-        }
-    }
 }
 
 #[cfg(test)]

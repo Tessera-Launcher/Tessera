@@ -10,21 +10,7 @@ use std::env;
 use std::path::PathBuf;
 
 /// URL fields every provider must declare, in declaration order.
-const FIELDS: [&str; 13] = [
-    "minecraft",
-    "forge",
-    "fabric",
-    "quilt",
-    "neoforge",
-    "liteloader",
-    "forge_maven",
-    "fabric_maven",
-    "quilt_maven",
-    "neoforge_maven",
-    "liteloader_base",
-    "fabric_meta",
-    "quilt_meta",
-];
+const FIELDS: [&str; 4] = ["minecraft", "fabric", "fabric_maven", "fabric_meta"];
 
 /// Provider names [`Mirror::provider_name`] can return; they must exist in the TOML.
 const BUILTIN_PROVIDERS: [&str; 2] = ["mojang", "bmclapi"];

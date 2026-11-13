@@ -18,8 +18,8 @@ fn version_dir_macro_produces_isolated_path() {
     assert!(path.ends_with("versions/1.16.5-fabric-0.20.0"));
 
     // The bare loader identifier maps to the corresponding `ModLoader` variant.
-    let path = version_dir!(client, "1.20.1", Neoforge, "47.1.106");
-    assert!(path.ends_with("versions/1.20.1-neoforge-47.1.106"));
+    let path = version_dir!(client, "1.20.1", Fabric, "0.15.11");
+    assert!(path.ends_with("versions/1.20.1-fabric-0.15.11"));
 }
 
 #[test]
@@ -58,5 +58,5 @@ fn full_install_macro_expands_to_method_call() {
     // Only check that the macro expands and type-checks; no network, no await.
     let _future = full_install!(client, "1.16.5", ModLoader::Fabric, "0.20.0");
     // The five-argument form controls copy-on-write.
-    let _future_in_place = full_install!(client, "1.16.5", ModLoader::Quilt, "0.24.0", false);
+    let _future_in_place = full_install!(client, "1.16.5", ModLoader::Fabric, "0.15.11", false);
 }

@@ -285,22 +285,13 @@ fn runtime_string_list(table: &toml::Table, key: &str) -> Vec<String> {
 pub struct ManifestUrls {
     // ===== manifest (metadata) endpoints =====
     pub minecraft: String,
-    pub forge: String,
     pub fabric: String,
-    pub quilt: String,
-    pub neoforge: String,
-    pub liteloader: String,
 
     // ===== loader download base URLs =====
-    pub forge_maven: String,
     pub fabric_maven: String,
-    pub quilt_maven: String,
-    pub neoforge_maven: String,
-    pub liteloader_base: String,
 
     // ===== metadata bases used to join profile sub-endpoints =====
     pub fabric_meta: String,
-    pub quilt_meta: String,
 }
 
 impl ManifestUrls {
@@ -320,20 +311,11 @@ impl ManifestUrls {
         let p = provider_urls(name).ok_or_else(|| MdtError::UnknownProvider(name.to_string()))?;
         Ok(Self {
             minecraft: p.minecraft.to_string(),
-            forge: p.forge.to_string(),
             fabric: p.fabric.to_string(),
-            quilt: p.quilt.to_string(),
-            neoforge: p.neoforge.to_string(),
-            liteloader: p.liteloader.to_string(),
 
-            forge_maven: p.forge_maven.to_string(),
             fabric_maven: p.fabric_maven.to_string(),
-            quilt_maven: p.quilt_maven.to_string(),
-            neoforge_maven: p.neoforge_maven.to_string(),
-            liteloader_base: p.liteloader_base.to_string(),
 
             fabric_meta: p.fabric_meta.to_string(),
-            quilt_meta: p.quilt_meta.to_string(),
         })
     }
 
@@ -364,18 +346,9 @@ impl ManifestUrls {
         };
         Ok(Self {
             minecraft: field("minecraft")?,
-            forge: field("forge")?,
             fabric: field("fabric")?,
-            quilt: field("quilt")?,
-            neoforge: field("neoforge")?,
-            liteloader: field("liteloader")?,
-            forge_maven: field("forge_maven")?,
             fabric_maven: field("fabric_maven")?,
-            quilt_maven: field("quilt_maven")?,
-            neoforge_maven: field("neoforge_maven")?,
-            liteloader_base: field("liteloader_base")?,
             fabric_meta: field("fabric_meta")?,
-            quilt_meta: field("quilt_meta")?,
         })
     }
 
@@ -398,30 +371,6 @@ impl ManifestUrls {
             "{}/v2/versions/loader/{}/{}/profile/json",
             self.fabric_meta, game, loader
         )
-    }
-
-    /// The Quilt official-installer `profile` endpoint.
-    ///
-    /// Path format is `/v3/versions/loader/{game}/{loader}/profile/json`.
-    #[must_use]
-    pub fn quilt_profile(&self, loader: &str, game: &str) -> String {
-        format!(
-            "{}/v3/versions/loader/{}/{}/profile/json",
-            self.quilt_meta, game, loader
-        )
-    }
-
-    /// Compute the Quilt profile endpoint with mirror fallback.
-    ///
-    /// BMCLAPI does not proxy Quilt's `/v3/versions/loader/{game}/{loader}/profile/json`
-    /// endpoint (it returns 404), so under [`Mirror::BMCLAPI`] this falls back to the official
-    /// `meta.quiltmc.org`.
-    #[must_use]
-    pub fn quilt_profile_url(&self, loader: &str, game: &str, mirror: &Mirror) -> String {
-        match mirror {
-            Mirror::BMCLAPI => ManifestUrls::new(&Mirror::Mojang).quilt_profile(loader, game),
-            Mirror::Mojang | Mirror::Custom(_) => self.quilt_profile(loader, game),
-        }
     }
 
     /// Rewrite a Mojang download URL through the active mirror.
@@ -603,18 +552,9 @@ to = "https://mirror.example/maven/"
             r#"
 [reload_test_mirror]
 minecraft = "https://mirror.example/manifest"
-forge = "https://mirror.example/forge"
 fabric = "https://mirror.example/fabric"
-quilt = "https://mirror.example/quilt"
-neoforge = "https://mirror.example/neoforge"
-liteloader = "https://mirror.example/liteloader"
-forge_maven = "https://mirror.example/forge-maven"
 fabric_maven = "https://mirror.example/fabric-maven"
-quilt_maven = "https://mirror.example/quilt-maven"
-neoforge_maven = "https://mirror.example/neoforge-maven"
-liteloader_base = "https://mirror.example/liteloader-base"
 fabric_meta = "https://mirror.example/fabric-meta"
-quilt_meta = "https://mirror.example/quilt-meta"
 "#,
         )
         .unwrap();
@@ -628,7 +568,7 @@ quilt_meta = "https://mirror.example/quilt-meta"
         let urls =
             ManifestUrls::try_new(&Mirror::Custom("reload_test_mirror".to_string())).unwrap();
         assert_eq!(urls.minecraft, "https://mirror.example/manifest");
-        assert_eq!(urls.forge_maven, "https://mirror.example/forge-maven");
+        assert_eq!(urls.fabric_maven, "https://mirror.example/fabric-maven");
 
         std::env::remove_var("MDT_RUNTIME_PROVIDERS");
         // Leave the process on the empty table rather than this test's mirror.

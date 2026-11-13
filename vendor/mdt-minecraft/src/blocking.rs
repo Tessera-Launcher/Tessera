@@ -58,7 +58,6 @@ use std::time::Duration;
 
 use crate::customize::{Downloader, ProgressReporter};
 use crate::downloader::VersionJson;
-use crate::dual_loader::{DualLoaderInfo, DualLoaderState};
 use crate::error::MdtError;
 use crate::installer::InstalledVersion;
 use crate::manifest::VersionEntry;
@@ -109,12 +108,6 @@ impl BlockingClient {
     #[must_use]
     pub fn mirror(&self) -> &Mirror {
         self.inner.mirror()
-    }
-
-    /// The dual-loader state of `version_dir` (synchronous — no blocking bridge needed).
-    #[must_use]
-    pub fn detect_dual_loader_state(&self, version_dir: &Path) -> DualLoaderState {
-        self.inner.detect_dual_loader_state(version_dir)
     }
 
     /// Fetch the list of available Minecraft versions.
@@ -173,43 +166,6 @@ impl BlockingClient {
         run_blocking(async move {
             client
                 .full_install(&version, loader, &loader_version, isolate)
-                .await
-        })
-    }
-
-    /// Set up or switch a Fabric + Quilt dual-loader instance.
-    pub fn setup_dual_loader(
-        &self,
-        version_dir: &Path,
-        fabric_version: Option<&str>,
-        quilt_version: Option<&str>,
-    ) -> Result<DualLoaderInfo, MdtError> {
-        let client = self.inner.clone();
-        let version_dir = version_dir.to_path_buf();
-        let fabric_version = fabric_version.map(str::to_string);
-        let quilt_version = quilt_version.map(str::to_string);
-        run_blocking(async move {
-            client
-                .setup_dual_loader(
-                    &version_dir,
-                    fabric_version.as_deref(),
-                    quilt_version.as_deref(),
-                )
-                .await
-        })
-    }
-
-    /// Switch the active loader context of `version_dir` to `target_loader`.
-    pub fn switch_dual_loader_context(
-        &self,
-        version_dir: &Path,
-        target_loader: ModLoader,
-    ) -> Result<(), MdtError> {
-        let client = self.inner.clone();
-        let version_dir = version_dir.to_path_buf();
-        run_blocking(async move {
-            client
-                .switch_dual_loader_context(&version_dir, target_loader)
                 .await
         })
     }

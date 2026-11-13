@@ -7,7 +7,7 @@
 ## 状态
 
 已可用：扫描并启动本地版本、微软 device code 登录（官方 / 自定义 app id /
-`azure_app_ids.toml` 清单）、离线登录、版本与 5 种 Mod Loader 下载、Adoptium JRE 下载、
+`azure_app_ids.toml` 清单）、离线登录、原版与 Fabric 下载、Adoptium JRE 下载、
 令牌刷新、卸载与共享库/资源回收、原版 AOT 缓存训练（含 1.0–1.5.2 的 legacy 路径）、
 唱片与背景音乐播放、日志落盘、按键全键盘操作。
 
@@ -94,14 +94,12 @@ Mod Loader profile 按元数据固定用 Java 8，那里的 epoll 是好的。cl
 
 **下载**：`d` 打开选版本界面，`/` 搜索、`f` 循环类型、`Space` 展开快照族（搜索/筛选时
 一律平铺）、`Tab` 切焦点。右下角切换下载源（默认 BMCLAPI，`s` 键），只影响本次运行，
-不写盘。Loader 版本取该 MC 版本的最新构建，Forge/NeoForge 安装器同样跑在
-`data/运行时/` 的 Java 上。**Loader 安装是自包含的**：只产生
-`versions/<mc>-<loader>-<版本>/` 一个目录，里面有客户端 jar、`-natives` 和一份把原版
-字段并进来的 profile（没有 `inheritsFrom`，靠 `mdtLoader` 标记自己）。由此：
+不写盘。Loader 只有「无」和 Fabric 两种，Fabric 版本取该 MC 版本的最新构建。
+**Fabric 安装是自包含的**：只产生 `versions/<mc>-fabric-<版本>/` 一个目录，里面有
+客户端 jar、`-natives` 和一份把原版字段并进来的 profile（没有 `inheritsFrom`，靠
+`mdtLoader` 标记自己）。由此：
 
-- `versions/` 里装了 Loader 就只多这一个目录，不会额外生成一份原版；
-- 新版 Forge/NeoForge 的官方安装器运行时会读 `versions/<mc>/<mc>.jar`，所以安装期间会
-  临时补一份（本来就存在就复用），装完就删掉；
+- `versions/` 里装了 Fabric 就只多这一个目录，不会额外生成一份原版；
 - `libraries/`、`assets/` 仍然是全局共享的，同一套资源只占一份。
 
 进度页可 `Esc` 退出，下载在后台继续，完成后自动重扫版本。

@@ -7,7 +7,7 @@
 /// The isolated version directory for a loader install.
 ///
 /// Expands to `<client.root_dir()>/versions/<mc_version>+<Loader><loader_version>`. Pass the
-/// loader as a bare variant name (`Fabric`, `Forge`, `Quilt`, `Neoforge`, `Liteloader`).
+/// loader as a bare variant name (`Fabric`).
 ///
 /// ```no_run
 /// use mdt::{version_dir, MdtClient, Mirror};
@@ -100,7 +100,6 @@ macro_rules! download_task {
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let client = MdtClient::builder().mirror(Mirror::BMCLAPI).root_dir("./.minecraft").build()?;
 ///     full_install!(client, "1.16.5", ModLoader::Fabric, "0.20.0").await?;         // vanilla + isolated profile
-///     full_install!(client, "1.16.5", ModLoader::Quilt, "0.24.0", false).await?;    // vanilla + in place
 ///     Ok(())
 /// }
 /// ```

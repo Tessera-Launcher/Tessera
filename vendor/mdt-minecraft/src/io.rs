@@ -76,16 +76,6 @@ pub(crate) async fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> st
     std::fs::rename(from, to)
 }
 
-#[cfg(all(feature = "tokio", not(feature = "minimal")))]
-pub(crate) async fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> std::io::Result<u64> {
-    tokio::fs::copy(from, to).await
-}
-
-#[cfg(all(not(feature = "tokio"), not(feature = "minimal")))]
-pub(crate) async fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> std::io::Result<u64> {
-    std::fs::copy(from, to)
-}
-
 /// Copy `from` into a **new** `to`, never opening an existing path — and therefore never writing
 /// through a symlink planted at `to`.
 ///

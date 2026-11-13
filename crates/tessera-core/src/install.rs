@@ -5,7 +5,7 @@
 //! files move. The reporter MDT calls into is a tiny shim that forwards to the
 //! channel, which keeps every rendering decision in the UI layer.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -56,31 +56,16 @@ pub enum Loader {
     #[default]
     None,
     Fabric,
-    Quilt,
-    Forge,
-    NeoForge,
-    Lite,
 }
 
 /// Every loader, in picker order.
-pub const LOADERS: [Loader; 6] = [
-    Loader::None,
-    Loader::Fabric,
-    Loader::Quilt,
-    Loader::Forge,
-    Loader::NeoForge,
-    Loader::Lite,
-];
+pub const LOADERS: [Loader; 2] = [Loader::None, Loader::Fabric];
 
 impl Loader {
     pub fn label(self) -> &'static str {
         match self {
             Loader::None => "无",
             Loader::Fabric => "Fabric",
-            Loader::Quilt => "Quilt",
-            Loader::Forge => "Forge",
-            Loader::NeoForge => "NeoForge",
-            Loader::Lite => "LiteLoader",
         }
     }
 
@@ -88,10 +73,6 @@ impl Loader {
         match self {
             Loader::None => None,
             Loader::Fabric => Some(ModLoader::Fabric),
-            Loader::Quilt => Some(ModLoader::Quilt),
-            Loader::Forge => Some(ModLoader::Forge),
-            Loader::NeoForge => Some(ModLoader::Neoforge),
-            Loader::Lite => Some(ModLoader::Liteloader),
         }
     }
 
@@ -140,7 +121,7 @@ pub fn spawn_versions(
     asset_concurrency: usize,
 ) -> Receiver<InstallEvent> {
     spawn_worker(move |sender| {
-        let client = build_client(&root, source, asset_concurrency, None, sender.clone())?;
+        let client = build_client(&root, source, asset_concurrency, sender.clone())?;
         let runtime = runtime()?;
         runtime.block_on(async move {
             let versions = client
@@ -167,13 +148,8 @@ pub fn spawn_versions(
 }
 
 /// Install `version` (plus `loader`, when not [`Loader::None`]).
-///
-/// `runtimes` is the launcher's own `data/运行时`: Forge and NeoForge are installed by running
-/// their official installer, which needs a JVM. The runtime is picked the same way a launch picks
-/// one, so installing never falls back to `JAVA_HOME` or `PATH`.
 pub fn spawn_install(
     root: PathBuf,
-    runtimes: PathBuf,
     source: Source,
     asset_concurrency: usize,
     version: String,
@@ -183,14 +159,7 @@ pub fn spawn_install(
         // A cleanup sweep must not delete libraries while this install writes
         // them. The guard lives for the whole install, not just the setup.
         let _maintenance = crate::task::read();
-        let java = installer_java(&root, &runtimes, &version, loader, &sender)?;
-        let client = build_client(
-            &root,
-            source,
-            asset_concurrency,
-            java.as_deref(),
-            sender.clone(),
-        )?;
+        let client = build_client(&root, source, asset_concurrency, sender.clone())?;
         let runtime = runtime()?;
         runtime.block_on(async move {
             let loader_version = match loader.to_mdt() {
@@ -244,41 +213,6 @@ pub fn spawn_install(
     })
 }
 
-/// The Java an official loader installer must be run with, if this loader needs one.
-///
-/// Fabric/Quilt/LiteLoader write their profile from a manifest and never start a JVM, so they get
-/// `None` (and never fail over a missing runtime). Forge/NeoForge do, and the JVM has to come from
-/// `data/运行时` — the launcher owns that choice, and a user with only a managed Java 21 must still
-/// be able to install Forge for 1.20.1.
-fn installer_java(
-    root: &Path,
-    runtimes: &Path,
-    version: &str,
-    loader: Loader,
-    sender: &Sender<InstallEvent>,
-) -> Result<Option<PathBuf>> {
-    if !matches!(loader, Loader::Forge | Loader::NeoForge) {
-        return Ok(None);
-    }
-    // The version's own metadata is the authority when the vanilla profile is already on disk;
-    // otherwise the version number decides (see `launch::required_java`).
-    let declared = declared_java(root, version);
-    let required = crate::launch::required_java(version, declared);
-    let (java, major) =
-        crate::launch::find_java(runtimes, required, crate::launch::JavaKind::Loader)?;
-    let _ = sender.send(InstallEvent::Log(format!(
-        "{} 的官方安装器使用 Java {major}（{}）",
-        loader.label(),
-        java.display()
-    )));
-    Ok(Some(java))
-}
-
-/// `javaVersion.majorVersion` from an already-installed profile, if it is there.
-fn declared_java(root: &Path, version: &str) -> Option<u32> {
-    crate::profile::read(root, version)?.java
-}
-
 /// Latest loader build for one Minecraft version, via the loader manifests.
 async fn resolve_loader_version(
     client: &MdtClient,
@@ -293,7 +227,7 @@ async fn resolve_loader_version(
                 loader.display_name()
             ))
         })?;
-    let versions = manifest::loader_versions_from_data(loader, mc_version, &data);
+    let versions = manifest::loader_versions_from_data(&data);
     versions.first().cloned().ok_or_else(|| {
         Error::missing(format!(
             "{} 没有适用于 {mc_version} 的版本",
@@ -321,20 +255,14 @@ fn build_client(
     root: &PathBuf,
     source: Source,
     asset_concurrency: usize,
-    java: Option<&Path>,
     sender: Sender<InstallEvent>,
 ) -> Result<MdtClient> {
-    let builder = MdtClient::builder()
+    MdtClient::builder()
         .mirror(source.to_mdt())
         .root_dir(root)
         .concurrency(3)
         .asset_concurrency(asset_concurrency)
-        .progress_reporter(Reporter { sender });
-    let builder = match java {
-        Some(java) => builder.java(java),
-        None => builder,
-    };
-    builder
+        .progress_reporter(Reporter { sender })
         .build()
         .map_err(|error| Error::internal(format!("无法创建下载客户端：{error}")))
 }
@@ -435,14 +363,10 @@ mod tests {
     #[test]
     fn loader_labels_and_compatibility() {
         assert_eq!(Loader::None.label(), "无");
-        assert_eq!(Loader::NeoForge.label(), "NeoForge");
+        assert_eq!(Loader::Fabric.label(), "Fabric");
         assert!(Loader::None.compatible("1.8.9"));
         assert!(Loader::Fabric.compatible("1.14"));
         assert!(!Loader::Fabric.compatible("1.12.2"));
-        assert!(!Loader::NeoForge.compatible("1.20.1"));
-        assert!(Loader::NeoForge.compatible("1.21"));
-        assert!(Loader::Lite.compatible("1.12.2"));
-        assert!(!Loader::Lite.compatible("1.13"));
     }
 
     #[test]
@@ -500,7 +424,6 @@ mod tests {
         std::env::set_var("MDT_HOME", &registry);
         let receiver = spawn_install(
             root.clone(),
-            root.join("运行时"),
             Source::Mojang,
             32,
             "1.8.9".into(),
@@ -543,121 +466,6 @@ mod tests {
         assert!(root.join("assets/indexes/1.8.json").is_file());
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&registry).ok();
-    }
-
-    /// A fake managed runtime: `bin/java` answers `-version` with `major`.
-    fn managed_runtime(runtimes: &Path, major: u32) -> PathBuf {
-        let bin = runtimes.join(format!("{major}.0.1+1")).join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let java = bin.join("java");
-        std::fs::write(
-            &java,
-            format!("#!/bin/sh\necho 'openjdk version \"{major}.0.1\"' >&2\nexit 0\n"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&java).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&java, perms).unwrap();
-        }
-        runtimes.to_path_buf()
-    }
-
-    #[test]
-    fn forge_installers_run_on_the_managed_runtime_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("游戏");
-        let runtimes = tmp.path().join("运行时");
-        let (sender, _receiver) = std::sync::mpsc::channel();
-
-        // Nothing downloaded yet: the install has to fail with advice, not fall
-        // back to whatever `java` happens to be on PATH.
-        let error = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
-            .expect_err("no managed runtime, no Forge");
-        assert_eq!(error.kind(), crate::error::Kind::Missing);
-        assert!(error.to_string().contains("Java 17"), "{error}");
-        assert!(error.to_string().contains("Java 运行时界面"), "{error}");
-
-        // Java 8 exists but 1.20.1 wants 17.
-        managed_runtime(&runtimes, 8);
-        let error = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
-            .expect_err("Java 8 cannot run the 1.20.1 installer");
-        assert!(error.to_string().contains("Java 8"), "{error}");
-
-        managed_runtime(&runtimes, 17);
-        let java = installer_java(&root, &runtimes, "1.20.1", Loader::Forge, &sender)
-            .unwrap()
-            .expect("a runtime is used");
-        assert!(java.starts_with(&runtimes), "{}", java.display());
-        assert!(java.ends_with("bin/java"), "{}", java.display());
-    }
-
-    #[test]
-    fn a_forge_install_fails_before_any_network_work_without_a_runtime() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("游戏");
-        let receiver = spawn_install(
-            root,
-            tmp.path().join("运行时"),
-            Source::Bmclapi,
-            4,
-            "1.20.1".into(),
-            Loader::Forge,
-        );
-        match receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the worker reports instead of hanging")
-        {
-            InstallEvent::Failed(message) => {
-                assert!(message.contains("Java 17"), "{message}");
-                assert!(message.contains("Java 运行时界面"), "{message}");
-            }
-            other => panic!("expected a failure, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn loaders_that_do_not_start_a_jvm_need_no_runtime() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        for loader in [Loader::None, Loader::Fabric, Loader::Quilt, Loader::Lite] {
-            assert!(
-                installer_java(
-                    tmp.path(),
-                    &tmp.path().join("运行时"),
-                    "1.20.1",
-                    loader,
-                    &sender
-                )
-                .unwrap()
-                .is_none(),
-                "{} spawns no JVM",
-                loader.label()
-            );
-        }
-    }
-
-    #[test]
-    fn an_installed_profile_pins_the_installer_runtime_by_its_metadata() {
-        // A snapshot id the version-number rules cannot parse still needs Java 21,
-        // and its own JSON says so.
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let vdir = root.join("versions/25w46a");
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(
-            vdir.join("25w46a.json"),
-            r#"{"javaVersion":{"majorVersion":21}}"#,
-        )
-        .unwrap();
-        let runtimes = managed_runtime(&tmp.path().join("运行时"), 21);
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        let java = installer_java(root, &runtimes, "25w46a", Loader::NeoForge, &sender)
-            .unwrap()
-            .expect("declared Java 21 is used");
-        assert!(java.starts_with(&runtimes));
     }
 
     #[test]

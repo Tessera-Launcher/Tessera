@@ -149,20 +149,15 @@ fn the_version_list_arrives_and_loaders_are_filtered_per_version() {
     let mut app = downloader();
     assert_eq!(app.download.stage, DownloadStage::Picking);
     assert_eq!(app.download.matched(), 2);
-    // 1.20.1: Fabric, Quilt and Forge. NeoForge starts at 1.21 and LiteLoader
-    // stopped at 1.12.2, so neither is offered here.
+    // 1.20.1: vanilla and Fabric.
     assert!(app.download.loaders.contains(&Loader::Fabric));
-    assert!(app.download.loaders.contains(&Loader::Quilt));
-    assert!(!app.download.loaders.contains(&Loader::NeoForge));
-    assert!(!app.download.loaders.contains(&Loader::Lite));
+    assert!(app.download.loaders.contains(&Loader::None));
 
-    // Move to 1.8.9: Fabric/Quilt/NeoForge disappear, Forge and LiteLoader stay.
+    // Move to 1.8.9: Fabric does not exist before 1.14, so only vanilla remains.
     app.handle_download_key(Key::Down, Modifiers::NONE);
     assert_eq!(app.download.picked, 1);
     assert!(!app.download.loaders.contains(&Loader::Fabric));
-    assert!(app.download.loaders.contains(&Loader::Forge));
-    assert!(app.download.loaders.contains(&Loader::Lite));
-    assert!(app.download.loaders.contains(&Loader::None));
+    assert_eq!(app.download.loaders, vec![Loader::None]);
 }
 
 fn mixed_picker() -> App {
@@ -330,20 +325,20 @@ fn tab_cycles_versions_loaders_and_the_search_box() {
     app.handle_download_key(Key::Tab, Modifiers::NONE);
     assert_eq!(app.download.focus, PickerFocus::Versions);
 
-    let quilt = app
+    let fabric = app
         .download
         .loaders
         .iter()
-        .position(|l| *l == Loader::Quilt)
-        .expect("quilt listed for 1.20.1");
-    app.download.loader_pick = quilt;
+        .position(|l| *l == Loader::Fabric)
+        .expect("fabric listed for 1.20.1");
+    app.download.loader_pick = fabric;
 
     // Switching panes does not forget the loader.
     app.handle_download_key(Key::Tab, Modifiers::NONE);
     assert_eq!(app.download.focus, PickerFocus::Loaders);
-    assert_eq!(app.download.picked_loader(), Loader::Quilt);
+    assert_eq!(app.download.picked_loader(), Loader::Fabric);
 
-    // Dropping to 1.8.9 loses Quilt, so the choice falls back to the first entry.
+    // Dropping to 1.8.9 loses Fabric, so the choice falls back to vanilla.
     app.handle_download_key(Key::Tab, Modifiers::NONE);
     app.handle_download_key(Key::Tab, Modifiers::NONE);
     app.handle_download_key(Key::Down, Modifiers::NONE);

@@ -1,11 +1,8 @@
 //! Mod-loader installation.
 //!
-//! Two approaches:
-//!
-//! * **Method A (Java injection)** — download the official installer and run it with a local
-//!   Java, pointing it at the isolated version dir. Modern Forge and NeoForge.
-//! * **Method B (manual unpack)** — unzip the installer, drop its libraries in place, and write
-//!   the version JSON ourselves. No Java. Legacy Forge, Fabric, Quilt, LiteLoader.
+//! Fabric is the only supported loader: its official profile is fetched, its
+//! dependencies are deployed into `libraries/`, and the version JSON is written
+//! by MDT. No Java runtime is involved.
 //!
 //! # Isolation guarantee
 //!
@@ -15,17 +12,7 @@
 
 #[cfg(not(feature = "minimal"))]
 mod fabric;
-#[cfg(not(feature = "minimal"))]
-mod forge;
-#[cfg(not(feature = "minimal"))]
-mod installer;
-#[cfg(not(feature = "minimal"))]
-mod liteloader;
 mod mcr;
-#[cfg(not(feature = "minimal"))]
-mod neoforge;
-#[cfg(not(feature = "minimal"))]
-mod quilt;
 mod uninstall;
 #[cfg(not(feature = "minimal"))]
 mod version_json;
@@ -42,7 +29,7 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
 #[cfg(not(feature = "minimal"))]
-use crate::customize::{debug_line, Downloader, NoopReporter, ProgressReporter};
+use crate::customize::{debug_line, Downloader, ProgressReporter};
 use crate::error::MdtError;
 #[cfg(not(feature = "minimal"))]
 use crate::mirror::Mirror;
@@ -92,7 +79,7 @@ pub struct InstallRequest {
     pub mc_version: String,
     /// The loader to install.
     pub loader: ModLoader,
-    /// Loader version, e.g. Forge `47.2.0` or Fabric `0.15.11`.
+    /// Loader version, e.g. Fabric `0.15.11`.
     pub loader_version: String,
     /// The `.minecraft` root directory.
     pub root_dir: PathBuf,
@@ -103,15 +90,13 @@ pub struct InstallRequest {
     pub target_dir: Option<PathBuf>,
     /// Progress/status reporter for this install.
     pub reporter: std::sync::Arc<dyn ProgressReporter>,
-    /// JVM for official installers (Forge/NeoForge). `None` detects one from `JAVA_HOME`/`PATH`.
-    pub java: Option<std::path::PathBuf>,
 }
 
 #[cfg(not(feature = "minimal"))]
 /// The result of installing a mod loader.
 #[derive(Debug, Clone)]
 pub struct InstalledVersion {
-    /// The isolated version ID, e.g. `1.20.1-forge-47.2.0`.
+    /// The isolated version ID, e.g. `1.20.1-fabric-0.15.11`.
     pub id: String,
     /// Which strategy produced this install.
     pub method: InstallMethod,
@@ -138,11 +123,7 @@ pub async fn install_modloader(
         ),
     );
     let result = match req.loader {
-        ModLoader::Forge => forge::install(downloader, req).await,
-        ModLoader::Neoforge => neoforge::install(downloader, req).await,
         ModLoader::Fabric => fabric::install(downloader, req).await,
-        ModLoader::Quilt => quilt::install(downloader, req).await,
-        ModLoader::Liteloader => liteloader::install(downloader, req).await,
     };
     debug_line(reporter.as_ref(), "install_modloader: dispatch finished");
     result
@@ -151,34 +132,11 @@ pub async fn install_modloader(
 // ===== shared helpers =====
 
 #[cfg(not(feature = "minimal"))]
-/// Whether the loader's official installer reads `versions/<mc_version>/<mc_version>.jar`
-/// while it runs.
-///
-/// Method A installers (modern Forge, NeoForge) resolve the vanilla client jar from the game root,
-/// so a self-contained loader install has to put that profile on disk for the duration of the
-/// install even when it deletes it afterwards. Fabric, Quilt and LiteLoader never start a JVM, and
-/// legacy Forge unpacks its own tree, so they need nothing.
-#[must_use]
-pub fn installer_needs_vanilla_profile(loader: ModLoader, mc_version: &str) -> bool {
-    match loader {
-        ModLoader::Neoforge => true,
-        ModLoader::Forge => forge::uses_official_installer(mc_version),
-        ModLoader::Fabric | ModLoader::Quilt | ModLoader::Liteloader => false,
-    }
-}
-
-#[cfg(not(feature = "minimal"))]
 /// Compute the isolated version ID: `[mc_version]-[loader]-[LoaderVersion]`.
 ///
-/// For example `1.16.5-fabric-0.20.0`, `1.20.1-forge-47.2.0` or
-/// `1.12.2-liteloader-1.12.2`. This ID is used as the `versions/<id>` directory
-/// name, the version JSON filename, and the JSON's internal `id` field — keeping
-/// the loader isolated from the vanilla `versions/<mc_version>`.
-///
-/// No `+`: Forge 1.8.9's FML URL-decodes the version name, where `+` means a
-/// space, and then looks for the vanilla jar in a directory that does not exist.
-/// The hyphenated form is also what Forge's and NeoForge's official installers
-/// write, so it keeps every loader uniform.
+/// For example `1.16.5-fabric-0.20.0`. This ID is used as the `versions/<id>`
+/// directory name, the version JSON filename, and the JSON's internal `id`
+/// field — keeping the loader isolated from the vanilla `versions/<mc_version>`.
 #[must_use]
 pub fn loader_version_id(mc_version: &str, loader: ModLoader, loader_version: &str) -> String {
     format!(
@@ -188,7 +146,7 @@ pub fn loader_version_id(mc_version: &str, loader: ModLoader, loader_version: &s
 }
 
 #[cfg(not(feature = "minimal"))]
-/// The version ID produced by the official installer (Method A: Forge / NeoForge).
+/// The version ID produced by a loader install.
 ///
 /// This is the same hyphenated form as [`loader_version_id`]; the function is
 /// kept so callers can say which install method they mean.
@@ -200,7 +158,7 @@ pub fn installer_version_id(mc_version: &str, loader: ModLoader, loader_version:
 #[cfg(not(feature = "minimal"))]
 /// Convert a Maven coordinate into a repository-relative path.
 ///
-/// `classifier` (optional) yields names such as `forge-1.20.1-47.2.0-installer.jar`.
+/// `classifier` (optional) yields names such as `fabric-loader-0.15.11-installer.jar`.
 #[must_use]
 pub fn maven_artifact_path(
     group: &str,
@@ -226,50 +184,6 @@ pub fn library_path_from_name(name: &str) -> Result<String, MdtError> {
         )));
     }
     Ok(maven_artifact_path(parts[0], parts[1], parts[2], None))
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Detect a local Java runtime, returning the path to its executable.
-pub async fn detect_java() -> Result<PathBuf, MdtError> {
-    // Fast path: JAVA_HOME.
-    if let Some(home) = std::env::var_os("JAVA_HOME") {
-        let p =
-            PathBuf::from(home)
-                .join("bin")
-                .join(if cfg!(windows) { "java.exe" } else { "java" });
-        if p.is_file() {
-            return Ok(p);
-        }
-    }
-
-    // Fall back to PATH (`java -version` is a blocking probe, so run it off the runtime).
-    let exe = if cfg!(windows) { "java.exe" } else { "java" };
-    let exe_name = exe.to_string();
-    let found = crate::io::spawn_blocking(move || {
-        std::process::Command::new(&exe_name)
-            .arg("-version")
-            .output()
-            .is_ok()
-    })
-    .await?;
-
-    if found {
-        Ok(PathBuf::from(exe))
-    } else {
-        Err(MdtError::JavaNotFound)
-    }
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Stream a URL to a file without checksum verification (for loader installer JARs).
-///
-/// Debug output is discarded; use `download_to_file_reported` to receive it.
-pub async fn download_to_file(
-    downloader: &dyn Downloader,
-    url: &str,
-    dest: &Path,
-) -> Result<(), MdtError> {
-    download_to_file_reported(downloader, url, dest, &NoopReporter).await
 }
 
 #[cfg(not(feature = "minimal"))]
@@ -300,21 +214,6 @@ pub fn dedup_urls(candidates: &[String]) -> Vec<String> {
 }
 
 #[cfg(not(feature = "minimal"))]
-/// Download `upstream_url` to `dest`, trying the mirror first and the upstream (official) source
-/// as a fallback. This is the mirror-first, official-as-backup policy applied to every loader
-/// download, so a stalled or 403ing mirror can never hang or kill the install.
-pub async fn download_maven_fallback(
-    downloader: &dyn Downloader,
-    upstream_url: &str,
-    dest: &Path,
-    mirror: &Mirror,
-    urls: &ManifestUrls,
-) -> Result<(), MdtError> {
-    download_maven_fallback_reported(downloader, upstream_url, dest, mirror, urls, &NoopReporter)
-        .await
-}
-
-#[cfg(not(feature = "minimal"))]
 /// [`download_maven_fallback`], reporting each attempt through `reporter`.
 pub(crate) async fn download_maven_fallback_reported(
     downloader: &dyn Downloader,
@@ -327,17 +226,6 @@ pub(crate) async fn download_maven_fallback_reported(
     let mirrored = urls.apply_maven_mirror(upstream_url, mirror);
     let candidates = dedup_urls(&[mirrored, upstream_url.to_string()]);
     download_to_file_from_candidates_reported(downloader, &candidates, dest, reporter).await
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Download `dest` from the first candidate URL that succeeds, removing any partial file between
-/// attempts. Debug output is discarded; use `download_to_file_from_candidates_reported`.
-pub async fn download_to_file_from_candidates(
-    downloader: &dyn Downloader,
-    candidates: &[String],
-    dest: &Path,
-) -> Result<(), MdtError> {
-    download_to_file_from_candidates_reported(downloader, candidates, dest, &NoopReporter).await
 }
 
 #[cfg(not(feature = "minimal"))]
@@ -367,12 +255,6 @@ pub(crate) async fn download_to_file_from_candidates_reported(
 }
 
 #[cfg(not(feature = "minimal"))]
-/// Mount `src` at `dst` using the cheapest link available (hardlink > symlink > copy).
-pub async fn copy_file(src: &Path, dst: &Path) -> Result<(), MdtError> {
-    copy_file_reported(src, dst, &NoopReporter).await
-}
-
-#[cfg(not(feature = "minimal"))]
 /// [`copy_file`], reporting the chosen mount strategy through `reporter`.
 pub(crate) async fn copy_file_reported(
     src: &Path,
@@ -382,36 +264,6 @@ pub(crate) async fn copy_file_reported(
     VirtualDir::new(src, dst)
         .mount_with_reporter(reporter)
         .await
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Download a Maven artifact with checksum verification and global-registry caching.
-///
-/// When `cache_dir` is set, the artifact is cached under `cache_dir/rel_path` with a persisted
-/// `.checksum` sidecar; warm hits are verified offline and copied into `dest`. Otherwise the file
-/// is downloaded straight into `dest` (still verified when a Maven checksum sidecar is reachable).
-///
-/// Debug output is discarded; use `download_artifact_verified_reported` to receive it.
-pub async fn download_artifact_verified(
-    downloader: &dyn Downloader,
-    upstream_url: &str,
-    dest: &Path,
-    mirror: &Mirror,
-    urls: &ManifestUrls,
-    cache_dir: Option<&Path>,
-    rel_path: &str,
-) -> Result<(), MdtError> {
-    download_artifact_verified_reported(
-        downloader,
-        upstream_url,
-        dest,
-        mirror,
-        urls,
-        cache_dir,
-        rel_path,
-        &NoopReporter,
-    )
-    .await
 }
 
 #[cfg(not(feature = "minimal"))]
@@ -657,132 +509,6 @@ fn compute_file_hash<D: Digest>(path: &Path) -> Option<String> {
 }
 
 #[cfg(not(feature = "minimal"))]
-/// Extract a JAR (ZIP) to a directory, skipping directories and `META-INF/`, with Zip Slip
-/// protection.
-///
-/// Every entry name is untrusted (a JAR is third-party input) and must pass
-/// `safe_path::validate_extract_path`; the first unsafe entry aborts the whole extraction with
-/// [`MdtError::UnsafeArchivePath`] instead of being skipped.
-pub async fn unzip_jar(src: &Path, dest: &Path) -> Result<(), MdtError> {
-    let src = src.to_path_buf();
-    let dest = dest.to_path_buf();
-    crate::io::spawn_blocking(move || -> Result<(), MdtError> {
-        std::fs::create_dir_all(&dest)?;
-        let file = std::fs::File::open(&src)?;
-        let mut archive = zip::ZipArchive::new(file)?;
-
-        for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)?;
-            let name = entry.name()?.into_owned();
-            if entry.is_dir() || name.starts_with("META-INF/") {
-                continue;
-            }
-            // Reject absolute paths, `..` components, Windows drive prefixes, NTFS alternate data
-            // streams and NUL bytes before anything touches the filesystem.
-            let out_path = crate::safe_path::validate_extract_path(&dest, &name)?;
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            // `File::create` follows links, so a symlink planted at the destination would redirect
-            // this write onto a file of the attacker's choosing.
-            crate::safe_path::reject_symlink_destination(&out_path)?;
-            let mut out_file = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut entry, &mut out_file)?;
-        }
-        Ok(())
-    })
-    .await?
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Recursively copy a directory (used to flatten an installer's `maven/` into `libraries/`).
-///
-/// Debug output is discarded; use `copy_dir_recursive_reported` to receive it.
-pub async fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), MdtError> {
-    copy_dir_recursive_reported(src, dest, &NoopReporter).await
-}
-
-#[cfg(not(feature = "minimal"))]
-/// [`copy_dir_recursive`], reporting the start/finish through `reporter`.
-pub(crate) async fn copy_dir_recursive_reported(
-    src: &Path,
-    dest: &Path,
-    reporter: &dyn ProgressReporter,
-) -> Result<(), MdtError> {
-    debug_line(
-        reporter,
-        &format!(
-            "copy_dir_recursive: {} -> {}",
-            src.display(),
-            dest.display()
-        ),
-    );
-    let src = src.to_path_buf();
-    let dest = dest.to_path_buf();
-    let result = crate::io::spawn_blocking(move || copy_dir_sync(&src, &dest)).await?;
-    debug_line(reporter, "copy_dir_recursive: done");
-    result
-}
-
-#[cfg(not(feature = "minimal"))]
-fn copy_dir_sync(src: &Path, dest: &Path) -> Result<(), MdtError> {
-    std::fs::create_dir_all(dest)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dest.join(entry.file_name());
-
-        // `DirEntry::file_type` does not follow links. A symlink in the source would make the copy
-        // read (and then write) whatever it points at, so it is refused outright.
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            return Err(MdtError::UnsafeArchivePath {
-                entry: from.display().to_string(),
-                reason: "symbolic link in directory copy",
-            });
-        }
-        if file_type.is_dir() {
-            copy_dir_sync(&from, &to)?;
-            continue;
-        }
-
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        // Replace a stale regular file, but never write through a symlink planted at the
-        // destination: the copy is created exclusively afterwards.
-        match std::fs::symlink_metadata(&to) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(MdtError::UnsafeArchivePath {
-                    entry: to.display().to_string(),
-                    reason: "destination is a symbolic link",
-                });
-            }
-            Ok(_) => std::fs::remove_file(&to)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        let mut input = std::fs::File::open(&from)?;
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&to)?;
-        std::io::copy(&mut input, &mut output)?;
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Ensure a directory exists and is empty (used for temporary directories).
-pub async fn ensure_empty_dir(path: &Path) -> Result<(), MdtError> {
-    if path.exists() {
-        crate::io::remove_dir_all(path).await?;
-    }
-    crate::io::create_dir_all(path).await?;
-    Ok(())
-}
-
-#[cfg(not(feature = "minimal"))]
 /// The version directory: `.minecraft/versions/<id>`.
 #[must_use]
 pub fn version_dir(root: &Path, id: &str) -> PathBuf {
@@ -805,36 +531,6 @@ pub(crate) fn target_version_dir(req: &InstallRequest, id: &str) -> PathBuf {
     req.target_dir
         .clone()
         .unwrap_or_else(|| version_dir(&req.root_dir, id))
-}
-
-#[cfg(not(feature = "minimal"))]
-/// Copy a Method A install's version JSON (and core JAR, if produced) into `target_dir`.
-///
-/// Method A always writes into the official installer's isolated `versions/<id>` directory; for an
-/// in-place install we relocate the result into the caller's vanilla directory.
-pub async fn relocate_method_a(
-    root: &Path,
-    src_id: &str,
-    target_dir: &Path,
-) -> Result<(PathBuf, Option<PathBuf>), MdtError> {
-    let src_dir = version_dir(root, src_id);
-    let json_name = format!("{src_id}.json");
-    let jar_name = format!("{src_id}.jar");
-
-    crate::io::create_dir_all(target_dir).await?;
-    let dst_json = target_dir.join(&json_name);
-    crate::io::copy(src_dir.join(&json_name), &dst_json).await?;
-
-    let src_jar = src_dir.join(&jar_name);
-    let jar = if src_jar.exists() {
-        let dst_jar = target_dir.join(&jar_name);
-        crate::io::copy(&src_jar, &dst_jar).await?;
-        Some(dst_jar)
-    } else {
-        None
-    };
-
-    Ok((dst_json, jar))
 }
 
 /// The version JSON path inside a version directory: `<dir>/<dir-name>.json`.
@@ -1020,121 +716,5 @@ mod tests {
         assert!(matches!(err, MdtError::InvalidManifest(_)), "got {err:?}");
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    // ===== unzip_jar (Zip Slip) =====
-
-    #[cfg(all(feature = "tokio", not(feature = "minimal")))]
-    /// Build a ZIP at `path` containing exactly `entries`, in order.
-    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
-        use std::io::Write;
-
-        let file = std::fs::File::create(path).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        for (name, data) in entries {
-            writer
-                .start_file(*name, zip::write::SimpleFileOptions::default())
-                .unwrap();
-            writer.write_all(data).unwrap();
-        }
-        writer.finish().unwrap();
-    }
-
-    #[cfg(all(feature = "tokio", not(feature = "minimal")))]
-    #[tokio::test]
-    async fn unzip_jar_extracts_benign_entries_and_skips_meta_inf() {
-        let dir = tempfile::tempdir().unwrap();
-        let jar = dir.path().join("installer.jar");
-        let dest = dir.path().join("unpack");
-        write_zip(
-            &jar,
-            &[
-                ("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n"),
-                ("maven/net/example/lib/1.0/lib-1.0.jar", b"jar-bytes"),
-            ],
-        );
-
-        unzip_jar(&jar, &dest).await.unwrap();
-
-        assert_eq!(
-            std::fs::read(dest.join("maven/net/example/lib/1.0/lib-1.0.jar")).unwrap(),
-            b"jar-bytes"
-        );
-        assert!(!dest.join("META-INF").exists(), "META-INF must be skipped");
-    }
-
-    #[cfg(all(feature = "tokio", not(feature = "minimal")))]
-    #[tokio::test]
-    async fn unzip_jar_rejects_parent_dir_entry() {
-        // Negative test: `../escape.txt` would land outside `dest`.
-        let dir = tempfile::tempdir().unwrap();
-        let jar = dir.path().join("evil.jar");
-        let dest = dir.path().join("unpack");
-        write_zip(&jar, &[("../escape.txt", b"pwned")]);
-
-        let err = unzip_jar(&jar, &dest).await.unwrap_err();
-        assert!(
-            matches!(err, MdtError::UnsafeArchivePath { .. }),
-            "got {err:?}"
-        );
-        assert!(
-            !dir.path().join("escape.txt").exists(),
-            "the traversal target must not be created"
-        );
-    }
-
-    #[cfg(all(feature = "tokio", not(feature = "minimal")))]
-    #[tokio::test]
-    async fn unzip_jar_rejects_absolute_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let jar = dir.path().join("evil.jar");
-        let dest = dir.path().join("unpack");
-        write_zip(&jar, &[("/tmp/mdt-absolute-escape.txt", b"pwned")]);
-
-        let err = unzip_jar(&jar, &dest).await.unwrap_err();
-        assert!(
-            matches!(err, MdtError::UnsafeArchivePath { .. }),
-            "got {err:?}"
-        );
-    }
-
-    #[cfg(all(feature = "tokio", not(feature = "minimal")))]
-    #[tokio::test]
-    async fn unzip_jar_rejects_alternate_data_stream_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let jar = dir.path().join("evil.jar");
-        let dest = dir.path().join("unpack");
-        write_zip(&jar, &[("options.txt:hidden", b"pwned")]);
-
-        let err = unzip_jar(&jar, &dest).await.unwrap_err();
-        assert!(
-            matches!(err, MdtError::UnsafeArchivePath { .. }),
-            "got {err:?}"
-        );
-    }
-
-    #[cfg(all(feature = "tokio", not(feature = "minimal")))]
-    #[tokio::test]
-    async fn unzip_jar_refuses_a_planted_symlink_destination() {
-        // Negative test: the entry name is harmless, but `dest/evil.txt` is already a symlink to a
-        // file outside `dest` — `File::create` would follow it.
-        let dir = tempfile::tempdir().unwrap();
-        let jar = dir.path().join("evil.jar");
-        let dest = dir.path().join("unpack");
-        let victim = dir.path().join("victim.txt");
-        std::fs::create_dir_all(&dest).unwrap();
-        std::fs::write(&victim, b"secret").unwrap();
-        write_zip(&jar, &[("evil.txt", b"pwned")]);
-
-        if !crate::test_support::try_symlink_file(&victim, &dest.join("evil.txt")) {
-            return; // no symlink privileges on this machine
-        }
-
-        let err = unzip_jar(&jar, &dest).await.unwrap_err();
-        assert!(
-            matches!(err, MdtError::UnsafeArchivePath { .. }),
-            "got {err:?}"
-        );
-        assert_eq!(std::fs::read(&victim).unwrap(), b"secret");
     }
 }

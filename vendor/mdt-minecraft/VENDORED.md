@@ -339,6 +339,18 @@ LWJGL 2.9.4 artifacts the manifest lists are dead weight.
 Covered by `lwjgl3::tests::the_lwjgl2_group_is_replaced_by_the_3_4_3_jars` and
 `other_versions_are_left_alone` (a fake downloader, no network).
 
+### 15. Fabric is the only supported loader
+
+Tessera dropped every loader but Fabric, and this copy follows: the Forge,
+NeoForge, Quilt and LiteLoader installers (`src/installer/{forge,neoforge,quilt,
+liteloader,installer}.rs`), the Fabric+Quilt `dual_loader` module, the Java
+runtime path for official installers (`InstallRequest::java`, `detect_java`),
+the legacy-Forge unpacker and the loader-specific manifest/URL plumbing are
+gone. `ModLoader` has one variant (`Fabric`), and `fetch_all_manifests` now asks
+the mirror only for the Minecraft and Fabric manifests. A loader install needs
+no JVM and no temporary vanilla profile, so `install_loader` writes the
+self-contained Fabric profile directly.
+
 ## Example
 
 `examples/download_bench.rs` installs 1.8.9 from a chosen mirror into a directory passed on the
@@ -356,7 +368,8 @@ The changes touch `src/downloader.rs` (struct fields, classifier selection, task
 dedupe, progress cadence), `src/asset.rs` (materialisation), `src/client.rs`
 (`VanillaInstall`, installer JVM), `src/client.rs` (no vanilla clone, `install_loader`),
 `src/http.rs` (HTTP/1.1 default),
-`src/installer/*` (version ids, legacy Forge), `src/lib.rs` (exports) and the
-tests beside them. They do not touch the mirror/URL/provider table, so upstream
+`src/installer/*` (version ids, Fabric-only install), `src/lib.rs` (exports) and
+the tests beside them. Loader-specific code has been deleted rather than kept
+behind a feature flag; see section 15. They do not touch the mirror/URL/provider table, so upstream
 mirror work applies cleanly; re-run the crate's tests after a rebase and re-check
 the helpers named above.

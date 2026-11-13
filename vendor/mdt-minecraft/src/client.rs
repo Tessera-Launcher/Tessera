@@ -15,7 +15,6 @@ use crate::customize::UreqDownloader;
 use crate::customize::{Downloader, ProgressReporter, StderrReporter};
 use crate::downloader::{self, VersionJson, VirtualAssets};
 #[cfg(not(feature = "minimal"))]
-use crate::dual_loader::{self, DualLoaderInfo, DualLoaderState};
 use crate::error::MdtError;
 #[cfg(feature = "tokio")]
 use crate::http;
@@ -23,7 +22,6 @@ use crate::installer;
 #[cfg(not(feature = "minimal"))]
 use crate::installer::{InstallRequest, InstalledVersion};
 #[cfg(not(feature = "minimal"))]
-use crate::manifest::latest_stable_loader_version;
 use crate::manifest::{self, VersionEntry};
 use crate::mirror::Mirror;
 use crate::modloader::ModLoader;
@@ -80,9 +78,6 @@ pub struct MdtClient {
     proxy: Option<String>,
     connect_timeout: Duration,
     read_timeout: Duration,
-    /// Java used to run official loader installers (Forge/NeoForge); `None` means detect one
-    /// from `JAVA_HOME`/`PATH`.
-    java: Option<PathBuf>,
 }
 
 impl MdtClient {
@@ -293,7 +288,6 @@ impl MdtClient {
     ///
     /// * [`MdtError::InvalidManifest`] if `vanilla_dir` has no readable version JSON.
     /// * [`MdtError::LoaderInstallFailed`] if the loader doesn't support the version.
-    /// * [`MdtError::JavaNotFound`] if a Method A loader is requested but there's no Java.
     pub async fn install_modloader(
         &self,
         vanilla_dir: &Path,
@@ -355,7 +349,6 @@ impl MdtClient {
             mirror: self.mirror.clone(),
             target_dir,
             reporter: self.reporter.clone(),
-            java: self.java.clone(),
         };
         let result = installer::install_modloader(self.downloader.as_ref(), req).await;
 
@@ -386,16 +379,14 @@ impl MdtClient {
     /// itself (no `inheritsFrom`), so nothing outside that directory is needed to
     /// launch it — except the globally shared `libraries/` and `assets/`.
     ///
-    /// The vanilla version directory is not created. Method A installers (modern
-    /// Forge, NeoForge) do read `versions/<mc_version>/<mc_version>.jar` while
-    /// they run, so one is materialised for the duration of the install (and
-    /// removed afterwards) when it was not already there.
+    /// The vanilla version directory is not created: the generated profile
+    /// carries the vanilla fields itself, so only the shared `libraries/` and
+    /// `assets/` are needed beside it.
     ///
     /// # Errors
     ///
     /// * [`MdtError::VersionNotFound`] if the Minecraft version isn't in the manifest.
     /// * [`MdtError::LoaderInstallFailed`] if the loader doesn't support the version.
-    /// * [`MdtError::JavaNotFound`] if a Method A loader is requested but there's no Java.
     pub async fn install_loader(
         &self,
         mc_version: &str,
@@ -425,7 +416,6 @@ impl MdtClient {
                 &id,
                 &vanilla,
                 &vanilla_value,
-                &vanilla_text,
             )
             .await;
         if result.is_err() && created {
@@ -436,7 +426,6 @@ impl MdtClient {
     }
 
     #[cfg(not(feature = "minimal"))]
-    #[allow(clippy::too_many_arguments)]
     async fn install_loader_into(
         &self,
         mc_version: &str,
@@ -445,7 +434,6 @@ impl MdtClient {
         id: &str,
         vanilla: &crate::downloader::VersionJson,
         vanilla_value: &serde_json::Value,
-        vanilla_text: &str,
     ) -> Result<InstalledVersion, MdtError> {
         let urls = ManifestUrls::try_new(&self.mirror)?;
 
@@ -484,41 +472,14 @@ impl MdtClient {
             .await?;
         }
 
-        // 2. A Method A installer reads the vanilla profile from the game root.
-        //    Materialise one only if it is not already there, and take it away
-        //    again afterwards: the loader directory is the only install.
-        let parent_dir = self.root.join("versions").join(mc_version);
-        let temp_parent = installer::installer_needs_vanilla_profile(loader, mc_version)
-            && !parent_dir.join(format!("{mc_version}.json")).exists();
-        if temp_parent {
-            crate::io::create_dir_all(&parent_dir).await?;
-            crate::io::write(parent_dir.join(format!("{mc_version}.json")), vanilla_text).await?;
-            let jar = parent_dir.join(format!("{mc_version}.jar"));
-            let _ = std::fs::remove_file(&jar);
-            if std::fs::hard_link(
-                installer::version_dir(&self.root, id).join(format!("{id}.jar")),
-                &jar,
-            )
-            .is_err()
-            {
-                std::fs::copy(
-                    installer::version_dir(&self.root, id).join(format!("{id}.jar")),
-                    &jar,
-                )?;
-            }
-        }
-
         // 3. The loader profile itself, written into `versions/<id>`.
         let installed = self
             .install_modloader_inner(mc_version, loader, loader_version, None)
             .await;
 
-        if temp_parent {
-            let _ = crate::io::remove_dir_all(&parent_dir).await;
-        }
         let installed = installed?;
 
-        // 4. Fold the vanilla fields into the profile and drop `inheritsFrom`, so
+        // 3. Fold the vanilla fields into the profile and drop `inheritsFrom`, so
         //    the directory stands on its own.
         let json_path = installer::version_dir(&self.root, id).join(format!("{id}.json"));
         let text = crate::io::read_to_string(&json_path).await?;
@@ -633,208 +594,6 @@ impl MdtClient {
         )
         .await
     }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Set up or switch a Fabric + Quilt dual-loader instance.
-    ///
-    /// Operates on `version_dir` (`versions/<mc_version>`) in place, keeping the pristine vanilla
-    /// JSON as `<mc_version>.json.mcvanila`. Three scenarios:
-    ///
-    /// * **Vanilla** — installs Fabric then Quilt, and leaves Quilt active.
-    /// * **Single loader** — installs the missing loader (latest stable when no version is given)
-    ///   and makes it active.
-    /// * **Dual loader** — no install; copies the inactive loader's JSON over `<mc_version>.json`
-    ///   to switch context.
-    ///
-    /// When `fabric_version` / `quilt_version` are `None`, the latest stable version is fetched
-    /// from the loader's manifest.
-    ///
-    /// # Errors
-    ///
-    /// * [`MdtError::InvalidManifest`] if `version_dir` has no valid name.
-    /// * [`MdtError::LoaderInstallFailed`] if a version can't be resolved or installed.
-    pub async fn setup_dual_loader(
-        &self,
-        version_dir: &Path,
-        fabric_version: Option<&str>,
-        quilt_version: Option<&str>,
-    ) -> Result<DualLoaderInfo, MdtError> {
-        let mc_version = version_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| {
-                MdtError::InvalidManifest(format!(
-                    "version directory has no valid name: {}",
-                    version_dir.display()
-                ))
-            })?
-            .to_string();
-
-        let state = dual_loader::detect_dual_loader_state(version_dir);
-        let active = match state {
-            DualLoaderState::Vanilla => {
-                let fabric = self
-                    .resolve_loader_version(ModLoader::Fabric, fabric_version)
-                    .await?;
-                let quilt = self
-                    .resolve_loader_version(ModLoader::Quilt, quilt_version)
-                    .await?;
-                self.install_dual_loader(version_dir, ModLoader::Fabric, &fabric)
-                    .await?;
-                self.install_dual_loader(version_dir, ModLoader::Quilt, &quilt)
-                    .await?;
-                ModLoader::Quilt
-            }
-            DualLoaderState::Single { present } => {
-                let other = dual_loader::opposite(present);
-                // Preserve the present loader's canonical JSON if a legacy in-place install
-                // hasn't produced one yet.
-                self.ensure_canonical_json(version_dir, &mc_version, present)
-                    .await?;
-                let other_provided = match other {
-                    ModLoader::Fabric => fabric_version,
-                    ModLoader::Quilt => quilt_version,
-                    _ => None,
-                };
-                let other_version = self.resolve_loader_version(other, other_provided).await?;
-                self.install_dual_loader(version_dir, other, &other_version)
-                    .await?;
-                other
-            }
-            DualLoaderState::Dual => {
-                // Switch context to the inactive loader.
-                let current = dual_loader::active_loader(version_dir, &mc_version)
-                    .unwrap_or(ModLoader::Fabric);
-                let target = dual_loader::opposite(current);
-                dual_loader::switch_loader_context(version_dir, target).await?;
-                target
-            }
-        };
-
-        let fabric_version =
-            dual_loader::installed_loader_version(version_dir, &mc_version, ModLoader::Fabric);
-        let quilt_version =
-            dual_loader::installed_loader_version(version_dir, &mc_version, ModLoader::Quilt);
-
-        Ok(DualLoaderInfo {
-            mc_version,
-            fabric_version,
-            quilt_version,
-            active,
-        })
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Resolve a loader version: use `provided`, or fetch the latest stable from the manifest.
-    async fn resolve_loader_version(
-        &self,
-        loader: ModLoader,
-        provided: Option<&str>,
-    ) -> Result<String, MdtError> {
-        if let Some(v) = provided {
-            return Ok(v.to_string());
-        }
-        let entries = match loader {
-            ModLoader::Fabric => {
-                manifest::fetch_fabric_manifest(self.downloader.as_ref(), &self.mirror)
-                    .await?
-                    .loader
-            }
-            ModLoader::Quilt => {
-                manifest::fetch_quilt_manifest(self.downloader.as_ref(), &self.mirror)
-                    .await?
-                    .loader
-            }
-            other => {
-                return Err(MdtError::LoaderInstallFailed(format!(
-                    "dual loader does not support {}",
-                    other.display_name()
-                )))
-            }
-        };
-        latest_stable_loader_version(&entries).ok_or_else(|| {
-            MdtError::LoaderInstallFailed(format!(
-                "no stable {} version found",
-                loader.display_name()
-            ))
-        })
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Install `loader` in place, then keep its `<mc_version>+<Loader><ver>.json` config around
-    /// (the in-place install leaves it only as `<mc_version>.json`).
-    async fn install_dual_loader(
-        &self,
-        version_dir: &Path,
-        loader: ModLoader,
-        version: &str,
-    ) -> Result<(), MdtError> {
-        let installed = self
-            .install_modloader(version_dir, loader, version, false)
-            .await?;
-        let canonical = version_dir.join(format!("{}.json", installed.id));
-        crate::io::copy(&installed.version_json, &canonical).await?;
-        Ok(())
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Ensure the present loader has a canonical `<mc_version>+<Loader><ver>.json` file, copying
-    /// the active JSON when it doesn't (a legacy in-place install keeps the config only under
-    /// `<mc_version>.json`). The loader version is read from the JSON's `libraries`, not its `id`.
-    async fn ensure_canonical_json(
-        &self,
-        version_dir: &Path,
-        mc_version: &str,
-        loader: ModLoader,
-    ) -> Result<(), MdtError> {
-        if dual_loader::find_loader_json(version_dir, mc_version, loader).is_some() {
-            return Ok(());
-        }
-        let active = version_dir.join(format!("{mc_version}.json"));
-        let Some(version) = dual_loader::loader_version_from_json(&active, loader) else {
-            return Ok(());
-        };
-        let canonical = version_dir.join(format!(
-            "{mc_version}+{}{}.json",
-            loader.display_name(),
-            version
-        ));
-        crate::io::copy(&active, &canonical).await?;
-        Ok(())
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Detect the dual-loader state of `version_dir` (Vanilla / Single / Dual).
-    pub fn detect_dual_loader_state(&self, version_dir: &Path) -> DualLoaderState {
-        dual_loader::detect_dual_loader_state(version_dir)
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Switch the active loader context of `version_dir` to `target_loader` (Fabric or Quilt).
-    ///
-    /// Copies the target loader's canonical JSON over `<mc_version>.json`. The `.mcvanila` backup
-    /// and both loader JSONs are left untouched. The copy retries on a transient Windows sharing
-    /// violation (error 32), since the active JSON is commonly held by Defender or a launcher.
-    ///
-    /// # Panics
-    ///
-    /// This method never panics — every failure is returned as `Err`. Do **not** `.unwrap()` the
-    /// result unless you have already verified the target loader is installed (for example via
-    /// [`Self::detect_dual_loader_state`]).
-    ///
-    /// # Errors
-    ///
-    /// * [`MdtError::InvalidManifest`] if `version_dir` has no valid name, or if `target_loader`
-    ///   is not installed. **Before calling this method, make sure the target loader is
-    ///   installed** — install it with [`Self::setup_dual_loader`] and check the state with
-    ///   [`Self::detect_dual_loader_state`].
-    pub async fn switch_dual_loader_context(
-        &self,
-        version_dir: &Path,
-        target_loader: ModLoader,
-    ) -> Result<(), MdtError> {
-        dual_loader::switch_loader_context(version_dir, target_loader).await
-    }
 }
 
 /// Builder for [`MdtClient`].
@@ -849,7 +608,6 @@ pub struct MdtClientBuilder {
     proxy: Option<String>,
     connect_timeout: Duration,
     read_timeout: Duration,
-    java: Option<PathBuf>,
 }
 
 impl MdtClientBuilder {
@@ -867,19 +625,7 @@ impl MdtClientBuilder {
             proxy: None,
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(30),
-            java: None,
         }
-    }
-
-    /// Pick the Java that runs official loader installers (Forge/NeoForge).
-    ///
-    /// Without this MDT detects a JVM from `JAVA_HOME` then `PATH`, which is wrong for a launcher
-    /// that ships its own runtimes: the user may have no system Java at all, or one too old for the
-    /// installer. Installers that do not run a JVM (Fabric/Quilt/LiteLoader) ignore it.
-    #[must_use]
-    pub fn java(mut self, java: impl Into<PathBuf>) -> Self {
-        self.java = Some(java.into());
-        self
     }
 
     /// Pick a mirror (default: [`Mirror::BMCLAPI`]).
@@ -999,7 +745,7 @@ impl MdtClientBuilder {
                 #[cfg(not(any(feature = "blocking", feature = "tokio")))]
                 return Err(MdtError::MissingDownloader);
             },
-            |d| Ok(d),
+            Ok,
         )?;
 
         Ok(MdtClient {
@@ -1017,7 +763,6 @@ impl MdtClientBuilder {
             proxy: self.proxy,
             connect_timeout: self.connect_timeout,
             read_timeout: self.read_timeout,
-            java: self.java,
         })
     }
 }
