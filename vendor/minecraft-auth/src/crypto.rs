@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -14,13 +15,15 @@ pub struct EcKeyPair {
 
 impl EcKeyPair {
     pub fn generate() -> Self {
+        let mut rng = rand_core::OsRng;
         Self {
-            signing_key: SigningKey::random(&mut rand_core::OsRng),
+            signing_key: SigningKey::generate_from_rng(&mut rng)
+                .expect("OS RNG unavailable"),
         }
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
-        *self.signing_key.verifying_key()
+        self.signing_key.verifying_key().clone()
     }
 
     pub fn sign_p1363(&self, data: &[u8]) -> Vec<u8> {
@@ -109,7 +112,7 @@ mod tests {
         // ECDSA signing is randomized (RFC 6979 nonce aside), so compare via
         // verification rather than expecting identical signature bytes.
         use p256::ecdsa::signature::Verifier;
-        let sig = Signature::from_bytes(original_signature.as_slice().into()).unwrap();
+        let sig = Signature::from_slice(&original_signature).unwrap();
         restored.verifying_key().verify(b"probe", &sig).unwrap();
     }
 }

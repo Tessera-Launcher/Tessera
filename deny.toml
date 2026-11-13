@@ -1,9 +1,10 @@
 [graph]
-all-features = true
+targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
 version = 2
 yanked = "warn"
+unmaintained = "workspace"
 
 [licenses]
 version = 2
@@ -29,6 +30,7 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

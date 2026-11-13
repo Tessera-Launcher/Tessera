@@ -97,7 +97,7 @@ mod tests {
         signed.extend_from_slice(b"{}");
         signed.push(0);
 
-        let signature = Signature::from_bytes(decoded[12..].into()).unwrap();
+        let signature = Signature::from_slice(&decoded[12..]).unwrap();
         key.verifying_key().verify(&signed, &signature).unwrap();
     }
 }
