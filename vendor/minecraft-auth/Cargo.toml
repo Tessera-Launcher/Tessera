@@ -34,7 +34,6 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 httpdate = "1"
 p256 = { version = "0.14", features = ["ecdsa", "pkcs8"] }
-rand_core = { version = "0.9", features = ["std"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

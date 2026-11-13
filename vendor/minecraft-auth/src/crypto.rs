@@ -15,9 +15,8 @@ pub struct EcKeyPair {
 
 impl EcKeyPair {
     pub fn generate() -> Self {
-        let mut rng = rand_core::OsRng;
         Self {
-            signing_key: SigningKey::try_generate_from_rng(&mut rng).expect("OS RNG unavailable"),
+            signing_key: SigningKey::try_generate().expect("OS RNG unavailable"),
         }
     }
 
@@ -32,7 +31,7 @@ impl EcKeyPair {
 
     /// The JWK-shaped `ProofKey` object Xbox Live expects on signed requests.
     pub fn proof_key_jwk(&self) -> serde_json::Value {
-        let point = self.verifying_key().to_encoded_point(false);
+        let point = self.verifying_key().to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().expect("uncompressed point has x"));
         let y = URL_SAFE_NO_PAD.encode(point.y().expect("uncompressed point has y"));
         serde_json::json!({
