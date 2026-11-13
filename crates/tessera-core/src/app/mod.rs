@@ -182,10 +182,12 @@ impl TaskKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Account {
     SignedOut,
-    /// A name typed into the login overlay: no session, no account file. The
-    /// game starts offline, so only single player works.
+    /// A name stored by the login overlay: an account file with no session, so
+    /// the game starts offline and only single player works.
     Offline {
         name: String,
+        copy: u32,
+        file: PathBuf,
     },
     /// A saved account: player name, which numbered session of that player it is,
     /// the identity that issued it, and the file holding it.
@@ -205,7 +207,9 @@ impl Account {
     pub fn label(&self) -> String {
         match self {
             Account::SignedOut => "未登录".to_string(),
-            Account::Offline { name } => format!("{name} · Offline"),
+            Account::Offline { name, copy, .. } => {
+                format!("{name}{} · Offline", accounts::suffix(*copy))
+            }
             Account::SignedIn {
                 name,
                 copy,
@@ -215,12 +219,18 @@ impl Account {
         }
     }
 
-    /// The credential file behind this session, if any.
+    /// The account file behind this identity, if any. Both a session and an
+    /// offline account have one; only [`Account::SignedOut`] has nothing.
     pub fn file(&self) -> Option<&Path> {
         match self {
-            Account::SignedOut | Account::Offline { .. } => None,
-            Account::SignedIn { file, .. } => Some(file),
+            Account::SignedOut => None,
+            Account::SignedIn { file, .. } | Account::Offline { file, .. } => Some(file),
         }
+    }
+
+    /// True for an offline account: no tokens, so nothing to refresh.
+    pub fn is_offline(&self) -> bool {
+        matches!(self, Account::Offline { .. })
     }
 }
 
@@ -230,7 +240,7 @@ mod java;
 mod login;
 mod music;
 
-pub use self::account_manager::{AccountRow, AccountsUi};
+pub use self::account_manager::AccountsUi;
 pub use self::download::{DownloadStage, DownloadUi, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
@@ -263,10 +273,6 @@ pub struct App {
     pub pending_log: Vec<String>,
     pub should_quit: bool,
     pub account: Account,
-    /// The name typed on the offline login screen, kept for the session so the
-    /// account manager can list it. Offline login writes no file, so this is
-    /// gone after a restart (and [`Account::SignedOut`] is all that is left).
-    pub offline: Option<String>,
     pub screen: Screen,
     /// Where the login overlay returns to when it closes.
     login_return: Screen,
@@ -338,7 +344,6 @@ impl App {
             pending_log: Vec::new(),
             should_quit: false,
             account: Account::SignedOut,
-            offline: None,
             screen: Screen::Main,
             login_return: Screen::Main,
             login: LoginUi::default(),
@@ -1039,32 +1044,29 @@ impl App {
             }
         }
 
-        // By file, never by name: the same player may be signed in several times
-        // and only the file says which session's tokens get refreshed.
-        let account_file = self.account.file().map(Path::to_path_buf);
-
-        match account_file {
-            Some(file) => {
+        match &self.account {
+            // By file, never by name: the same player may be signed in several
+            // times and only the file says which session's tokens get refreshed.
+            Account::SignedIn { file, .. } => {
+                let file = file.clone();
                 self.status = "刷新登录令牌…".to_string();
                 self.log(format!("启动前刷新 {} 的令牌", version.dir));
                 self.refreshing = Some(file.clone());
                 self.request(Effect::RefreshSession(file));
             }
-            None => match &self.account {
-                Account::Offline { name } => {
-                    // The login overlay already chose this name: start offline.
-                    let name = name.clone();
-                    self.log("使用离线身份启动（进服务器会被拒绝）");
-                    self.start_game(launch::Credentials::offline(&name));
-                }
-                // No session and no offline name: do not invent "Player". Ask
-                // which way to sign in instead, so the first launch is never a
-                // silently fake identity.
-                _ => {
-                    self.log("没有账户：先选一种登录方式");
-                    self.open_login();
-                }
-            },
+            // The offline account file has no session, so there is nothing to
+            // refresh (and no network round trip before a single-player world).
+            Account::Offline { name, .. } => {
+                let name = name.clone();
+                self.log("使用离线身份启动（进服务器会被拒绝）");
+                self.start_game(launch::Credentials::offline(&name));
+            }
+            // No account at all: do not invent "Player". Ask which way to sign
+            // in instead, so the first launch is never a silently fake identity.
+            Account::SignedOut => {
+                self.log("没有账户：先选一种登录方式");
+                self.open_login();
+            }
         }
     }
 

@@ -9,6 +9,7 @@ fn signed_in_app(account_file: PathBuf) -> App {
         player_name: "Steve".into(),
         copy: 0,
         application: "Minecraft Launcher".into(),
+        offline: false,
     }];
     app.account = Account::SignedIn {
         name: "Steve".into(),
@@ -72,10 +73,13 @@ fn a_signed_out_launch_asks_for_a_login_instead_of_inventing_a_name() {
 
 #[test]
 fn an_offline_session_launches_without_being_asked_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (file, copy) = crate::accounts::save_offline(tmp.path(), "Steve").unwrap();
     let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
-    app.offline = Some("Steve".to_string());
     app.account = Account::Offline {
         name: "Steve".to_string(),
+        copy,
+        file,
     };
     app.request_launch();
 

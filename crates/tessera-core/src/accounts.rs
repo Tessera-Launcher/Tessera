@@ -34,8 +34,12 @@ pub struct Account {
     /// number of times, through any identity, and each session keeps its own
     /// tokens — so the number is the only thing telling them apart.
     pub copy: u32,
-    /// Which launcher identity issued the session (`Minecraft Launcher`, …).
+    /// Which launcher identity issued the session (`Minecraft Launcher`, …,
+    /// or `Offline` for a file with no session).
     pub application: String,
+    /// An offline account: a stored name and its offline UUID, no tokens. It is
+    /// launched without a refresh and can never join an online server.
+    pub offline: bool,
 }
 
 /// The `(1)`-style suffix a repeated session carries, empty for the first one.
@@ -102,6 +106,36 @@ pub fn save(
     Ok(path)
 }
 
+/// Write an offline account: a name and its offline UUID, no session.
+///
+/// Same directory, same numbering and the same private permissions as a real
+/// session, so one list can show both. The `offline` flag is what tells the
+/// launcher not to refresh it (there is nothing to refresh) and the login
+/// screen that this identity was never against a Microsoft account.
+pub fn save_offline(dir: &Path, player_name: &str) -> std::io::Result<(PathBuf, u32)> {
+    std::fs::create_dir_all(dir)?;
+    restrict_dir(dir);
+    let (path, copy) = free_slot(dir, &safe_file_stem(player_name));
+
+    let document = serde_json::json!({
+        "format": FORMAT,
+        "offline": true,
+        "application": "Offline",
+        "app_id": "",
+        "copy": copy,
+        "player": {
+            "name": player_name,
+            "uuid": crate::launch::offline_uuid(player_name),
+        },
+        "saved_at": unix_now(),
+    });
+    let body = serde_json::to_vec_pretty(&document)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+
+    write_private(&path, &body)?;
+    Ok((path, copy))
+}
+
 /// Replace `path` with `body` atomically, readable only by its owner.
 ///
 /// Used for account files by both the login flow and session refresh; see
@@ -154,6 +188,11 @@ pub fn list(dir: &Path) -> Vec<Account> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("未知身份")
                     .to_string(),
+                // Written by `save_offline`; absent from every session file.
+                offline: doc
+                    .get("offline")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
             })
         })
         .collect();
@@ -253,6 +292,58 @@ mod tests {
         );
         let dir_mode = std::fs::metadata(tmp.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "the account directory is private too");
+    }
+
+    #[test]
+    fn an_offline_account_is_a_file_without_a_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, copy) = save_offline(tmp.path(), "Steve").unwrap();
+        assert_eq!(path.file_name().unwrap(), "Steve.json");
+        assert_eq!(copy, 0);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["offline"], true);
+        assert_eq!(doc["application"], "Offline");
+        assert_eq!(doc["player"]["name"], "Steve");
+        assert!(doc.get("session").is_none());
+        // The UUID is the one the game will use offline.
+        assert_eq!(
+            doc["player"]["uuid"],
+            crate::launch::offline_uuid("Steve").as_str()
+        );
+
+        let listed = list(tmp.path());
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].offline);
+        assert_eq!(listed[0].label(), "Steve · Offline");
+    }
+
+    #[test]
+    fn a_second_offline_login_with_the_same_name_is_numbered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, _) = save_offline(tmp.path(), "Steve").unwrap();
+        let (second, copy) = save_offline(tmp.path(), "Steve").unwrap();
+        assert_eq!(first.file_name().unwrap(), "Steve.json");
+        assert_eq!(second.file_name().unwrap(), "Steve (1).json");
+        assert_eq!(copy, 1);
+
+        // A session of the same player and an offline account stay distinct.
+        let listed = list(tmp.path());
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|account| account.offline));
+        assert_eq!(listed[0].copy, 0);
+        assert_eq!(listed[1].copy, 1);
+    }
+
+    #[test]
+    fn offline_files_are_private_like_session_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, _) = save_offline(tmp.path(), "Steve").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        // No token field, so nothing secret is written at all.
+        assert!(!text.contains("access_token"));
+        assert!(!text.contains("refresh_token"));
     }
 
     #[test]

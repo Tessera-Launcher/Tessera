@@ -451,14 +451,19 @@ fn launching_without_a_managed_runtime_says_where_to_get_one() {
 }
 
 /// Open the overlay and walk to the offline-name screen.
-fn offline_screen() -> App {
-    let mut app = app();
+///
+/// The account directory is a real temp dir: an offline login writes a file, so
+/// the shared `/mc/../data` path the other tests use would fail to save.
+fn offline_screen() -> (tempfile::TempDir, App) {
+    let tmp = tempfile::tempdir().unwrap();
+    let accounts = tmp.path().join("账户");
+    let mut app = App::new("/mc", accounts, vec![version("1.20.1")], Vec::new());
     app.open_login();
     app.handle_login_key(Key::End, Modifiers::NONE);
     assert_eq!(app.login.choice, 2);
     app.handle_login_key(Key::Enter, Modifiers::NONE);
     assert_eq!(app.login.step, LoginStep::OfflineName);
-    app
+    (tmp, app)
 }
 
 fn type_name(app: &mut App, name: &str) {
@@ -469,19 +474,21 @@ fn type_name(app: &mut App, name: &str) {
 
 #[test]
 fn offline_login_accepts_a_vanilla_name_without_the_checkbox() {
-    let mut app = offline_screen();
+    let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "Steve_01");
     app.handle_login_key(Key::Enter, Modifiers::NONE);
 
     assert_eq!(app.account.label(), "Steve_01 · Offline");
-    assert_eq!(app.account.file(), None, "offline has no credential file");
+    let file = app.account.file().expect("an account file was written");
+    assert!(file.is_file());
+    assert!(file.ends_with("Steve_01.json"));
     assert!(matches!(app.login.step, LoginStep::Done { .. }));
     assert!(login_effect(&app).is_none(), "offline makes no requests");
 }
 
 #[test]
 fn offline_login_refuses_names_vanilla_would_not_allow() {
-    let mut app = offline_screen();
+    let (_tmp, mut app) = offline_screen();
     for bad in ["ab", "has space", "玩家名", "way_too_long_a_name"] {
         app.login.offline_name.clear();
         app.login.offline_error = None;
@@ -500,7 +507,7 @@ fn offline_login_refuses_names_vanilla_would_not_allow() {
 
 #[test]
 fn the_checkbox_allows_any_name_including_chinese() {
-    let mut app = offline_screen();
+    let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "中文名字 空格");
     app.handle_login_key(Key::Enter, Modifiers::NONE);
     assert_eq!(app.login.step, LoginStep::OfflineName, "still refused");
@@ -515,7 +522,7 @@ fn the_checkbox_allows_any_name_including_chinese() {
 
 #[test]
 fn an_empty_offline_name_is_never_accepted() {
-    let mut app = offline_screen();
+    let (_tmp, mut app) = offline_screen();
     app.handle_login_key(Key::Enter, Modifiers::NONE);
     assert_eq!(app.login.step, LoginStep::OfflineName);
     app.handle_login_key(Key::Tab, Modifiers::NONE);
@@ -525,7 +532,7 @@ fn an_empty_offline_name_is_never_accepted() {
 
 #[test]
 fn escape_returns_from_the_offline_screen_without_signing_in() {
-    let mut app = offline_screen();
+    let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "Steve");
     app.handle_login_key(Key::Esc, Modifiers::NONE);
     assert_eq!(app.login.step, LoginStep::Choose);
@@ -589,7 +596,7 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
 
 #[test]
 fn the_account_manager_can_start_a_fresh_login_after_an_offline_one() {
-    let mut app = offline_screen();
+    let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "Steve");
     app.handle_login_key(Key::Enter, Modifiers::NONE);
     assert_eq!(app.account.label(), "Steve · Offline");
@@ -609,9 +616,13 @@ fn the_account_manager_can_start_a_fresh_login_after_an_offline_one() {
 #[test]
 fn an_offline_account_launches_without_a_refresh() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut app = App::new(tmp.path(), "/acc", vec![version("1.20.1")], Vec::new());
+    let accounts = tmp.path().join("凭据/账户");
+    let (file, copy) = crate::accounts::save_offline(&accounts, "中文名").unwrap();
+    let mut app = App::new(tmp.path(), &accounts, vec![version("1.20.1")], Vec::new());
     app.account = Account::Offline {
         name: "中文名".to_string(),
+        copy,
+        file,
     };
     app.request_launch();
 

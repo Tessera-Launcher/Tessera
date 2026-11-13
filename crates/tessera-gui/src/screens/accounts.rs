@@ -5,16 +5,16 @@ use crate::*;
 
 impl Launcher {
     pub(crate) fn accounts_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Saved sessions first, then the offline name typed this run: the row
-        // order is the same one the keyboard walks.
-        let rows = self.state.account_rows();
+        // One row per account file: sessions first, offline accounts among them
+        // (the list is sorted by player name, not by kind).
+        let current = self.state.account.file().map(|path| path.to_path_buf());
         let mut list = div()
             .id("accounts")
             .v_flex()
             .gap_1()
             .p_2()
             .overflow_y_scroll();
-        if rows.is_empty() {
+        if self.state.accounts.is_empty() {
             list = list.child(
                 div()
                     .p_3()
@@ -23,11 +23,12 @@ impl Launcher {
                     .child("还没有账户：按 l 登录"),
             );
         }
-        for (index, row) in rows.into_iter().enumerate() {
+        for (index, account) in self.state.accounts.iter().enumerate() {
             let selected = index == self.state.accounts_ui.selected;
-            let active = row.is_active(&self.state.account);
-            let name = row.name();
-            let application = row.application().to_string();
+            let active = current.as_deref() == Some(account.file.as_path());
+            let name = account.name();
+            // `application` is `Offline` for an account file with no session.
+            let application = account.application.clone();
             list = list.child(
                 div()
                     .id(format!("account-{index}"))

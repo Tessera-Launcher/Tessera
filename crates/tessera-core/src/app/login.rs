@@ -322,7 +322,12 @@ impl App {
         };
     }
 
-    /// Validate the typed offline name and make it the current identity.
+    /// Validate the typed offline name, write it as an account file, and make it
+    /// the current identity.
+    ///
+    /// Offline accounts live in `data/凭据/账户/` like every other one, so they
+    /// show up in the account manager and survive a restart. They carry no
+    /// session, which is what keeps a launch from trying to refresh one.
     pub fn apply_offline_login(&mut self) {
         let name = self.login.offline_name.trim().to_string();
         if let Some(problem) = offline_name_problem(&name, self.login.offline_any) {
@@ -330,14 +335,38 @@ impl App {
             self.status = problem;
             return;
         }
-        self.offline = Some(name.clone());
-        self.account = Account::Offline { name: name.clone() };
+        let (file, copy) = match accounts::save_offline(&self.accounts_dir, &name) {
+            Ok(saved) => saved,
+            Err(error) => {
+                let problem = format!("无法写入账户文件：{error}");
+                self.login.offline_error = Some(problem.clone());
+                self.status = problem.clone();
+                self.log(problem);
+                return;
+            }
+        };
+        // Re-read instead of appending: the list is what the account manager and
+        // the numbered copy are read from.
+        self.accounts = accounts::list(&self.accounts_dir);
+        self.account = Account::Offline {
+            name: name.clone(),
+            copy,
+            file: file.clone(),
+        };
         self.login.step = LoginStep::Done {
             player: name.clone(),
             application: "Offline".to_string(),
         };
         self.status = format!("离线登录：{name}");
         self.log(format!("离线登录：{name}（没有会话，进服务器会被拒绝）"));
+        self.log(format!("账户已保存到 {}", file.display()));
+        if let Some(index) = self
+            .accounts
+            .iter()
+            .position(|account| account.file == file)
+        {
+            self.accounts_ui.selected = index;
+        }
     }
 
     /// Start a login as the saved id at `index`, for a front-end with the row.
