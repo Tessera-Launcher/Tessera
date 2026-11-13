@@ -67,12 +67,12 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked -p tessera-gui
 
-      - name: Upload manual preview
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload Windows build
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Tessera-Windows-x64
           path: target/release/tessera.exe
+          retention-days: 14
           if-no-files-found: error
 
   core-tests:
