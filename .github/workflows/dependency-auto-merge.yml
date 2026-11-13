@@ -1,0 +1,84 @@
+name: Dependency Auto Merge
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify Dependabot pull request
+        id: pull-request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ -z "$PR_NUMBER" ]]; then
+            PR_NUMBER="$(gh api "repos/$REPOSITORY/commits/$RUN_SHA/pulls" \
+              --jq 'map(select(.state == "open")) | first | .number // empty')"
+          fi
+
+          if [[ -z "$PR_NUMBER" || -z "$RUN_SHA" ]]; then
+            echo "Missing pull request number or head SHA."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          endpoint="repos/$REPOSITORY/pulls/$PR_NUMBER"
+          IFS=$'\t' read -r actor state head_sha head_ref head_repo < <(
+            gh api "$endpoint" --jq '[.user.login, .state, .head.sha, .head.ref, .head.repo.full_name] | @tsv'
+          )
+
+          if [[ "$actor" != "dependabot[bot]" ]]; then
+            echo "Not authored by Dependabot."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$head_ref" != dependabot/* ]]; then
+            echo "Not a Dependabot branch."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$head_repo" != "$REPOSITORY" ]]; then
+            echo "Pull request head is not in this repository."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$state" != "open" || "$head_sha" != "$RUN_SHA" ]]; then
+            echo "Pull request is closed or its head changed after CI."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "merge=true" >> "$GITHUB_OUTPUT"
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "sha=$RUN_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Merge Dependabot pull request
+        if: steps.pull-request.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ steps.pull-request.outputs.number }}
+          EXPECTED_HEAD_SHA: ${{ steps.pull-request.outputs.sha }}
+        run: |
+          current_head_sha="$(gh api "repos/$REPOSITORY/pulls/$NUMBER" --jq '.head.sha')"
+          if [[ "$current_head_sha" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "The pull request head changed before merge."
+            exit 1
+          fi
+
+          gh pr merge "$NUMBER" --repo "$REPOSITORY" --squash --delete-branch
