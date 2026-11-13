@@ -5,25 +5,29 @@ use crate::*;
 
 impl Launcher {
     pub(crate) fn accounts_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current = self.state.account.file().map(|path| path.to_path_buf());
+        // Saved sessions first, then the offline name typed this run: the row
+        // order is the same one the keyboard walks.
+        let rows = self.state.account_rows();
         let mut list = div()
             .id("accounts")
             .v_flex()
             .gap_1()
             .p_2()
             .overflow_y_scroll();
-        if self.state.accounts.is_empty() {
+        if rows.is_empty() {
             list = list.child(
                 div()
                     .p_3()
                     .text_sm()
                     .text_color(rgb(DIM))
-                    .child("还没有保存的账户"),
+                    .child("还没有账户：按 l 登录"),
             );
         }
-        for (index, account) in self.state.accounts.iter().enumerate() {
+        for (index, row) in rows.into_iter().enumerate() {
             let selected = index == self.state.accounts_ui.selected;
-            let active = current.as_deref() == Some(account.file.as_path());
+            let active = row.is_active(&self.state.account);
+            let name = row.name();
+            let application = row.application().to_string();
             list = list.child(
                 div()
                     .id(format!("account-{index}"))
@@ -57,14 +61,9 @@ impl Launcher {
                             .flex_1()
                             .text_sm()
                             .text_color(rgb(if active { ACCENT } else { TEXT }))
-                            .child(account.name()),
+                            .child(name),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(DIM))
-                            .child(account.application.clone()),
-                    ),
+                    .child(div().text_xs().text_color(rgb(DIM)).child(application)),
             );
         }
 

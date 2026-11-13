@@ -52,17 +52,36 @@ fn a_second_enter_while_refreshing_does_not_queue_another_launch() {
 }
 
 #[test]
-fn a_signed_out_launch_goes_straight_to_offline_credentials() {
+fn a_signed_out_launch_asks_for_a_login_instead_of_inventing_a_name() {
     let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
     app.request_launch();
+
+    // No account and no offline name: nothing may be launched as "Player".
     assert!(refresh_effect(&app).is_none());
+    assert!(launch_effect(&mut app).is_none(), "no fake identity");
+    assert_eq!(app.screen, Screen::Login, "the identity list is opened");
+    assert_eq!(app.login.step, LoginStep::Choose);
     assert!(
         app.log
             .iter()
-            .any(|line| line.contains("准备启动 1.20.1 · 离线（Player）")),
-        "a signed-out launch is offline: {:?}",
+            .any(|line| line.contains("没有账户：先选一种登录方式")),
+        "{:?}",
         app.log
     );
+}
+
+#[test]
+fn an_offline_session_launches_without_being_asked_again() {
+    let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
+    app.offline = Some("Steve".to_string());
+    app.account = Account::Offline {
+        name: "Steve".to_string(),
+    };
+    app.request_launch();
+
+    let (_, credentials) = launch_effect(&mut app).expect("the offline name launches");
+    assert_eq!(credentials.username, "Steve");
+    assert_eq!(credentials.user_type, "legacy");
 }
 
 #[test]

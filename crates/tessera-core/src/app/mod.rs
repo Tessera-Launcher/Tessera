@@ -205,7 +205,7 @@ impl Account {
     pub fn label(&self) -> String {
         match self {
             Account::SignedOut => "未登录".to_string(),
-            Account::Offline { name } => format!("{name} · 离线"),
+            Account::Offline { name } => format!("{name} · Offline"),
             Account::SignedIn {
                 name,
                 copy,
@@ -230,7 +230,7 @@ mod java;
 mod login;
 mod music;
 
-pub use self::account_manager::AccountsUi;
+pub use self::account_manager::{AccountRow, AccountsUi};
 pub use self::download::{DownloadStage, DownloadUi, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
@@ -263,6 +263,10 @@ pub struct App {
     pub pending_log: Vec<String>,
     pub should_quit: bool,
     pub account: Account,
+    /// The name typed on the offline login screen, kept for the session so the
+    /// account manager can list it. Offline login writes no file, so this is
+    /// gone after a restart (and [`Account::SignedOut`] is all that is left).
+    pub offline: Option<String>,
     pub screen: Screen,
     /// Where the login overlay returns to when it closes.
     login_return: Screen,
@@ -334,6 +338,7 @@ impl App {
             pending_log: Vec::new(),
             should_quit: false,
             account: Account::SignedOut,
+            offline: None,
             screen: Screen::Main,
             login_return: Screen::Main,
             login: LoginUi::default(),
@@ -1045,14 +1050,21 @@ impl App {
                 self.refreshing = Some(file.clone());
                 self.request(Effect::RefreshSession(file));
             }
-            None => {
-                let name = match &self.account {
-                    Account::SignedIn { name, .. } | Account::Offline { name } => name.clone(),
-                    Account::SignedOut => "Player".to_string(),
-                };
-                self.log("未登录，使用离线身份（进服务器会被拒绝）");
-                self.start_game(launch::Credentials::offline(&name));
-            }
+            None => match &self.account {
+                Account::Offline { name } => {
+                    // The login overlay already chose this name: start offline.
+                    let name = name.clone();
+                    self.log("使用离线身份启动（进服务器会被拒绝）");
+                    self.start_game(launch::Credentials::offline(&name));
+                }
+                // No session and no offline name: do not invent "Player". Ask
+                // which way to sign in instead, so the first launch is never a
+                // silently fake identity.
+                _ => {
+                    self.log("没有账户：先选一种登录方式");
+                    self.open_login();
+                }
+            },
         }
     }
 
@@ -1085,8 +1097,10 @@ impl App {
             SessionEvent::NeedsSignIn { username, reason } => {
                 self.status = "需要重新登录".to_string();
                 self.log(format!("登录已失效（{reason}）"));
-                self.log("按 l 重新登录；现在用离线身份启动".to_string());
-                self.start_game(launch::Credentials::offline(&username));
+                if !username.is_empty() {
+                    self.log("按 l 重新登录；现在用离线身份启动".to_string());
+                }
+                self.launch_offline_or_login(username);
             }
             SessionEvent::Failed { username, reason } => {
                 // A network hiccup must not block playing: fall back to whatever
@@ -1100,15 +1114,24 @@ impl App {
                     Ok(credentials) => self.start_game(credentials),
                     Err(error) => {
                         self.log(format!("已保存的令牌不可用：{error}"));
-                        let username = if username.is_empty() {
-                            "Player".to_string()
-                        } else {
-                            username
-                        };
-                        self.start_game(launch::Credentials::offline(&username));
+                        self.launch_offline_or_login(username);
                     }
                 }
             }
+        }
+    }
+
+    /// Start offline as `name`, or ask for a login when there is no name.
+    ///
+    /// Used when a session cannot be refreshed: a launch that already has a
+    /// player name falls back to offline play, while a nameless one sends the
+    /// user back to the identity list instead of launching as a placeholder.
+    fn launch_offline_or_login(&mut self, name: String) {
+        if name.is_empty() {
+            self.log("没有可用的玩家名：先选一种登录方式");
+            self.open_login();
+        } else {
+            self.start_game(launch::Credentials::offline(&name));
         }
     }
 

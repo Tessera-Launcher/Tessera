@@ -473,7 +473,7 @@ fn offline_login_accepts_a_vanilla_name_without_the_checkbox() {
     type_name(&mut app, "Steve_01");
     app.handle_login_key(Key::Enter, Modifiers::NONE);
 
-    assert_eq!(app.account.label(), "Steve_01 · 离线");
+    assert_eq!(app.account.label(), "Steve_01 · Offline");
     assert_eq!(app.account.file(), None, "offline has no credential file");
     assert!(matches!(app.login.step, LoginStep::Done { .. }));
     assert!(login_effect(&app).is_none(), "offline makes no requests");
@@ -509,7 +509,7 @@ fn the_checkbox_allows_any_name_including_chinese() {
     app.handle_login_key(Key::Tab, Modifiers::NONE);
     assert!(app.login.offline_any);
     app.handle_login_key(Key::Enter, Modifiers::NONE);
-    assert_eq!(app.account.label(), "中文名字 空格 · 离线");
+    assert_eq!(app.account.label(), "中文名字 空格 · Offline");
     assert!(matches!(app.login.step, LoginStep::Done { .. }));
 }
 
@@ -592,14 +592,18 @@ fn the_account_manager_can_start_a_fresh_login_after_an_offline_one() {
     let mut app = offline_screen();
     type_name(&mut app, "Steve");
     app.handle_login_key(Key::Enter, Modifiers::NONE);
-    assert_eq!(app.account.label(), "Steve · 离线");
+    assert_eq!(app.account.label(), "Steve · Offline");
 
     // Reopening starts at the identity list with the old text gone.
     app.open_accounts();
     app.open_login();
     assert_eq!(app.login.step, LoginStep::Choose);
     assert!(app.login.offline_name.is_empty());
-    assert_eq!(app.account.label(), "Steve · 离线", "still the current one");
+    assert_eq!(
+        app.account.label(),
+        "Steve · Offline",
+        "still the current one"
+    );
 }
 
 #[test]

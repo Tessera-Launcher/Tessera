@@ -330,10 +330,11 @@ impl App {
             self.status = problem;
             return;
         }
+        self.offline = Some(name.clone());
         self.account = Account::Offline { name: name.clone() };
         self.login.step = LoginStep::Done {
             player: name.clone(),
-            application: "离线".to_string(),
+            application: "Offline".to_string(),
         };
         self.status = format!("离线登录：{name}");
         self.log(format!("离线登录：{name}（没有会话，进服务器会被拒绝）"));
