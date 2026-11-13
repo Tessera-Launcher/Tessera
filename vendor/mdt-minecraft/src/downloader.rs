@@ -700,6 +700,21 @@ pub fn build_tasks_from_version_json(
     version_json: &VersionJson,
     root_dir: &Path,
 ) -> Vec<DownloadTask> {
+    build_tasks_from_version_json_into(version_json, root_dir, &version_json.id)
+}
+
+/// Build the download tasks for a version JSON, but put the version-scoped files
+/// (`<id>.jar`, `<id>-natives`) under `versions/<dir_name>` instead of
+/// `versions/<version_json.id>`.
+///
+/// Used by the self-contained loader install: the loader's directory owns the
+/// client jar and the natives it inherited, and no `versions/<mc_version>`
+/// directory is created at all.
+pub fn build_tasks_from_version_json_into(
+    version_json: &VersionJson,
+    root_dir: &Path,
+    dir_name: &str,
+) -> Vec<DownloadTask> {
     let mut tasks = Vec::new();
     let by = format!("Minecraft {}", version_json.id);
     let libraries_dir = root_dir.join("libraries");
@@ -736,8 +751,8 @@ pub fn build_tasks_from_version_json(
                 &client.url,
                 root_dir
                     .join("versions")
-                    .join(&version_json.id)
-                    .join(format!("{}.jar", version_json.id)),
+                    .join(dir_name)
+                    .join(format!("{dir_name}.jar")),
                 &client.sha1,
                 client.size,
                 Some("client.jar".to_string()),
@@ -749,8 +764,8 @@ pub fn build_tasks_from_version_json(
     // 2. libraries
     let natives_dir = root_dir
         .join("versions")
-        .join(&version_json.id)
-        .join(format!("{}-natives", version_json.id));
+        .join(dir_name)
+        .join(format!("{dir_name}-natives"));
     let os_name = std::env::consts::OS;
     let os_arch = std::env::consts::ARCH;
 

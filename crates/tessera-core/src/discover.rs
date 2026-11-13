@@ -4,7 +4,6 @@
 //! JSON, so a profile written by a loader installer (which may carry
 //! `inheritsFrom` instead of a client JAR) still lists correctly.
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use crate::version::VersionKind;
@@ -26,20 +25,20 @@ pub struct LocalVersion {
     pub kind: VersionKind,
     /// `javaVersion.majorVersion`, when the profile pins one.
     pub java: Option<u32>,
-    /// `inheritsFrom`, i.e. the vanilla version a loader profile builds on.
+    /// `inheritsFrom`, i.e. the vanilla version an older loader profile builds on.
+    ///
+    /// `None` for a self-contained loader install: it carries its vanilla fields
+    /// itself, so nothing on disk has to be its parent.
     pub inherits: Option<String>,
+    /// A mod-loader profile (self-contained or `inheritsFrom`), as opposed to a
+    /// vanilla install. Decides the Java rule and whether AOT can be trained.
+    pub loader: bool,
     /// `mainClass`, the first thing a launch layer needs.
     pub main_class: Option<String>,
     /// Whether a client JAR sits next to the profile.
     pub has_jar: bool,
     /// `releaseTime` as written, used only for ordering.
     pub release_time: Option<String>,
-    /// True when this version only exists as the parent of a loader profile.
-    ///
-    /// A loader profile is written with `inheritsFrom`, so the vanilla version it
-    /// builds on must stay on disk — but showing it next to the loader as if it
-    /// were a second, independent install is noise.
-    pub is_base_only: bool,
     /// Whether `<dir>/<dir>.json` parsed. A directory can survive an interrupted
     /// install without one; such a version is listed (so it can be removed) but
     /// is not launchable.
@@ -94,10 +93,10 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
                 kind: VersionKind::Unknown,
                 java: None,
                 inherits: None,
+                loader: false,
                 main_class: None,
                 has_jar,
                 release_time: None,
-                is_base_only: false,
                 has_profile: false,
                 aot: has_aot_cache(&dir, &id),
             },
@@ -112,18 +111,6 @@ pub fn scan(root: &Path) -> Vec<LocalVersion> {
             .then_with(|| a.id.cmp(&b.id))
     });
 
-    // Anything another profile inherits from is a base, not an install of its own:
-    // `26.3+Fabric0.20.1` inherits `26.3`, so the vanilla directory must stay on
-    // disk but does not deserve its own row.
-    let bases: HashSet<String> = found
-        .iter()
-        .filter(|version| version.inherits.is_some() || version.id.contains('+'))
-        .map(|version| version.base_version().to_string())
-        .collect();
-    for version in &mut found {
-        version.is_base_only = bases.contains(&version.id);
-    }
-
     found
 }
 
@@ -136,11 +123,10 @@ fn read_profile(dir: &Path, id: &str) -> Option<LocalVersion> {
         kind: profile.kind.unwrap_or_default(),
         java: profile.java,
         inherits: profile.inherits,
+        loader: profile.loader,
         main_class: profile.main_class,
         has_jar: dir.join(format!("{id}.jar")).is_file(),
         release_time: profile.release_time,
-        // Filled in by `scan` once every profile is known.
-        is_base_only: false,
         has_profile: true,
         aot: has_aot_cache(dir, id),
     })
@@ -233,36 +219,34 @@ mod tests {
     }
 
     #[test]
-    fn a_loader_base_is_marked_and_a_lone_vanilla_is_not() {
+    fn a_loader_profile_is_marked_as_one() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(
-            root,
-            "26.3",
-            r#"{"id":"26.3","type":"release","releaseTime":"2026-09-15T00:00:00+00:00"}"#,
-        );
-        write(
-            root,
-            "26.3+Fabric0.20.1",
-            r#"{"id":"26.3+Fabric0.20.1","inheritsFrom":"26.3",
-                "releaseTime":"2026-09-16T00:00:00+00:00"}"#,
-        );
         write(root, "1.20.1", r#"{"id":"1.20.1","type":"release"}"#);
+        // Older install: a thin profile that inherits from the vanilla version.
+        write(
+            root,
+            "1.20.1-fabric-0.15.11",
+            r#"{"id":"1.20.1-fabric-0.15.11","inheritsFrom":"1.20.1"}"#,
+        );
+        // Self-contained install: no parent, a marker instead, and its own jar.
+        write(
+            root,
+            "1.20.1-forge-47.2.0",
+            r#"{"id":"1.20.1-forge-47.2.0","mdtLoader":{"id":"forge","version":"47.2.0"}}"#,
+        );
+        std::fs::write(
+            root.join("versions/1.20.1-forge-47.2.0/1.20.1-forge-47.2.0.jar"),
+            b"jar",
+        )
+        .unwrap();
 
         let versions = scan(root);
         let by_id = |id: &str| versions.iter().find(|v| v.id == id).unwrap();
-        assert!(
-            by_id("26.3").is_base_only,
-            "26.3 is only the parent of the Fabric profile"
-        );
-        assert!(
-            !by_id("26.3+Fabric0.20.1").is_base_only,
-            "the loader profile is a real install"
-        );
-        assert!(
-            !by_id("1.20.1").is_base_only,
-            "a vanilla install nobody inherits from stays visible"
-        );
+        assert!(by_id("1.20.1-fabric-0.15.11").loader);
+        assert!(by_id("1.20.1-forge-47.2.0").loader);
+        assert!(by_id("1.20.1-forge-47.2.0").has_jar);
+        assert!(!by_id("1.20.1").loader, "vanilla stays vanilla");
     }
 
     #[test]

@@ -23,10 +23,20 @@ pub struct Profile {
     /// `javaVersion.majorVersion`.
     pub java: Option<u32>,
     pub inherits: Option<String>,
+    /// A mod-loader profile: either it inherits from a vanilla version (older
+    /// installs) or it carries the [`LOADER_MARKER`](crate::profile::LOADER_MARKER)
+    /// field a self-contained install writes.
+    pub loader: bool,
     pub main_class: Option<String>,
     /// `releaseTime` as written; only used for ordering.
     pub release_time: Option<String>,
 }
+
+/// The field a self-contained loader profile carries: `{"id": "fabric", "version": "…"}`.
+///
+/// Written by the installer, read by this module to tell a loader profile apart
+/// from vanilla now that the profile no longer has an `inheritsFrom` parent.
+pub const LOADER_MARKER: &str = "mdtLoader";
 
 /// `versions/<dir>/<dir>.json`, the file every consumer of this module reads.
 pub fn path(root: &Path, dir: &str) -> PathBuf {
@@ -56,6 +66,7 @@ pub fn from_json(text: &str) -> Option<Profile> {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
+    let inherits = string("inheritsFrom");
     Some(Profile {
         id: string("id"),
         kind: string("type").map(|raw| VersionKind::parse(&raw)),
@@ -64,7 +75,8 @@ pub fn from_json(text: &str) -> Option<Profile> {
             .and_then(|version| version.get("majorVersion"))
             .and_then(serde_json::Value::as_u64)
             .map(|major| major as u32),
-        inherits: string("inheritsFrom"),
+        loader: inherits.is_some() || json.get(LOADER_MARKER).is_some(),
+        inherits,
         main_class: string("mainClass"),
         release_time: string("releaseTime"),
     })

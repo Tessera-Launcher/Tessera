@@ -222,11 +222,13 @@ pub fn spawn_install(
                     .map(|_| ())
                     .map_err(|error| describe(&error))?,
                 Some(loader_version) => client
-                    .full_install(
+                    // Self-contained: the loader directory gets the client jar,
+                    // the natives and a profile that carries the vanilla fields
+                    // itself. No `versions/<version>/` is created beside it.
+                    .install_loader(
                         &version,
                         loader.to_mdt().expect("checked above"),
                         loader_version,
-                        true,
                     )
                     .await
                     .map(|_| ())

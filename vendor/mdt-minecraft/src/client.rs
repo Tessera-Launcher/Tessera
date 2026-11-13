@@ -288,7 +288,25 @@ impl MdtClient {
             self.reporter.as_ref(),
             &format!("install_modloader: resolved mc_version={mc_version}"),
         );
+        let target = (!isolate).then(|| vanilla_dir.to_path_buf());
+        self.install_modloader_inner(&mc_version, loader, loader_version, target)
+            .await
+    }
 
+    /// The install itself, once the Minecraft version is known.
+    ///
+    /// `target_dir` is `None` for an isolated install (`versions/<loader id>`) and `Some(vanilla_dir)`
+    /// for an in-place one. Split out so [`Self::install_loader`] can install without a vanilla
+    /// version directory on disk at all.
+    #[cfg(not(feature = "minimal"))]
+    async fn install_modloader_inner(
+        &self,
+        mc_version: &str,
+        loader: ModLoader,
+        loader_version: &str,
+        target_dir: Option<PathBuf>,
+    ) -> Result<InstalledVersion, MdtError> {
+        let mc_version = mc_version.to_string();
         if !loader.compatible_with(&mc_version) {
             return Err(MdtError::LoaderInstallFailed(format!(
                 "{} is not compatible with Minecraft {}",
@@ -301,17 +319,12 @@ impl MdtClient {
         // that directory starts empty on purpose: the profile inherits from the vanilla version,
         // so duplicating the vanilla files here would only double the client JAR and the natives.
         // An in-place install writes into `vanilla_dir` instead.
-        let isolated_dir = isolate.then(|| {
+        let isolated_dir = target_dir.is_none().then(|| {
             installer::version_dir(
                 &self.root,
                 &installer::installer_version_id(&mc_version, loader, loader_version),
             )
         });
-        let target_dir = if isolate {
-            None
-        } else {
-            Some(vanilla_dir.to_path_buf())
-        };
         // Whether this call is the one that brings the directory into existence: only then is it
         // safe to clean up after a failure.
         let created_here = isolated_dir.as_ref().is_some_and(|dir| !dir.exists());
@@ -344,6 +357,172 @@ impl MdtClient {
             }
         }
         result
+    }
+
+    #[cfg(not(feature = "minimal"))]
+    /// Install a mod loader as a **self-contained** version directory.
+    ///
+    /// This is the install a launcher wants when it should not keep a second
+    /// vanilla version around: `versions/<mc>-<loader>-<version>/` ends up holding
+    /// the client jar, the natives and a profile that carries the vanilla fields
+    /// itself (no `inheritsFrom`), so nothing outside that directory is needed to
+    /// launch it — except the globally shared `libraries/` and `assets/`.
+    ///
+    /// The vanilla version directory is not created. Method A installers (modern
+    /// Forge, NeoForge) do read `versions/<mc_version>/<mc_version>.jar` while
+    /// they run, so one is materialised for the duration of the install (and
+    /// removed afterwards) when it was not already there.
+    ///
+    /// # Errors
+    ///
+    /// * [`MdtError::VersionNotFound`] if the Minecraft version isn't in the manifest.
+    /// * [`MdtError::LoaderInstallFailed`] if the loader doesn't support the version.
+    /// * [`MdtError::JavaNotFound`] if a Method A loader is requested but there's no Java.
+    pub async fn install_loader(
+        &self,
+        mc_version: &str,
+        loader: ModLoader,
+        loader_version: &str,
+    ) -> Result<InstalledVersion, MdtError> {
+        self.reporter
+            .status(&format!("读取 {mc_version} 的版本清单…"));
+        let (vanilla_text, vanilla) =
+            manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, mc_version)
+                .await?;
+        let vanilla_value: serde_json::Value =
+            serde_json::from_str(&vanilla_text).map_err(|error| {
+                MdtError::JsonParseError(error)
+                    .context(format!("parsing version JSON for {mc_version}"))
+            })?;
+        let id = installer::installer_version_id(mc_version, loader, loader_version);
+        let vdir = installer::version_dir(&self.root, &id);
+        let created = !vdir.exists();
+        crate::io::create_dir_all(&vdir).await?;
+
+        let result = self
+            .install_loader_into(
+                mc_version,
+                loader,
+                loader_version,
+                &id,
+                &vanilla,
+                &vanilla_value,
+                &vanilla_text,
+            )
+            .await;
+        if result.is_err() && created {
+            // Only a directory this call brought into existence may be removed.
+            let _ = crate::io::remove_dir_all(&vdir).await;
+        }
+        result
+    }
+
+    #[cfg(not(feature = "minimal"))]
+    #[allow(clippy::too_many_arguments)]
+    async fn install_loader_into(
+        &self,
+        mc_version: &str,
+        loader: ModLoader,
+        loader_version: &str,
+        id: &str,
+        vanilla: &crate::downloader::VersionJson,
+        vanilla_value: &serde_json::Value,
+        vanilla_text: &str,
+    ) -> Result<InstalledVersion, MdtError> {
+        let urls = ManifestUrls::try_new(&self.mirror)?;
+
+        // 1. The files the loader profile needs from the vanilla version, written
+        //    into the loader's own directory (`<id>.jar`, `<id>-natives`).
+        let tasks = downloader::build_tasks_from_version_json_into(vanilla, &self.root, id);
+        self.reporter.status(&format!(
+            "下载 {mc_version} 的游戏文件：jar / 依赖库 / natives，共 {} 个",
+            tasks.len()
+        ));
+        downloader::execute_downloads(
+            self.downloader.as_ref(),
+            tasks,
+            self.concurrency,
+            &self.mirror,
+            &urls,
+            self.reporter.as_ref(),
+        )
+        .await?;
+
+        if let Some(asset_index) = &vanilla.asset_index {
+            self.reporter.status(&format!(
+                "同步 {mc_version} 的游戏资源文件（索引 {}）…",
+                asset_index.id
+            ));
+            AssetRegistry::fetch_and_sync(
+                &self.root,
+                asset_index,
+                id,
+                self.downloader.as_ref(),
+                self.asset_concurrency,
+                &self.mirror,
+                &urls,
+                self.reporter.as_ref(),
+            )
+            .await?;
+        }
+
+        // 2. A Method A installer reads the vanilla profile from the game root.
+        //    Materialise one only if it is not already there, and take it away
+        //    again afterwards: the loader directory is the only install.
+        let parent_dir = self.root.join("versions").join(mc_version);
+        let temp_parent = installer::installer_needs_vanilla_profile(loader, mc_version)
+            && !parent_dir.join(format!("{mc_version}.json")).exists();
+        if temp_parent {
+            crate::io::create_dir_all(&parent_dir).await?;
+            crate::io::write(parent_dir.join(format!("{mc_version}.json")), vanilla_text).await?;
+            let jar = parent_dir.join(format!("{mc_version}.jar"));
+            let _ = std::fs::remove_file(&jar);
+            if std::fs::hard_link(
+                installer::version_dir(&self.root, id).join(format!("{id}.jar")),
+                &jar,
+            )
+            .is_err()
+            {
+                std::fs::copy(
+                    installer::version_dir(&self.root, id).join(format!("{id}.jar")),
+                    &jar,
+                )?;
+            }
+        }
+
+        // 3. The loader profile itself, written into `versions/<id>`.
+        let installed = self
+            .install_modloader_inner(mc_version, loader, loader_version, None)
+            .await;
+
+        if temp_parent {
+            let _ = crate::io::remove_dir_all(&parent_dir).await;
+        }
+        let installed = installed?;
+
+        // 4. Fold the vanilla fields into the profile and drop `inheritsFrom`, so
+        //    the directory stands on its own.
+        let json_path = installer::version_dir(&self.root, id).join(format!("{id}.json"));
+        let text = crate::io::read_to_string(&json_path).await?;
+        let profile: serde_json::Value =
+            serde_json::from_str(&text).map_err(MdtError::JsonParseError)?;
+        let merged = installer::merge_vanilla_profile(
+            vanilla_value,
+            &profile,
+            id,
+            &loader.display_name().to_lowercase(),
+            loader_version,
+        );
+        crate::io::write(
+            &json_path,
+            serde_json::to_string_pretty(&merged).map_err(MdtError::JsonParseError)?,
+        )
+        .await?;
+
+        Ok(InstalledVersion {
+            id: id.to_string(),
+            ..installed
+        })
     }
 
     #[cfg(not(feature = "minimal"))]

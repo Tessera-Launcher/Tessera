@@ -500,7 +500,7 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
         loader: None,
     });
     app.all_versions = vec![version("26.3")];
-    app.apply_version_filter();
+    app.rebuild_version_list();
     app.selected = 0;
     app.take_effects();
     app.start_aot_training();
@@ -543,7 +543,7 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
 #[test]
 fn only_vanilla_versions_can_be_trained() {
     let mut loader = version("1.8.9-forge-11.15.0.1656");
-    loader.inherits = Some("1.8.9".to_string());
+    loader.loader = true;
     let mut app = App::new("/mc", "/acc", vec![loader], Vec::new());
     app.start_aot_training();
     assert!(app.aot.training.is_none());

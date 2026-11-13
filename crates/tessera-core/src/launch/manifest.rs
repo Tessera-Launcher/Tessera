@@ -28,6 +28,9 @@ pub(super) struct RawVersion {
     assets: Option<String>,
     #[serde(rename = "javaVersion", default)]
     java_version: Option<JavaVersion>,
+    /// Present on a self-contained loader profile: `{"id": "fabric", "version": "…"}`.
+    #[serde(rename = "mdtLoader", default)]
+    loader_marker: Option<serde_json::Value>,
     #[serde(rename = "type", default)]
     version_type: Option<String>,
     #[serde(default)]
@@ -111,6 +114,9 @@ pub(super) struct Merged {
     pub(super) java_version: u32,
     pub(super) version_type: String,
     pub(super) parents: Vec<String>,
+    /// A mod-loader profile, self-contained or inheriting: it gets the loader
+    /// Java pin and is refused by AOT training.
+    pub(super) loader: bool,
 }
 
 impl Merged {
@@ -418,6 +424,9 @@ pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged>
         if index > 0 {
             merged.parents.push(version.id.clone());
         }
+        // A marker in the profile itself, or anything it inherits from, makes
+        // this a loader launch.
+        merged.loader |= version.loader_marker.is_some() || index > 0;
         if merged.main_class.is_empty() {
             if let Some(main_class) = &version.main_class {
                 merged.main_class = main_class.clone();

@@ -24,7 +24,7 @@ const MODERN_FORGE_MIN: McVersion = McVersion::new(1, 13, 0);
 /// (Method A). Older versions are unpacked by hand (Method B) but keep the
 /// installer's own `<mc>-forge-<ver>` id: Forge 1.8.9's FML URL-decodes the
 /// version name, so a `+` in the directory name breaks it.
-fn uses_official_installer(mc_version: &str) -> bool {
+pub(super) fn uses_official_installer(mc_version: &str) -> bool {
     // Unparseable versions (e.g. snapshots) are treated as modern.
     match McVersion::parse(mc_version) {
         Some(v) => v >= MODERN_FORGE_MIN,

@@ -50,7 +50,7 @@ pub(super) fn prepare_inner(
     } else {
         None
     };
-    let kind = java_kind(!merged.parents.is_empty(), Some(&merged.main_class));
+    let kind = java_kind(merged.loader, Some(&merged.main_class));
     let (java, java_major) = if let Some(selection) = &aot {
         (selection.java.clone(), selection.java_major)
     } else if let Some(override_java) = java_override {
@@ -213,8 +213,9 @@ pub(super) fn prepare_inner(
     // as the file because it is guaranteed to exist.
     //
     // Loader profiles are not covered: their metadata pins Java 8, where this
-    // netty works, so they never reach the broken path.
-    if merged.parents.is_empty() && is_1_8(&merged.id) {
+    // netty works, so they never reach the broken path. `loader` rather than
+    // "has a parent": a self-contained Forge install has no parent either.
+    if !merged.loader && is_1_8(&merged.id) {
         if let Ok(exe) = std::env::current_exe() {
             args.push(format!("-Dio.netty.native.workdir={}", exe.display()));
         }

@@ -283,6 +283,40 @@ every loader directory, so installing one loader cost two installs' worth of dis
 Nothing in the generated JSON changed, so the vanilla profile is still required
 on disk — it is the `inheritsFrom` parent and the owner of the shared client jar.
 
+### 13. `install_loader`: a loader that needs no vanilla directory
+
+Section 12 stopped *cloning* vanilla into the loader directory, but the vanilla
+profile still had to exist: the loader JSON inherited from it. Tessera asks for
+the opposite layout — `versions/` holds exactly the loader install, nothing
+beside it — so the crate gained a self-contained install path.
+
+- `downloader::build_tasks_from_version_json_into(version_json, root, dir_name)`
+  puts the version-scoped files (`<dir>.jar`, `<dir>-natives`) under an explicit
+  directory. The old `build_tasks_from_version_json` delegates with the JSON's own
+  id, so every existing caller is unchanged.
+- `installer::merge_vanilla_profile(vanilla, loader, …)` folds the vanilla fields
+  into the loader profile the way an `inheritsFrom` merge would produce them —
+  loader `mainClass`/arguments/libraries first, vanilla's fields appended, assets
+  and `javaVersion` taken from whoever declares them — then removes
+  `inheritsFrom` and writes `mdtLoader: {"id": …, "version": …}`. That marker is
+  the only thing left on disk that says "this is a loader profile": without it a
+  launcher would apply vanilla rules (its own Java choice, AOT training) to Forge.
+- `MdtClient::install_loader(mc_version, loader, loader_version)` fetches the
+  vanilla version JSON without writing `versions/<mc_version>`, downloads the
+  client jar and natives into `versions/<loader id>`, installs the loader there,
+  and merges the profile. Shared `libraries/` and `assets/` are used as before.
+- Method A installers (modern Forge, NeoForge) read
+  `versions/<mc_version>/<mc_version>.jar` from the game root while they run, so
+  `installer::installer_needs_vanilla_profile` marks them and a temporary parent
+  profile is created for the duration of the install (the jar is a hard link to
+  the one already downloaded, so nothing is copied) and removed afterwards unless
+  it was already there.
+- On failure, only a loader directory this call created is removed.
+
+The old entry points stay: `install_modloader`/`full_install` still install the
+vanilla version first and write an `inheritsFrom` profile, for callers that want
+that layout.
+
 ## Example
 
 `examples/download_bench.rs` installs 1.8.9 from a chosen mirror into a directory passed on the
@@ -298,7 +332,8 @@ cargo run --release --example download_bench -- /tmp/mdt-1.8.9 --asset-concurren
 
 The changes touch `src/downloader.rs` (struct fields, classifier selection, task
 dedupe, progress cadence), `src/asset.rs` (materialisation), `src/client.rs`
-(`VanillaInstall`, installer JVM, no vanilla clone), `src/http.rs` (HTTP/1.1 default),
+(`VanillaInstall`, installer JVM), `src/client.rs` (no vanilla clone, `install_loader`),
+`src/http.rs` (HTTP/1.1 default),
 `src/installer/*` (version ids, legacy Forge), `src/lib.rs` (exports) and the
 tests beside them. They do not touch the mirror/URL/provider table, so upstream
 mirror work applies cleanly; re-run the crate's tests after a rebase and re-check

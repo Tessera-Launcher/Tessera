@@ -1,52 +1,49 @@
-//! Hiding and revealing a loader profile's base version.
+//! Loader installs are rows of their own: nothing is hidden next to them.
 
 use super::*;
 
-fn base_only(id: &str) -> LocalVersion {
+fn loader(id: &str, base: &str) -> LocalVersion {
     LocalVersion {
-        is_base_only: true,
+        loader: true,
+        inherits: Some(base.to_string()),
         ..version(id)
     }
 }
 
 #[test]
-fn loader_bases_are_hidden_by_default_and_reappear_on_demand() {
-    let mut app = App::new(
+fn a_loader_install_is_listed_beside_a_vanilla_one() {
+    let app = App::new(
         "/mc",
         "/acc",
-        vec![version("26.3+Fabric0.20.1"), base_only("26.3")],
+        vec![version("26.3"), loader("26.3+Fabric0.20.1", "26.3")],
         vec![],
     );
-    assert_eq!(app.versions.len(), 1, "only the loader install is listed");
-    assert_eq!(app.versions[0].id, "26.3+Fabric0.20.1");
-
-    app.toggle_base_versions();
-    assert_eq!(app.versions.len(), 2);
-    assert!(app.show_base_versions);
-
-    app.toggle_base_versions();
-    assert_eq!(app.versions.len(), 1, "hidden again");
+    assert_eq!(app.versions.len(), 2, "both installs are listed");
+    assert_eq!(app.versions[1].id, "26.3+Fabric0.20.1");
 }
 
 #[test]
-fn hiding_a_base_keeps_the_selection_on_a_real_version() {
-    let mut app = App::new(
+fn a_self_contained_loader_has_no_parent_at_all() {
+    let app = App::new(
         "/mc",
         "/acc",
-        vec![version("26.3+Fabric0.20.1"), base_only("26.3")],
+        vec![LocalVersion {
+            loader: true,
+            inherits: None,
+            ..version("26.3-fabric-0.20.1")
+        }],
         vec![],
     );
-    // Show everything and select the base, then hide again.
-    app.toggle_base_versions();
-    app.select_next();
-    assert_eq!(app.selected_version().map(|v| v.id.as_str()), Some("26.3"));
-    app.toggle_base_versions();
     assert_eq!(app.versions.len(), 1);
-    assert_eq!(app.selected, 0, "clamped to the remaining row");
+    assert!(app.versions[0].loader);
+    assert_eq!(
+        app.selected_version().map(|v| v.id.as_str()),
+        Some("26.3-fabric-0.20.1")
+    );
 }
 
 #[test]
-fn reload_rescans_and_reapplies_the_filter() {
+fn reload_lists_every_directory_on_disk() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let write = |id: &str, json: &str| {
@@ -57,13 +54,15 @@ fn reload_rescans_and_reapplies_the_filter() {
     let mut app = App::new(root, "/acc", vec![], vec![]);
     write("26.3", r#"{"id":"26.3"}"#);
     app.reload();
-    assert_eq!(app.versions.len(), 1, "plain vanilla is visible");
+    assert_eq!(app.versions.len(), 1);
 
     write(
         "26.3+Fabric0.20.1",
         r#"{"id":"26.3+Fabric0.20.1","inheritsFrom":"26.3"}"#,
     );
     app.reload();
-    assert_eq!(app.versions.len(), 1, "the base is hidden after reload");
-    assert_eq!(app.versions[0].id, "26.3+Fabric0.20.1");
+    assert_eq!(app.versions.len(), 2, "nothing is filtered out");
+    let loaders: Vec<_> = app.versions.iter().filter(|v| v.loader).collect();
+    assert_eq!(loaders.len(), 1);
+    assert_eq!(loaders[0].id, "26.3+Fabric0.20.1");
 }

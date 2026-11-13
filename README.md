@@ -49,7 +49,7 @@ Windows / macOS 无需额外系统包。音乐播放不依赖 FFmpeg 或系统�
 | `↑` `↓` `j` `k` / `Home` `g` / `End` `G` | 选择 |
 | `Enter` / 双击行 | 启动（列表里是切换/确认） |
 | `x` `Delete` | 卸载，先问一次再按一次才删 |
-| `d` / `a` / `v` / `m` / `l` / `r` / `h` | 下载 / 账户 / Java / 音乐 / 登录 / 重扫 / 折叠基础版本 |
+| `d` / `a` / `v` / `m` / `l` / `r` | 下载 / 账户 / Java / 音乐 / 登录 / 重扫 |
 | `PageUp` `PageDown` | 翻日志（主页） |
 | `Tab` | 切换焦点（下载 / Java / 音乐页） |
 | `Esc` `q` | 返回上一屏；主界面上是退出 |
@@ -89,15 +89,22 @@ Mod Loader profile 按元数据固定用 Java 8，那里的 epoll 是好的。cl
 缺元数据时按版本号推。但原版（含 1.0–1.5.2 的 LaunchWrapper 时代）一律锁在
 **Java 28 EA**——启动补丁只在那一个运行时上验证过，磁盘上装了别的 Java 也不会用它，
 没装就提示去下载。要跑 AOT 缓存也用同一个 Java（缓存只在写它的 JVM 上重放），
-两条路径因此一致。Mod Loader profile 仍按元数据 pin，要求 8 的就只接受 8。
+两条路径因此一致。Mod Loader profile（靠 `mdtLoader` 标记或 `inheritsFrom` 认出）仍按
+元数据 pin，要求 8 的就只接受 8。
 
 **下载**：`d` 打开选版本界面，`/` 搜索、`f` 循环类型、`Space` 展开快照族（搜索/筛选时
 一律平铺）、`Tab` 切焦点。右下角切换下载源（默认 BMCLAPI，`s` 键），只影响本次运行，
 不写盘。Loader 版本取该 MC 版本的最新构建，Forge/NeoForge 安装器同样跑在
-`data/运行时/` 的 Java 上。Loader 只装自己的 profile（`versions/<mc>-<loader>-<版本>/`
-里只有一个 json，`inheritsFrom` 指向原版）：客户端 jar、natives、assets 都由那一份原版
-提供，不会在每个 Loader 目录里再复制一遍。进度页可 `Esc` 退出，下载在后台继续，完成后
-自动重扫版本。
+`data/运行时/` 的 Java 上。**Loader 安装是自包含的**：只产生
+`versions/<mc>-<loader>-<版本>/` 一个目录，里面有客户端 jar、`-natives` 和一份把原版
+字段并进来的 profile（没有 `inheritsFrom`，靠 `mdtLoader` 标记自己）。由此：
+
+- `versions/` 里装了 Loader 就只多这一个目录，不会额外生成一份原版；
+- 新版 Forge/NeoForge 的官方安装器运行时会读 `versions/<mc>/<mc>.jar`，所以安装期间会
+  临时补一份（本来就存在就复用），装完就删掉；
+- `libraries/`、`assets/` 仍然是全局共享的，同一套资源只占一份。
+
+进度页可 `Esc` 退出，下载在后台继续，完成后自动重扫版本。
 
 **Java 下载**：`v` 打开，Adoptium 的 8 / 17 / 21 / 25 / 28 EA 最新 JRE，元数据与
 SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换源，`p` 设 GitHub Proxy，
@@ -115,7 +122,8 @@ SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换
 关闭音乐页会停掉声音；用侧栏切到别的页面则继续播放，切回来看到的是同一首、同一个位置。
 
 **卸载**：删除版本后按引用计数清理 `libraries/`、`assets/{objects,indexes,virtual}`、
-`resources/` 和下载缓存；引用了它的 Loader 版本会一并删除。引用集故意取超集、不做
+`resources/` 和下载缓存；老式（带 `inheritsFrom`）的 Loader 版本会一并删除——自包含
+安装不引用别人，所以不受影响。引用集故意取超集、不做
 `rules` 过滤；任何版本 JSON 读不出来就整个跳过清理。硬链接按 (dev, inode) 归组统计
 释放量，不虚报。
 

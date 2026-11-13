@@ -63,7 +63,6 @@ fn uninstall_takes_dependent_loader_profiles_with_the_base() {
         r#"{"id":"1.20.1+Fabric0.15.11","inheritsFrom":"1.20.1"}"#,
     );
     let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
-    app.toggle_base_versions();
     select(&mut app, "1.20.1");
 
     app.request_uninstall();

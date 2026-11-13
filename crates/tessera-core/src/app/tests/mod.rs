@@ -94,10 +94,10 @@ fn version(id: &str) -> LocalVersion {
         kind: crate::version::VersionKind::Release,
         java: Some(17),
         inherits: None,
+        loader: false,
         main_class: Some("net.minecraft.client.main.Main".to_string()),
         has_jar: true,
         release_time: None,
-        is_base_only: false,
         has_profile: true,
         aot: false,
     }

@@ -653,8 +653,7 @@ fn a_loader_profile_merges_its_parent_and_wins_the_classpath_order() {
     // The parent's legacy arguments are used because the child has no game args.
     assert!(launch.command.args.iter().any(|arg| arg == "--username"));
     assert!(launch.command.args.iter().any(|arg| arg == "Steve"));
-    // MDT copies the vanilla directory, natives included, so the copy's own
-    // `-natives` folder is what a launch should point at.
+    // The parent's natives folder is what a thin loader profile points at.
     assert_eq!(
         launch.natives.as_deref(),
         Some(
@@ -669,6 +668,90 @@ fn a_loader_profile_merges_its_parent_and_wins_the_classpath_order() {
         .iter()
         .any(|arg| arg.starts_with("-Djava.library.path=")));
     assert!(launch.command.args.iter().any(|arg| arg == "-Xmx2048M"));
+}
+
+#[test]
+fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let id = "1.20.1-fabric-0.15.11";
+    // One directory, exactly what the self-contained install writes: the merged
+    // profile, the client jar and the natives. No `versions/1.20.1` at all.
+    write_version(
+        root,
+        id,
+        serde_json::json!({
+            "id": id,
+            "type": "release",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "javaVersion": { "majorVersion": 21 },
+            "assetIndex": { "id": "17" },
+            "mdtLoader": { "id": "fabric", "version": "0.15.11" },
+            "arguments": {
+                "jvm": [
+                    "-Djava.library.path=${natives_directory}",
+                    "-cp",
+                    "${classpath}"
+                ],
+                "game": ["--username", "${auth_player_name}"]
+            },
+            "libraries": [
+                { "name": "net.fabricmc:fabric-loader:0.15.11",
+                  "downloads": { "artifact": { "path": "net/fabricmc/fabric-loader/0.15.11/fabric-loader-0.15.11.jar" } } },
+                { "name": "com.mojang:patchy:1.1",
+                  "downloads": { "artifact": { "path": "com/mojang/patchy/1.1/patchy-1.1.jar" } } }
+            ]
+        }),
+    );
+    let version_dir = root.join("versions").join(id);
+    for library in [
+        "net/fabricmc/fabric-loader/0.15.11/fabric-loader-0.15.11.jar",
+        "com/mojang/patchy/1.1/patchy-1.1.jar",
+    ] {
+        let path = root.join("libraries").join(library);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"jar").unwrap();
+    }
+    std::fs::write(version_dir.join(format!("{id}.jar")), b"jar").unwrap();
+    std::fs::create_dir_all(version_dir.join(format!("{id}-natives"))).unwrap();
+
+    // Both runtimes: the loader rule has to pick the exact pin, not the newest.
+    managed_runtime(root, 21);
+    let options = Options {
+        runtimes: Some(managed_runtime(root, 28)),
+        ..Options::default()
+    };
+    let launch = prepare(root, id, &Credentials::offline("Steve"), &options).unwrap();
+
+    assert!(
+        !root.join("versions/1.20.1").exists(),
+        "nothing must have to exist beside the loader directory"
+    );
+    assert_eq!(launch.required_major, 21);
+    assert_eq!(launch.java_major, 21, "the loader pin wins over the newest");
+    assert_eq!(
+        launch.main_class,
+        "net.fabricmc.loader.impl.launch.knot.KnotClient"
+    );
+    assert_eq!(launch.classpath_entries, 3, "2 libraries + client jar");
+
+    let args = &launch.command.args;
+    let classpath = args
+        .iter()
+        .position(|arg| arg == "-cp")
+        .map(|index| args[index + 1].clone())
+        .expect("classpath");
+    let entries: Vec<&str> = classpath.split(&[':', ';'][..]).collect();
+    assert!(entries[0].contains("fabric-loader"), "{classpath}");
+    assert!(entries.last().unwrap().ends_with(&format!("{id}.jar")));
+    // The profile's own natives folder, not a parent's.
+    assert_eq!(
+        launch.natives.as_deref(),
+        Some(version_dir.join(format!("{id}-natives")).as_path())
+    );
+    // A loader profile never gets the LaunchWrapper shim.
+    assert!(!args.iter().any(|arg| arg.starts_with("-javaagent:")));
+    assert!(args.iter().any(|arg| arg == "--username"));
 }
 
 #[test]

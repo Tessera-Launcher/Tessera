@@ -257,11 +257,10 @@ pub struct App {
     pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
     pub all_versions: Vec<LocalVersion>,
-    /// What the list shows: `all_versions` without base-only entries unless
-    /// [`App::show_base_versions`] is on.
+    /// What the list shows. Every install gets a row: a self-contained loader
+    /// directory is an install of its own, not a footnote to a vanilla one.
     pub versions: Vec<LocalVersion>,
     /// Whether loader bases get their own row (toggled with `h`).
-    pub show_base_versions: bool,
     pub accounts: Vec<SavedAccount>,
     pub selected: usize,
     pub status: String,
@@ -337,7 +336,6 @@ impl App {
             runtimes,
             all_versions: versions,
             versions: Vec::new(),
-            show_base_versions: false,
             accounts,
             selected: 0,
             log: VecDeque::new(),
@@ -366,7 +364,7 @@ impl App {
         };
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
-        app.apply_version_filter();
+        app.rebuild_version_list();
         app.refresh_java();
         app.launch_options.runtimes = Some(app.runtimes.clone());
 
@@ -411,7 +409,7 @@ impl App {
         if version.aot {
             return Some(28);
         }
-        let kind = launch::java_kind(version.inherits.is_some(), version.main_class.as_deref());
+        let kind = launch::java_kind(version.loader, version.main_class.as_deref());
         if kind == launch::JavaKind::Loader {
             return version.java;
         }
@@ -435,7 +433,7 @@ impl App {
         self.size_cache = None;
         self.all_versions = discover::scan(&self.root);
         self.refresh_java();
-        self.apply_version_filter();
+        self.rebuild_version_list();
         self.selected = keep
             .and_then(|dir| self.versions.iter().position(|v| v.dir == dir))
             .unwrap_or(0);
@@ -458,7 +456,7 @@ impl App {
             self.status = "未选择版本".to_string();
             return;
         };
-        if version.inherits.is_some() {
+        if version.loader {
             self.status = "只有原版版本可以训练 AOT".to_string();
             self.log("Mod Loader 用自定义类加载器加载游戏，那些类进不了 AOT 缓存，所以不训练");
             return;
@@ -598,7 +596,6 @@ impl App {
             Key::Home | Key::Char('g') => self.select_first(),
             Key::End | Key::Char('G') => self.select_last(),
             Key::Char('r') => self.reload(),
-            Key::Char('h') => self.toggle_base_versions(),
             Key::Char('l') => self.open_login(),
             Key::Char('a') => self.open_accounts(),
             Key::Char('d') => self.open_download(),
@@ -619,34 +616,12 @@ impl App {
         }
     }
 
-    /// Recompute the visible list from `all_versions` and the base-version toggle.
-    fn apply_version_filter(&mut self) {
-        self.versions = self
-            .all_versions
-            .iter()
-            .filter(|version| self.show_base_versions || !version.is_base_only)
-            .cloned()
-            .collect();
+    /// Rebuild the visible list from what was scanned.
+    fn rebuild_version_list(&mut self) {
+        self.versions = self.all_versions.clone();
         if self.selected >= self.versions.len() {
             self.selected = self.versions.len().saturating_sub(1);
         }
-    }
-
-    /// Show or hide loader bases (`h`).
-    pub fn toggle_base_versions(&mut self) {
-        self.show_base_versions = !self.show_base_versions;
-        self.uninstall_confirm = None;
-        let keep = self.selected_version().map(|v| v.dir.clone());
-        self.apply_version_filter();
-        if let Some(dir) = keep {
-            self.selected = self.versions.iter().position(|v| v.dir == dir).unwrap_or(0);
-        }
-        self.status = if self.show_base_versions {
-            format!("显示全部 {} 个版本（含基础版本）", self.versions.len())
-        } else {
-            format!("{} 个版本（已隐藏基础版本）", self.versions.len())
-        };
-        self.log(self.status.clone());
     }
 
     pub fn selected_version(&self) -> Option<&LocalVersion> {
@@ -873,12 +848,10 @@ impl App {
             return;
         }
 
-        // Rescan rather than filtering in memory: `is_base_only` is derived from
-        // what is on disk, and a base whose last dependant just disappeared has
-        // to become visible again (`h` would otherwise show a phantom base).
+        // Rescan rather than filtering in memory: what is on disk is the list.
         self.all_versions = discover::scan(&self.root);
         self.refresh_java();
-        self.apply_version_filter();
+        self.rebuild_version_list();
 
         // `libraries/` and `assets/` are shared by every version, so the delete
         // above only freed the profile. Reclaim what nothing on disk still

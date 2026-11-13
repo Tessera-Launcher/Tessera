@@ -97,6 +97,111 @@ impl GeneratedVersionJson {
     }
 }
 
+// ===== self-contained profiles =====
+
+/// The field a self-contained loader profile carries so a launcher can tell it
+/// apart from vanilla without an `inheritsFrom` parent.
+pub const LOADER_MARKER: &str = "mdtLoader";
+
+/// Fold a vanilla version JSON into a loader profile, so the result needs no
+/// `inheritsFrom` parent on disk.
+///
+/// The merge mirrors what a launcher does when it follows `inheritsFrom`: the
+/// loader's `mainClass`, arguments and libraries come first (loader jars win the
+/// class path), then the vanilla fields it does not override. Libraries are
+/// concatenated rather than deduplicated — the class path dedupes by file, and
+/// keeping both lets a loader pin its own copy of a library it overrides.
+///
+/// The marker field makes the profile self-describing: `inheritsFrom` is gone, so
+/// without it nothing on disk would say "this is a loader profile", and the
+/// launcher would apply vanilla rules (its own Java choice, AOT training) to a
+/// Forge install.
+#[must_use]
+pub fn merge_vanilla_profile(
+    vanilla: &serde_json::Value,
+    loader: &serde_json::Value,
+    id: &str,
+    loader_name: &str,
+    loader_version: &str,
+) -> serde_json::Value {
+    let mut merged = vanilla.clone();
+    let Some(merged) = merged.as_object_mut() else {
+        return vanilla.clone();
+    };
+    let empty = serde_json::Map::new();
+    let child = loader.as_object().unwrap_or(&empty);
+
+    // Everything the loader states wins over the vanilla value.
+    for key in [
+        "mainClass",
+        "minecraftArguments",
+        "javaVersion",
+        "type",
+        "releaseTime",
+        "time",
+        "complianceLevel",
+        "minimumLauncherVersion",
+    ] {
+        if let Some(value) = child.get(key) {
+            merged.insert(key.to_string(), value.clone());
+        }
+    }
+    // Assets: the loader may name its own index, otherwise vanilla's stays.
+    for key in ["assetIndex", "assets", "asset-index"] {
+        if let Some(value) = child.get(key) {
+            merged.insert(key.to_string(), value.clone());
+        }
+    }
+
+    // Arguments: the loader's entries first, then vanilla's, per list — the same
+    // order `inheritsFrom` merging produces.
+    let child_arguments = child.get("arguments").and_then(|value| value.as_object());
+    let vanilla_arguments = merged.get("arguments").and_then(|value| value.as_object());
+    let mut arguments = serde_json::Map::new();
+    for key in ["game", "jvm"] {
+        let mut list: Vec<serde_json::Value> = Vec::new();
+        for source in [child_arguments, vanilla_arguments] {
+            if let Some(items) = source
+                .and_then(|arguments| arguments.get(key))
+                .and_then(|value| value.as_array())
+            {
+                list.extend(items.iter().cloned());
+            }
+        }
+        if !list.is_empty() {
+            arguments.insert(key.to_string(), serde_json::Value::Array(list));
+        }
+    }
+    if !arguments.is_empty() {
+        merged.insert(
+            "arguments".to_string(),
+            serde_json::Value::Object(arguments),
+        );
+    }
+
+    let mut libraries = child
+        .get("libraries")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(vanilla_libraries) = merged
+        .get("libraries")
+        .and_then(|value| value.as_array())
+        .cloned()
+    {
+        libraries.extend(vanilla_libraries);
+    }
+    merged.insert("libraries".to_string(), serde_json::Value::Array(libraries));
+
+    merged.insert("id".to_string(), serde_json::Value::String(id.to_string()));
+    merged.remove("inheritsFrom");
+    merged.insert(
+        LOADER_MARKER.to_string(),
+        serde_json::json!({ "id": loader_name, "version": loader_version }),
+    );
+    serde_json::Value::Object(merged.clone())
+}
+
 // ===== mirror rewriting =====
 
 /// Recursively rewrite every `"url"` string in a JSON value through the active mirror.
@@ -1197,5 +1302,89 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&unpack).ok();
+    }
+    fn vanilla_for_merge() -> serde_json::Value {
+        serde_json::json!({
+            "id": "1.20.1",
+            "type": "release",
+            "mainClass": "net.minecraft.client.main.Main",
+            "javaVersion": { "majorVersion": 17 },
+            "assetIndex": { "id": "5" },
+            "downloads": { "client": { "url": "https://example.invalid/c.jar", "sha1": "00", "size": 1 } },
+            "arguments": {
+                "jvm": ["-Djava.library.path=${natives_directory}"],
+                "game": ["--username", "${auth_player_name}"]
+            },
+            "libraries": [{ "name": "com.mojang:client:1.20.1" }]
+        })
+    }
+
+    fn loader_for_merge() -> serde_json::Value {
+        serde_json::json!({
+            "id": "1.20.1-fabric-0.15.11",
+            "inheritsFrom": "1.20.1",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "arguments": { "jvm": ["-DFabricMcEmu=net.minecraft.client.main.Main"], "game": [] },
+            "libraries": [{ "name": "net.fabricmc:fabric-loader:0.15.11" }]
+        })
+    }
+
+    #[test]
+    fn a_merged_profile_stands_alone() {
+        let merged = merge_vanilla_profile(
+            &vanilla_for_merge(),
+            &loader_for_merge(),
+            "1.20.1-fabric-0.15.11",
+            "fabric",
+            "0.15.11",
+        );
+        // No parent to look up.
+        assert!(merged.get("inheritsFrom").is_none());
+        assert_eq!(merged["id"], "1.20.1-fabric-0.15.11");
+        // The loader's class wins, the vanilla fields it needs are still there.
+        assert_eq!(
+            merged["mainClass"],
+            "net.fabricmc.loader.impl.launch.knot.KnotClient"
+        );
+        assert_eq!(merged["javaVersion"]["majorVersion"], 17);
+        assert_eq!(merged["assetIndex"]["id"], "5");
+        assert_eq!(merged["downloads"]["client"]["size"], 1);
+        // Classpath order: loader jars first, then vanilla's.
+        let libraries = merged["libraries"].as_array().unwrap();
+        assert_eq!(libraries.len(), 2);
+        assert_eq!(libraries[0]["name"], "net.fabricmc:fabric-loader:0.15.11");
+        assert_eq!(libraries[1]["name"], "com.mojang:client:1.20.1");
+        // Arguments keep the same order the `inheritsFrom` merge would produce.
+        let jvm = merged["arguments"]["jvm"].as_array().unwrap();
+        assert_eq!(jvm[0], "-DFabricMcEmu=net.minecraft.client.main.Main");
+        assert_eq!(jvm[1], "-Djava.library.path=${natives_directory}");
+        let game = merged["arguments"]["game"].as_array().unwrap();
+        assert_eq!(game[0], "--username");
+        // And it says what it is, now that `inheritsFrom` is gone.
+        assert_eq!(merged[LOADER_MARKER]["id"], "fabric");
+        assert_eq!(merged[LOADER_MARKER]["version"], "0.15.11");
+    }
+
+    #[test]
+    fn merging_carries_legacy_minecraft_arguments() {
+        let vanilla = serde_json::json!({
+            "id": "1.5.2",
+            "mainClass": "net.minecraft.client.Minecraft",
+            "minecraftArguments": "--username ${auth_player_name}",
+            "libraries": []
+        });
+        let loader = serde_json::json!({
+            "id": "1.5.2-fabric-1.0.0",
+            "inheritsFrom": "1.5.2",
+            "libraries": [{ "name": "com.example:loader:1.0" }]
+        });
+        let merged =
+            merge_vanilla_profile(&vanilla, &loader, "1.5.2-fabric-1.0.0", "fabric", "1.0.0");
+        assert_eq!(
+            merged["minecraftArguments"],
+            "--username ${auth_player_name}"
+        );
+        assert_eq!(merged["mainClass"], "net.minecraft.client.Minecraft");
+        assert_eq!(merged["libraries"].as_array().unwrap().len(), 1);
     }
 }

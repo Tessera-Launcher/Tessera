@@ -62,8 +62,12 @@ pub enum JavaKind {
 }
 
 /// Which rule this profile follows.
-pub fn java_kind(has_parent: bool, main_class: Option<&str>) -> JavaKind {
-    if has_parent {
+///
+/// A loader profile is recognised by its own [`crate::profile::LOADER_MARKER`]
+/// (self-contained install) or by `inheritsFrom` (an older one), never by its
+/// `mainClass`: legacy Forge and vanilla 1.5.2 both boot through LaunchWrapper.
+pub fn java_kind(is_loader: bool, main_class: Option<&str>) -> JavaKind {
+    if is_loader {
         JavaKind::Loader
     } else if uses_launchwrapper(main_class) {
         JavaKind::Legacy

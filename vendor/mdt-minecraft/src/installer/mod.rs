@@ -60,8 +60,8 @@ pub use mcr::{
 pub use uninstall::uninstall_modloader;
 #[cfg(not(feature = "minimal"))]
 pub use version_json::{
-    apply_mirror_to_json, GeneratedArtifact, GeneratedLibrary, GeneratedLibraryDownloads,
-    GeneratedVersionJson,
+    apply_mirror_to_json, merge_vanilla_profile, GeneratedArtifact, GeneratedLibrary,
+    GeneratedLibraryDownloads, GeneratedVersionJson, LOADER_MARKER,
 };
 
 #[cfg(not(feature = "minimal"))]
@@ -149,6 +149,23 @@ pub async fn install_modloader(
 }
 
 // ===== shared helpers =====
+
+#[cfg(not(feature = "minimal"))]
+/// Whether the loader's official installer reads `versions/<mc_version>/<mc_version>.jar`
+/// while it runs.
+///
+/// Method A installers (modern Forge, NeoForge) resolve the vanilla client jar from the game root,
+/// so a self-contained loader install has to put that profile on disk for the duration of the
+/// install even when it deletes it afterwards. Fabric, Quilt and LiteLoader never start a JVM, and
+/// legacy Forge unpacks its own tree, so they need nothing.
+#[must_use]
+pub fn installer_needs_vanilla_profile(loader: ModLoader, mc_version: &str) -> bool {
+    match loader {
+        ModLoader::Neoforge => true,
+        ModLoader::Forge => forge::uses_official_installer(mc_version),
+        ModLoader::Fabric | ModLoader::Quilt | ModLoader::Liteloader => false,
+    }
+}
 
 #[cfg(not(feature = "minimal"))]
 /// Compute the isolated version ID: `[mc_version]-[loader]-[LoaderVersion]`.
