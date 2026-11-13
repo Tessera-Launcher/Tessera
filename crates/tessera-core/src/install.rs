@@ -516,7 +516,7 @@ mod tests {
                     progress_events += 1;
                     max_gap = max_gap.max(last_event.elapsed());
                     last_event = std::time::Instant::now();
-                    if progress_events % 100 == 0 {
+                    if progress_events.is_multiple_of(100) {
                         eprintln!("progress {done}/{total} at {:?}", started.elapsed());
                     }
                 }

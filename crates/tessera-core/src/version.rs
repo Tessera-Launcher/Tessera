@@ -166,7 +166,7 @@ mod tests {
     fn ordering_is_numeric_not_lexical() {
         assert!(McVersion::parse("1.10").unwrap() > McVersion::parse("1.9").unwrap());
         assert!(McVersion::parse("26.1.1").unwrap() > McVersion::parse("26.1").unwrap());
-        assert!(McVersion::new(1, 9, 9).at_least(1, 9, 10) == false);
+        assert!(!McVersion::new(1, 9, 9).at_least(1, 9, 10));
         assert!(McVersion::new(26, 1, 0).at_least(26, 1, 0));
         assert!(!McVersion::new(26, 0, 5).at_least(26, 1, 0));
     }
