@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::input::{Key, Modifiers};
 
@@ -262,7 +262,7 @@ mod login;
 mod music;
 
 pub use self::account_manager::AccountsUi;
-pub use self::download::{DownloadStage, DownloadUi, PickerFocus, VersionFilter};
+pub use self::download::{DownloadStage, DownloadUi, InstallSummary, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
 pub use self::music::{MusicFocus, MusicKind, MusicUi, PlayOrder};

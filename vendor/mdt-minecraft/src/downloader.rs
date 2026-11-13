@@ -645,6 +645,15 @@ async fn download_single_file(
         }
     }
 
+    if need_download {
+        // The file is verified at this point; its on-disk length is the number
+        // of bytes the network actually carried. Skipped tasks and cache hits
+        // stay out of this count.
+        if let Ok(meta) = crate::io::metadata(&task.dest_path).await {
+            reporter.transferred(meta.len());
+        }
+    }
+
     // 3. Extract natives if requested.
     #[cfg(not(feature = "minimal"))]
     if let Some(extract_dir) = task.extract_to {
@@ -1346,6 +1355,12 @@ mod tests {
                 .unwrap()
                 .push(format!("summary:{count}/{bytes}"));
         }
+        fn transferred(&self, bytes: u64) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("transferred:{bytes}"));
+        }
         fn finish(&self) {
             self.events.lock().unwrap().push("finish".to_string());
         }
@@ -1473,6 +1488,7 @@ mod tests {
             "{events:?}"
         );
         assert!(events.iter().any(|e| e == "summary:1/5"), "{events:?}");
+        assert!(events.iter().any(|e| e == "transferred:5"), "{events:?}");
         assert!(events.iter().any(|e| e == "finish"), "{events:?}");
 
         let _ = std::fs::remove_file(&dest);

@@ -6,7 +6,9 @@
 //! channel, which keeps every rendering decision in the UI layer.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -110,6 +112,8 @@ pub enum InstallEvent {
     Finished {
         version: String,
         loader: Option<String>,
+        /// Bytes that actually crossed the network, for the speed summary.
+        bytes: u64,
     },
     Failed(String),
 }
@@ -121,7 +125,14 @@ pub fn spawn_versions(
     asset_concurrency: usize,
 ) -> Receiver<InstallEvent> {
     spawn_worker(move |sender| {
-        let client = build_client(&root, source, asset_concurrency, sender.clone())?;
+        let transferred = Arc::new(AtomicU64::new(0));
+        let client = build_client(
+            &root,
+            source,
+            asset_concurrency,
+            sender.clone(),
+            transferred.clone(),
+        )?;
         let runtime = runtime()?;
         runtime.block_on(async move {
             let versions = client
@@ -159,7 +170,14 @@ pub fn spawn_install(
         // A cleanup sweep must not delete libraries while this install writes
         // them. The guard lives for the whole install, not just the setup.
         let _maintenance = crate::task::read();
-        let client = build_client(&root, source, asset_concurrency, sender.clone())?;
+        let transferred = Arc::new(AtomicU64::new(0));
+        let client = build_client(
+            &root,
+            source,
+            asset_concurrency,
+            sender.clone(),
+            transferred.clone(),
+        )?;
         let runtime = runtime()?;
         runtime.block_on(async move {
             let loader_version = match loader.to_mdt() {
@@ -207,6 +225,7 @@ pub fn spawn_install(
             let _ = sender.send(InstallEvent::Finished {
                 version,
                 loader: loader_version.map(|v| format!("{} {v}", loader.label())),
+                bytes: transferred.load(Ordering::Relaxed),
             });
             Ok(())
         })
@@ -263,13 +282,17 @@ fn build_client(
     source: Source,
     asset_concurrency: usize,
     sender: Sender<InstallEvent>,
+    transferred: Arc<AtomicU64>,
 ) -> Result<MdtClient> {
     MdtClient::builder()
         .mirror(source.to_mdt())
         .root_dir(root)
         .concurrency(FILE_CONCURRENCY)
         .asset_concurrency(asset_concurrency)
-        .progress_reporter(Reporter { sender })
+        .progress_reporter(Reporter {
+            sender,
+            transferred,
+        })
         .build()
         .map_err(|error| Error::internal(format!("无法创建下载客户端：{error}")))
 }
@@ -295,6 +318,7 @@ where
 /// Forwards MDT's progress callbacks to the UI channel.
 struct Reporter {
     sender: Sender<InstallEvent>,
+    transferred: Arc<AtomicU64>,
 }
 
 impl Reporter {
@@ -308,6 +332,10 @@ impl Reporter {
 impl ProgressReporter for Reporter {
     fn status(&self, line: &str) {
         self.send(InstallEvent::Log(line.to_string()));
+    }
+
+    fn transferred(&self, bytes: u64) {
+        self.transferred.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn progress(&self, done: usize, total: usize) {

@@ -198,7 +198,11 @@ pub(crate) async fn download_to_file_reported(
         reporter,
         &format!("download_to_file: {url} -> {}", dest.display()),
     );
-    downloader.download(url, dest).await
+    downloader.download(url, dest).await?;
+    if let Ok(meta) = crate::io::metadata(dest).await {
+        reporter.transferred(meta.len());
+    }
+    Ok(())
 }
 
 #[cfg(not(feature = "minimal"))]

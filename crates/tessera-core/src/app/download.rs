@@ -84,6 +84,53 @@ pub enum DownloadStage {
     Failed,
 }
 
+/// What a finished install cost, for the result page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallSummary {
+    /// Wall-clock time from the player's confirmation to the finished event.
+    pub elapsed: Duration,
+    /// Bytes actually transferred; cached and skipped files are not counted.
+    pub bytes: u64,
+}
+
+impl InstallSummary {
+    /// Average over the whole install, in bytes per second.
+    pub fn average_bytes_per_sec(&self) -> u64 {
+        let seconds = self.elapsed.as_secs_f64();
+        if seconds > 0.0 {
+            (self.bytes as f64 / seconds) as u64
+        } else {
+            0
+        }
+    }
+
+    /// `4.7 秒`, `1 分 23 秒`, `1 小时 2 分`.
+    fn elapsed_label(&self) -> String {
+        let secs = self.elapsed.as_secs();
+        if secs < 60 {
+            format!("{:.1} 秒", self.elapsed.as_secs_f64())
+        } else if secs < 3600 {
+            format!("{} 分 {} 秒", secs / 60, secs % 60)
+        } else {
+            format!("{} 小时 {} 分", secs / 3600, (secs % 3600) / 60)
+        }
+    }
+
+    /// One line for the result page: time, bytes and average download speed.
+    pub fn text(&self) -> String {
+        let time = self.elapsed_label();
+        if self.bytes == 0 {
+            return format!("用时 {time} · 所有文件都已在本地，没有下载");
+        }
+        format!(
+            "用时 {} · 下载 {} · 平均 {}/s",
+            time,
+            crate::discover::human_size(self.bytes),
+            crate::discover::human_size(self.average_bytes_per_sec()),
+        )
+    }
+}
+
 /// The download picker and the progress screen share this state.
 #[derive(Debug)]
 pub struct DownloadUi {
@@ -121,6 +168,10 @@ pub struct DownloadUi {
     pub(crate) sample: Option<(Instant, u64)>,
     pub error: Option<String>,
     pub installed: Option<(String, Option<String>)>,
+    /// When the player confirmed the install; `None` outside a running one.
+    pub started: Option<Instant>,
+    /// The result shown once the install finishes.
+    pub summary: Option<InstallSummary>,
     fetching: bool,
 }
 
@@ -147,6 +198,8 @@ impl Default for DownloadUi {
             sample: None,
             error: None,
             installed: None,
+            started: None,
+            summary: None,
             fetching: false,
         }
     }
@@ -385,6 +438,8 @@ impl App {
         ) {
             self.download.stage = DownloadStage::Picking;
             self.download.installed = None;
+            self.download.summary = None;
+            self.download.started = None;
             self.download.error = None;
         }
     }
@@ -580,6 +635,8 @@ impl App {
         self.download.speed = 0.0;
         self.download.sample = None;
         self.download.installed = None;
+        self.download.summary = None;
+        self.download.started = Some(Instant::now());
         self.download.error = None;
         self.screen = Screen::Download;
         self.status = format!("安装 {version} · {}", loader.label());
@@ -642,22 +699,36 @@ impl App {
                 self.download.total = total;
                 self.download.remaining_bytes = remaining_bytes;
             }
-            InstallEvent::Finished { version, loader } => {
+            InstallEvent::Finished {
+                version,
+                loader,
+                bytes,
+            } => {
                 self.install_running = false;
+                let elapsed = self
+                    .download
+                    .started
+                    .take()
+                    .map_or(Duration::ZERO, |started| started.elapsed());
+                let summary = InstallSummary { elapsed, bytes };
+                let text = summary.text();
                 self.download.installed = Some((version.clone(), loader.clone()));
+                self.download.summary = Some(summary);
                 self.download.stage = DownloadStage::Done;
                 self.reload();
                 self.log(format!(
-                    "安装完成：{version}{}",
+                    "安装完成：{version}{} · {text}",
                     loader
                         .as_ref()
                         .map_or_else(String::new, |loader| format!(" + {loader}"))
                 ));
-                self.status = format!("安装完成：{version}");
+                self.status = format!("安装完成：{version} · {text}");
             }
             InstallEvent::Failed(message) => {
                 self.download.fetching = false;
                 self.install_running = false;
+                self.download.started = None;
+                self.download.summary = None;
                 self.download.stage = DownloadStage::Failed;
                 self.download.error = Some(message.clone());
                 self.status = "下载失败".to_string();

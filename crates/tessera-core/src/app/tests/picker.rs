@@ -436,6 +436,7 @@ fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
     app.handle_install_event(InstallEvent::Finished {
         version: "1.20.1".to_string(),
         loader: Some("Fabric 0.16.0".to_string()),
+        bytes: 0,
     });
     assert_eq!(app.download.stage, DownloadStage::Done);
     assert_eq!(
@@ -448,11 +449,50 @@ fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
 }
 
 #[test]
+fn finishing_reports_elapsed_time_and_average_download_speed() {
+    let mut app = downloader();
+    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    // Four seconds from confirmation, eight MiB actually transferred.
+    app.download.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(4));
+    app.handle_install_event(InstallEvent::Finished {
+        version: "1.20.1".to_string(),
+        loader: Some("Fabric 0.16.0".to_string()),
+        bytes: 8 * 1024 * 1024,
+    });
+
+    let summary = app.download.summary.as_ref().expect("a summary on finish");
+    assert_eq!(summary.bytes, 8 * 1024 * 1024);
+    assert!(summary.elapsed >= std::time::Duration::from_secs(4));
+    // 8 MiB / ~4 s = ~2 MiB/s.
+    assert!(summary.average_bytes_per_sec() > 1_500_000, "{summary:?}");
+    let text = summary.text();
+    assert!(text.contains("用时"), "{text}");
+    assert!(text.contains("下载 8.0 MiB"), "{text}");
+    assert!(text.contains("平均"), "{text}");
+    assert!(text.contains("/s"), "{text}");
+    assert!(app.status.contains("平均"), "{}", app.status);
+}
+
+#[test]
+fn a_cached_install_shows_time_without_a_fake_speed() {
+    let summary = InstallSummary {
+        elapsed: std::time::Duration::from_millis(2500),
+        bytes: 0,
+    };
+    assert_eq!(summary.average_bytes_per_sec(), 0);
+    let text = summary.text();
+    assert!(text.contains("用时 2.5 秒"), "{text}");
+    assert!(text.contains("没有下载"), "{text}");
+    assert!(!text.contains("平均"), "{text}");
+}
+
+#[test]
 fn installing_never_trains_aot_behind_the_players_back() {
     let mut app = downloader();
     app.handle_install_event(InstallEvent::Finished {
         version: "26.3".to_string(),
         loader: None,
+        bytes: 0,
     });
     assert_eq!(app.download.stage, DownloadStage::Done);
     assert!(
@@ -493,6 +533,7 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
     app.handle_install_event(InstallEvent::Finished {
         version: "26.3".to_string(),
         loader: None,
+        bytes: 0,
     });
     app.all_versions = vec![version("26.3")];
     app.rebuild_version_list();

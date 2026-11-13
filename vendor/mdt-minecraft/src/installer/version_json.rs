@@ -295,6 +295,7 @@ async fn fetch_profile_json(
         debug_line(reporter, &format!("install_from_profile: fetching {url}"));
         match downloader.fetch(url).await {
             Ok(text) => {
+                reporter.transferred(text.len() as u64);
                 debug_line(
                     reporter,
                     &format!(

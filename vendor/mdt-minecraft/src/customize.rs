@@ -46,6 +46,13 @@ pub trait ProgressReporter: Send + Sync {
     ///
     /// Has an empty default so existing implementations keep compiling unchanged.
     fn progress_bytes(&self, _done: usize, _total: usize, _remaining_bytes: u64) {}
+    /// Bytes that actually crossed the network for a file.
+    ///
+    /// Called after a successful transfer, so a launcher can show the real
+    /// average speed rather than the sum of every task's advertised size
+    /// (cached and skipped files never call it). Has an empty default so
+    /// existing implementations keep compiling unchanged.
+    fn transferred(&self, _bytes: u64) {}
     /// A batch summary, emitted once when the whole download finishes.
     ///
     /// Has an empty default so existing implementations keep compiling unchanged.

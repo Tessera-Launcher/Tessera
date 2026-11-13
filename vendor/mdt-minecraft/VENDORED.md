@@ -351,6 +351,14 @@ the mirror only for the Minecraft and Fabric manifests. A loader install needs
 no JVM and no temporary vanilla profile, so `install_loader` writes the
 self-contained Fabric profile directly.
 
+### 16. Real transferred bytes for speed summaries
+
+`ProgressReporter` gained a defaulted `transferred(bytes)` callback. MDT calls
+it only after a file actually arrived over the network — including the
+`execute_downloads` path, installer artifact downloads and the Fabric profile
+JSON — so a launcher can compute an honest average speed without counting
+cached, skipped or locally copied files.
+
 ## Example
 
 `examples/download_bench.rs` installs 1.8.9 from a chosen mirror into a directory passed on the

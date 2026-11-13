@@ -364,6 +364,9 @@ impl Launcher {
                 None => format!("安装完成：{version}"),
             }));
         }
+        if let Some(summary) = &download.summary {
+            body = body.child(div().text_sm().text_color(rgb(TEXT)).child(summary.text()));
+        }
 
         let title = "安装";
         div()
