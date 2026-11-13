@@ -298,7 +298,11 @@ fn build_client(
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
+    // A multi-thread runtime, not `current_thread`: the install drives dozens of
+    // concurrent transfers while SHA-1 verification and JAR rewriting run beside
+    // them, and both used to compete for the single reactor thread.
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .map_err(|error| Error::internal(format!("无法创建异步运行时: {error}")))
@@ -385,22 +389,21 @@ impl ProgressReporter for Reporter {
 
 /// Asset download concurrency, for both mirrors.
 ///
-/// There is nothing to tune at runtime: 219 real asset objects from BMCLAPI took
-/// 14.7 s at 8 and 4.6 s at 32 (3.2x), with the same ~0.5% per-file failure rate
-/// at both settings — failures go through the mirror chain, so a throttled
-/// request costs a retry, not the install.
-pub const ASSET_CONCURRENCY: usize = 32;
+/// Asset downloads are latency-bound, not bandwidth-bound: 5149 objects average
+/// ~90 KiB, so the wall time is (files / concurrency) x per-request latency. The
+/// old 32 was chosen from a 219-object sample and scaled badly to a full modern
+/// index; 96 keeps enough requests in flight to hide mirror latency (a separate
+/// per-request timer is avoided by the shared keep-alive pool).
+pub const ASSET_CONCURRENCY: usize = 96;
 
 /// Concurrency for the version's own files: the client jar, libraries and
 /// natives.
 ///
-/// 3 was the library default, but a 1.8.9 install has 34 such files and the
-/// client jar is a single bandwidth-bound transfer that need not block the
-/// many small libraries. On a cold 1.8.9 target (warm asset registry) the
-/// client+libraries phase measured 29.3s at 3, 12.8s at 6, 7.4s at 12,
-/// 7.9s at 16 and 6.0s at 24; 16 is past the knee without opening a
-/// connection per library.
-pub const FILE_CONCURRENCY: usize = 16;
+/// 67 files for 26.3, and the client jar is now fetched with parallel Range
+/// requests, so this is mostly about not serialising the many small libraries
+/// behind it. 96 means the whole batch is in flight at once; the HTTP pool is
+/// sized from the asset concurrency, so this does not thrash connections.
+pub const FILE_CONCURRENCY: usize = 96;
 
 #[cfg(test)]
 mod tests {
@@ -422,8 +425,8 @@ mod tests {
         // The picker's switch starts on the community mirror, and the value is a
         // measured one rather than a guess (see `ASSET_CONCURRENCY`).
         assert_eq!(Source::default(), Source::Bmclapi);
-        assert_eq!(ASSET_CONCURRENCY, 32);
-        assert_eq!(FILE_CONCURRENCY, 16);
+        assert_eq!(ASSET_CONCURRENCY, 96);
+        assert_eq!(FILE_CONCURRENCY, 96);
     }
 
     /// Live check of the picker's data path: one manifest request, no install.

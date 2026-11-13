@@ -1,9 +1,14 @@
 //! Cargo-registry-inspired asset management.
 //!
-//! Mirrors Cargo's split between a *global* registry cache and a *per-project* copy. Vanilla
-//! assets live under `src/mojang/<version>/main/`, and the `assetIndex` JSON itself is cached
-//! under `index/mojang/.cache/<sha1>`. On install, MDT copies (never hardlinks) verified files
-//! from the global registry into the launcher-facing `assets/objects/` directory.
+//! Vanilla assets live under `src/mojang/<version>/main/` in the global registry
+//! (`$HOME/.mdt/registry`), and the `assetIndex` JSON itself is cached under
+//! `index/mojang/.cache/<sha1>`.
+//!
+//! The registry is a *reuse* layer, not the write target: assets download straight
+//! into the launcher-facing `assets/objects/`, and a verified object is hardlinked
+//! into the registry afterwards so a later install of any version can mount it
+//! instead of downloading it. Downloading into the registry and then copying 500 MB
+//! into place doubled the writes (and, across volumes, the bytes) for no gain.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -207,15 +212,21 @@ impl AssetRegistry {
         &self.registry_dir
     }
 
-    /// Return every object whose file is absent from the local `assets/objects` dir or whose SHA-1
-    /// no longer matches. The hashing-heavy scan runs on the blocking pool.
+    /// Return every object whose file is absent from the local `assets/objects` dir
+    /// or whose size disagrees with the index.
+    ///
+    /// The check is size-only: a full SHA-1 pass over a 500 MiB asset set before
+    /// every install costs seconds and duplicates the verification the downloader
+    /// already performs on the bytes it writes. The per-file download pre-check
+    /// still hashes a candidate before trusting it, so a same-size corruption is
+    /// caught there whenever the object is actually fetched.
     pub async fn missing_locally(&self) -> Result<Vec<AssetObject>, MdtError> {
         let objects = self.objects.clone();
         let objects_dir = self.objects_dir.clone();
         crate::io::spawn_blocking(move || -> Result<Vec<AssetObject>, MdtError> {
             let mut missing: Vec<AssetObject> = objects
                 .values()
-                .filter(|object| !cache_has(&object_path(&objects_dir, &object.hash), object))
+                .filter(|object| !file_has_size(&object_path(&objects_dir, &object.hash), object.size))
                 .cloned()
                 .collect();
             // An asset index may name one object several times (1.8.9 lists 734 names over 722
@@ -229,11 +240,14 @@ impl AssetRegistry {
         .await?
     }
 
-    /// Make every asset available locally: download anything missing into the global registry
-    /// (temp + SHA-1 verify + move), then copy each verified file into `assets/objects`.
+    /// Make every asset available locally.
     ///
-    /// Returns [`MdtError::PartialDownloadFailed`] if any asset fails after its retries; whatever
-    /// did download is still copied into place first.
+    /// Objects already in the global registry are mounted from it (hardlink, then
+    /// symlink, then copy). The rest download directly into `assets/objects`, and
+    /// every verified file is hardlinked back into the registry for future installs.
+    ///
+    /// Returns [`MdtError::PartialDownloadFailed`] if any asset fails after its retries;
+    /// whatever did download is still in place first.
     pub async fn sync(
         &self,
         downloader: &dyn Downloader,
@@ -247,8 +261,7 @@ impl AssetRegistry {
     }
 
     /// [`AssetRegistry::sync`], optionally labelling each object with its logical
-    /// asset name and the Minecraft version it belongs to, so the launcher's
-    /// activity log can show one line per downloaded asset.
+    /// asset name and the Minecraft version it belongs to.
     async fn sync_labeled(
         &self,
         downloader: &dyn Downloader,
@@ -263,56 +276,56 @@ impl AssetRegistry {
             return Ok(());
         }
 
-        // Hand every missing object to the downloader instead of pre-hashing the registry copy
-        // here: `download_single_file` already size-checks and SHA-1-verifies the destination and
-        // skips it when it matches. Filtering with `cache_has` first would hash the same bytes a
-        // second time (the "two full SHA-1 passes" cost) for no extra safety.
-        let mut tasks = downloader::build_tasks_from_assets(&needed, &self.registry_dir);
+        // Split the work: objects the global registry already holds are mounted (no
+        // network, no re-hash); the rest are downloaded to their final location.
+        let mut mounts = Vec::new();
+        let mut to_download = Vec::new();
+        for object in needed {
+            let cached = object_path(&self.registry_dir, &object.hash);
+            if file_has_size(&cached, object.size) {
+                mounts.push(VirtualDir::new(
+                    cached,
+                    object_path(&self.objects_dir, &object.hash),
+                ));
+            } else {
+                to_download.push(object);
+            }
+        }
+        if !mounts.is_empty() {
+            mount_all_with_reporter(mounts, DEFAULT_MOUNT_CONCURRENCY, reporter).await?;
+        }
+        if to_download.is_empty() {
+            return Ok(());
+        }
+
+        let mut tasks = downloader::build_tasks_from_assets(&to_download, &self.objects_dir);
         if let Some(version) = minecraft_version {
             label_asset_tasks(&mut tasks, &self.objects, version);
         }
-        let download_result =
-            downloader::execute_downloads(downloader, tasks, concurrency, mirror, urls, reporter)
-                .await;
-
-        // Copy everything now present (and verified) in the registry into the local objects dir.
-        //
-        // This is a full SHA-1 pass over every needed object, and it belongs on the blocking pool:
-        // an asset set is ~600 MB, which at the measured ~380 MB/s pinned an async worker for
-        // seconds while every in-flight download stalled behind it.
-        let registry_dir = self.registry_dir.clone();
-        let ready: Vec<AssetObject> = crate::io::spawn_blocking(move || {
-            needed
-                .into_iter()
-                .filter(|object| cache_has(&object_path(&registry_dir, &object.hash), object))
-                .collect()
-        })
+        // No second SHA-1 pass over the destination tree: the batch reports exactly
+        // which paths it verified, including pre-existing correct files.
+        let batch = downloader::execute_downloads_verified(
+            downloader,
+            tasks,
+            concurrency,
+            mirror,
+            urls,
+            reporter,
+        )
         .await?;
-        self.copy_to_local(&ready, reporter).await?;
 
-        download_result
-    }
+        // Best-effort cache seeding: a hardlink costs nothing and makes the next
+        // install a mount. Cross-volume failures (or no hardlink support) just mean
+        // the registry stays cold; never fall back to copying 500 MiB for it.
+        let registry_dir = self.registry_dir.clone();
+        let verified = batch.verified.clone();
+        crate::io::spawn_blocking(move || seed_registry(&registry_dir, &verified)).await?;
 
-    /// Mount verified files from the global registry into the local objects dir using the cheapest
-    /// link available (hardlink > symlink > copy).
-    async fn copy_to_local(
-        &self,
-        objects: &[AssetObject],
-        reporter: &dyn ProgressReporter,
-    ) -> Result<(), MdtError> {
-        if objects.is_empty() {
-            return Ok(());
+        if batch.failed.is_empty() {
+            Ok(())
+        } else {
+            Err(MdtError::PartialDownloadFailed(batch.failed))
         }
-        let mounts: Vec<VirtualDir> = objects
-            .iter()
-            .map(|object| {
-                VirtualDir::new(
-                    object_path(&self.registry_dir, &object.hash),
-                    object_path(&self.objects_dir, &object.hash),
-                )
-            })
-            .collect();
-        mount_all_with_reporter(mounts, DEFAULT_MOUNT_CONCURRENCY, reporter).await
     }
 }
 
@@ -471,15 +484,40 @@ fn object_path(dir: &Path, hash: &str) -> PathBuf {
 }
 
 /// True if `path` exists with a size and SHA-1 matching `object` — i.e. a verified cache hit.
-fn cache_has(path: &Path, object: &AssetObject) -> bool {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    if meta.len() != object.size {
-        return false;
+/// True if `path` exists and its length matches `size`.
+///
+/// Size-only on purpose: content-addressed files are written through a verified
+/// temp file and are never modified in place, so re-hashing them on every read
+/// buys little and costs a full pass over the asset set.
+fn file_has_size(path: &Path, size: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.len() == size)
+}
+
+/// Hardlink verified objects into the global registry, best effort.
+///
+/// The registry is a cache, not the install target: if a link is impossible
+/// (another volume, unsupported filesystem) the file simply stays local and a
+/// future install downloads it again. Copying it instead would repeat the whole
+/// asset set in writes for a cache that may never be reused.
+fn seed_registry(registry_dir: &Path, verified: &[PathBuf]) {
+    for path in verified {
+        let Some(hash) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_sha1_hex(hash) {
+            continue;
+        }
+        let target = object_path(registry_dir, hash);
+        if target.exists() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                continue;
+            }
+        }
+        let _ = std::fs::hard_link(path, &target);
     }
-    sha1_of_file(path).is_some_and(|hash| hash == object.hash)
 }
 
 /// Compute a file's SHA-1 synchronously, or `None` on any I/O error.
