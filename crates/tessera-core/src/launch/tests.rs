@@ -1182,12 +1182,9 @@ fn a_non_ascii_natives_path_gets_an_ascii_symlink() {
     assert!(ascii_natives_mirror(tmp.path()).is_none());
 }
 
-#[test]
-fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    // What the installer writes for 1.8.9: the LWJGL 3 jars in `libraries/`, no
-    // LWJGL 2 group at all, and the marker that says so.
+/// What the installer writes for 1.8.9 on LWJGL 3: the LWJGL 3 jars in
+/// `libraries/`, no LWJGL 2 group at all, the marker, and a real client zip.
+fn lwjgl3_install(root: &Path) {
     write_version(
         root,
         "1.8.9",
@@ -1227,6 +1224,13 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
         std::fs::write(jar, b"jar").unwrap();
     }
     managed_runtime(root, 28);
+}
+
+#[test]
+fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    lwjgl3_install(root);
 
     let options = Options {
         runtimes: Some(root.join("运行时")),
@@ -1259,6 +1263,62 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
         args.iter().any(|arg| arg.ends_with("1.8.9.lwjgl3.jar")),
         "{args:?}"
     );
+}
+
+#[test]
+fn a_trained_lwjgl3_version_replays_its_cache_from_the_unsigned_jar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    lwjgl3_install(root);
+    let version_dir = root.join("versions/1.8.9");
+    std::fs::write(version_dir.join("1.8.9.aot"), b"cache").unwrap();
+    std::fs::copy(
+        version_dir.join("1.8.9.jar"),
+        version_dir.join("1.8.9.unsigned.jar"),
+    )
+    .unwrap();
+    std::fs::write(version_dir.join("1.8.9.aot-agent.jar"), b"agent").unwrap();
+    std::fs::write(
+        version_dir.join("1.8.9.aot.json"),
+        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+    )
+    .unwrap();
+
+    let options = Options {
+        runtimes: Some(root.join("运行时")),
+        ..Options::default()
+    };
+    let launch = prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();
+    let args = &launch.command.args;
+    assert_eq!(launch.lwjgl3.as_deref(), Some("3.4.3"));
+    assert!(
+        args.iter()
+            .any(|arg| arg == &format!("-XX:AOTCache={}", version_dir.join("1.8.9.aot").display())),
+        "{args:?}"
+    );
+    assert!(
+        args.iter().any(|arg| arg.ends_with("1.8.9.aot-agent.jar")),
+        "{args:?}"
+    );
+    // The cache names this jar, so the class path has to use it instead of the
+    // launcher's own `<id>.lwjgl3.jar` copy.
+    assert!(
+        args.iter().any(|arg| arg.ends_with("1.8.9.unsigned.jar")),
+        "{args:?}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg.ends_with("1.8.9.lwjgl3.jar")),
+        "{args:?}"
+    );
+    // LWJGL 3 still needs its agent and native access even with a cache.
+    assert!(
+        args.iter()
+            .any(|arg| arg.ends_with("1.8.9.lwjgl3-agent.jar")),
+        "{args:?}"
+    );
+    assert!(args
+        .iter()
+        .any(|arg| arg == "--enable-native-access=ALL-UNNAMED"));
 }
 
 #[test]

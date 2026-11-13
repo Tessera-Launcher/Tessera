@@ -174,10 +174,22 @@ fn train(
         java.major,
     )?;
     let mut args = prepared.command.args.clone();
-    if !swap_client_jar(&mut args, &original_jar, &unsigned_jar) {
+    // The prepare step may already have put an unsigned copy of the client jar
+    // on the class path (an LWJGL 3 install uses `<version>.lwjgl3.jar` because
+    // its agent rewrites classes). Training still has to run from the exact jar
+    // the finished cache names, so accept either name as the thing to replace.
+    let mut client_jars = vec![original_jar.clone()];
+    if prepared.lwjgl3.is_some() {
+        client_jars.push(version_dir.join(format!("{version}.lwjgl3.jar")));
+    }
+    if !swap_client_jar(&mut args, &client_jars, &unsigned_jar) {
+        let expected = client_jars
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" / ");
         return Err(Error::invalid(format!(
-            "启动 classpath 里没有 {}，无法换成去签名副本",
-            original_jar.display()
+            "启动 classpath 里没有 {expected}，无法换成去签名副本"
         )));
     }
     // A cache cannot replay classes from a sealed jar: the cached class defines
@@ -624,9 +636,12 @@ fn is_signature_entry(name: &str) -> bool {
             || upper.ends_with(".EC"))
 }
 
-fn swap_client_jar(args: &mut [String], original: &Path, unsigned: &Path) -> bool {
+fn swap_client_jar(args: &mut [String], originals: &[PathBuf], unsigned: &Path) -> bool {
     let separator = if cfg!(windows) { ';' } else { ':' };
-    let original = original.to_string_lossy();
+    let originals: Vec<String> = originals
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     let unsigned = unsigned.to_string_lossy();
     let Some(index) = args
         .windows(2)
@@ -639,7 +654,7 @@ fn swap_client_jar(args: &mut [String], original: &Path, unsigned: &Path) -> boo
     let entries: Vec<String> = args[index]
         .split(separator)
         .map(|entry| {
-            if entry == original {
+            if originals.iter().any(|original| entry == *original) {
                 replaced = true;
                 unsigned.to_string()
             } else {
@@ -768,17 +783,42 @@ mod tests {
             "-cp".to_string(),
             "/game/libraries/a.jar:/game/versions/26.3/26.3.jar".to_string(),
         ];
+        let signed = PathBuf::from("/game/versions/26.3/26.3.jar");
+        let unsigned = PathBuf::from("/game/versions/26.3/26.3.unsigned.jar");
         assert!(swap_client_jar(
             &mut args,
-            Path::new("/game/versions/26.3/26.3.jar"),
-            Path::new("/game/versions/26.3/26.3.unsigned.jar"),
+            std::slice::from_ref(&signed),
+            &unsigned,
         ));
         assert!(args[1].ends_with("/26.3.unsigned.jar"));
         assert!(!swap_client_jar(
             &mut args,
-            Path::new("/game/versions/26.3/26.3.jar"),
-            Path::new("/game/versions/26.3/26.3.unsigned.jar"),
+            std::slice::from_ref(&signed),
+            &unsigned,
         ));
+    }
+
+    #[test]
+    fn training_swaps_the_lwjgl3_client_jar_when_prepare_chose_it() {
+        // An LWJGL 3 install puts `<id>.lwjgl3.jar` on the class path, not the
+        // signed jar. Training still has to end up on its own unsigned copy.
+        let mut args = vec![
+            "-cp".to_string(),
+            "/game/libraries/a.jar:/game/versions/1.8.9/1.8.9.lwjgl3.jar".to_string(),
+        ];
+        let candidates = [
+            PathBuf::from("/game/versions/1.8.9/1.8.9.jar"),
+            PathBuf::from("/game/versions/1.8.9/1.8.9.lwjgl3.jar"),
+        ];
+        assert!(swap_client_jar(
+            &mut args,
+            &candidates,
+            Path::new("/game/versions/1.8.9/1.8.9.unsigned.jar"),
+        ));
+        assert_eq!(
+            args[1],
+            "/game/libraries/a.jar:/game/versions/1.8.9/1.8.9.unsigned.jar"
+        );
     }
 
     #[test]

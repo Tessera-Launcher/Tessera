@@ -45,9 +45,10 @@ pub(super) fn prepare_inner(
     // A finished AOT training run stores the exact JVM build it used. Launching
     // with a different JVM would make the cache silently unusable, so the cache
     // also chooses the Java here. Training itself passes an explicit override.
-    // A cache is keyed by the class path it was trained on, and the modern-LWJGL
-    // mode changes that class path, so a trained cache is not used with it.
-    let aot = if java_override.is_none() && merged.lwjgl3.is_none() {
+    // The cache is keyed by the class path, and training an LWJGL 3 install uses
+    // that same path (the modern-LWJGL profile lives in the install itself), so
+    // the cache is not rejected merely because the profile carries `mdtLwjgl3`.
+    let aot = if java_override.is_none() {
         aot_cache(&version_dir, version_dir_name, &runtimes)
     } else {
         None
@@ -68,13 +69,15 @@ pub(super) fn prepare_inner(
     // and its library list already names the LWJGL 3 jars: the class path needs no
     // special case here, only the agent and the flags below.
     let lwjgl3 = merged.lwjgl3.clone();
-    let client_jar = if lwjgl3.is_some() {
+    let client_jar = if let Some(selection) = &aot {
+        // The cache was trained on this unsigned copy; replaying it from any
+        // other jar would trip the JVM's class-path validation.
+        selection.unsigned_jar.clone()
+    } else if lwjgl3.is_some() {
         // The agent rewrites classes in the client jar, and a rewritten class
         // cannot satisfy the jar's signature: launch from an unsigned copy.
         let source = version_dir.join(format!("{version_dir_name}.jar"));
         unsigned_client_jar(&version_dir, version_dir_name, &source)?
-    } else if let Some(selection) = &aot {
-        selection.unsigned_jar.clone()
     } else {
         client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
             Error::missing(format!(

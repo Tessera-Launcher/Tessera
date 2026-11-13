@@ -157,7 +157,8 @@ SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换
   `--enable-native-access=ALL-UNNAMED`；
 - 不再设 `-Djava.library.path`、不用 natives 目录（LWJGL 3 自己解压原生库）；
 - 客户端 jar 改用去签名的副本 `<版本>.lwjgl3.jar`（agent 改写过的类过不了签名校验）；
-- 不使用 AOT 缓存（它的 classpath 变了）；
+- AOT 缓存照常可用：训练和启动走同一套 LWJGL 3 classpath，训练时把
+  `<版本>.lwjgl3.jar` 换成缓存的 `<版本>.unsigned.jar`，启动时也用这一份；
 - 日志里一行：`1.8.9 用 LWJGL 3.4.3 启动（Tessera 的兼容层，替代原版 LWJGL 2.9.4）`。
 
 只有 1.8.9 适用（shim 的接口面就是按它扫出来的）；别的版本仍按原样用 LWJGL 2。
