@@ -1,0 +1,46 @@
+# Default to LF for text files across the repo
+* text=auto eol=lf
+
+# Windows scripts should keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell scripts should keep LF
+*.sh text eol=lf
+
+# SVG remains text for readable diffs
+*.svg text eol=lf
+
+# Common binary assets
+*.avif binary
+*.bmp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.xz binary
+*.7z binary
+*.rar binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.flac binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.wasm binary
+*.jar binary
+*.class binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so binary
+*.aot binary
+*.nbt binary
