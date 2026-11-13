@@ -135,27 +135,6 @@ impl Launcher {
             .bg(rgb(colors.surface))
             .border(px(stroke::THIN))
             .border_color(rgb(colors.border_default))
-            .child(
-                div()
-                    .v_flex()
-                    .gap(px(space::XXS))
-                    .px(px(space::MD))
-                    .py(px(space::SM))
-                    .child(
-                        div()
-                            .text_size(px(font::TITLE))
-                            .line_height(relative(font::LINE_HEIGHT_TITLE))
-                            .font_weight(FontWeight(weight::BOLD))
-                            .text_color(rgb(colors.text_accent))
-                            .child("Tessera"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(font::CAPTION))
-                            .text_color(rgb(colors.text_secondary))
-                            .child("Minecraft 启动器"),
-                    ),
-            )
             .child(nav)
             .child(div().flex_1())
             .child(button(
