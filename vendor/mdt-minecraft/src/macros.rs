@@ -99,7 +99,7 @@ macro_rules! download_task {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let client = MdtClient::builder().mirror(Mirror::BMCLAPI).root_dir("./.minecraft").build()?;
-///     full_install!(client, "1.16.5", ModLoader::Fabric, "0.20.0").await?;         // vanilla + copy-on-write
+///     full_install!(client, "1.16.5", ModLoader::Fabric, "0.20.0").await?;         // vanilla + isolated profile
 ///     full_install!(client, "1.16.5", ModLoader::Quilt, "0.24.0", false).await?;    // vanilla + in place
 ///     Ok(())
 /// }
@@ -109,7 +109,7 @@ macro_rules! full_install {
     ($client:expr, $mc_version:expr, $loader:expr, $loader_version:expr) => {
         $client.full_install($mc_version, $loader, $loader_version, true)
     };
-    ($client:expr, $mc_version:expr, $loader:expr, $loader_version:expr, $copy_vanilla:expr) => {
-        $client.full_install($mc_version, $loader, $loader_version, $copy_vanilla)
+    ($client:expr, $mc_version:expr, $loader:expr, $loader_version:expr, $isolate:expr) => {
+        $client.full_install($mc_version, $loader, $loader_version, $isolate)
     };
 }

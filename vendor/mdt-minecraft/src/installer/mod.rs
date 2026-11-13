@@ -99,7 +99,7 @@ pub struct InstallRequest {
     /// The mirror to download from.
     pub mirror: Mirror,
     /// In-place install target. When set, the loader JSON is written into this directory instead
-    /// of the isolated `versions/<id>` directory (`copy_vanilla == false`).
+    /// of the isolated `versions/<id>` directory (`isolate == false`).
     pub target_dir: Option<PathBuf>,
     /// Progress/status reporter for this install.
     pub reporter: std::sync::Arc<dyn ProgressReporter>,

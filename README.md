@@ -94,7 +94,10 @@ Mod Loader profile 按元数据固定用 Java 8，那里的 epoll 是好的。cl
 **下载**：`d` 打开选版本界面，`/` 搜索、`f` 循环类型、`Space` 展开快照族（搜索/筛选时
 一律平铺）、`Tab` 切焦点。右下角切换下载源（默认 BMCLAPI，`s` 键），只影响本次运行，
 不写盘。Loader 版本取该 MC 版本的最新构建，Forge/NeoForge 安装器同样跑在
-`data/运行时/` 的 Java 上。进度页可 `Esc` 退出，下载在后台继续，完成后自动重扫版本。
+`data/运行时/` 的 Java 上。Loader 只装自己的 profile（`versions/<mc>-<loader>-<版本>/`
+里只有一个 json，`inheritsFrom` 指向原版）：客户端 jar、natives、assets 都由那一份原版
+提供，不会在每个 Loader 目录里再复制一遍。进度页可 `Esc` 退出，下载在后台继续，完成后
+自动重扫版本。
 
 **Java 下载**：`v` 打开，Adoptium 的 8 / 17 / 21 / 25 / 28 EA 最新 JRE，元数据与
 SHA-256 全部来自 API。默认清华源（无 EA，28 走 GitHub），`s` 换源，`p` 设 GitHub Proxy，

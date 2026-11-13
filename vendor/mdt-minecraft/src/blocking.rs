@@ -136,14 +136,14 @@ impl BlockingClient {
         vanilla_dir: &Path,
         loader: ModLoader,
         loader_version: &str,
-        copy_vanilla: bool,
+        isolate: bool,
     ) -> Result<InstalledVersion, MdtError> {
         let client = self.inner.clone();
         let vanilla_dir = vanilla_dir.to_path_buf();
         let loader_version = loader_version.to_string();
         run_blocking(async move {
             client
-                .install_modloader(&vanilla_dir, loader, &loader_version, copy_vanilla)
+                .install_modloader(&vanilla_dir, loader, &loader_version, isolate)
                 .await
         })
     }
@@ -165,14 +165,14 @@ impl BlockingClient {
         version: &str,
         loader: ModLoader,
         loader_version: &str,
-        copy_vanilla: bool,
+        isolate: bool,
     ) -> Result<InstalledVersion, MdtError> {
         let client = self.inner.clone();
         let version = version.to_string();
         let loader_version = loader_version.to_string();
         run_blocking(async move {
             client
-                .full_install(&version, loader, &loader_version, copy_vanilla)
+                .full_install(&version, loader, &loader_version, isolate)
                 .await
         })
     }

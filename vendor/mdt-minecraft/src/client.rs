@@ -263,10 +263,13 @@ impl MdtClient {
     /// The Minecraft version is read from `<vanilla_dir>/<vanilla_dir-name>.json`'s `id` field,
     /// which is authoritative for compatibility checks.
     ///
-    /// When `copy_vanilla` is `true`, `vanilla_dir` is first copied to the isolated
-    /// `versions/<mc_version>+<Loader><loader_version>` directory (Method A loaders use their own
-    /// `-forge-`/`-neoforge-` convention) and the loader is installed there, leaving vanilla
-    /// untouched. When `false`, the loader is installed directly inside `vanilla_dir`, mutating it.
+    /// When `isolate` is `true`, the loader gets its own
+    /// `versions/<mc_version>-<loader>-<loader_version>` directory and vanilla is left untouched.
+    /// Nothing is copied into it: the generated profile keeps `inheritsFrom: <mc_version>`, so the
+    /// client JAR, natives and assets stay in the one vanilla install that every loader built on
+    /// that version shares. (Cloning the vanilla directory here used to leave a second full copy of
+    /// it — including the client JAR — inside every loader directory.) When `false`, the loader is
+    /// installed directly inside `vanilla_dir`, mutating it.
     ///
     /// # Errors
     ///
@@ -278,7 +281,7 @@ impl MdtClient {
         vanilla_dir: &Path,
         loader: ModLoader,
         loader_version: &str,
-        copy_vanilla: bool,
+        isolate: bool,
     ) -> Result<InstalledVersion, MdtError> {
         let mc_version = installer::read_vanilla_version_id(vanilla_dir).await?;
         debug_line(
@@ -294,35 +297,24 @@ impl MdtClient {
             )));
         }
 
-        // Copy-on-write: clone the vanilla directory into the loader's isolated directory before
-        // installing, so vanilla is never mutated. Otherwise install in place.
-        let mut isolated = None;
-        let target_dir = if copy_vanilla {
-            let isolated_id = installer::installer_version_id(&mc_version, loader, loader_version);
-            let isolated_dir = installer::version_dir(&self.root, &isolated_id);
-            debug_line(
-                self.reporter.as_ref(),
-                &format!(
-                    "install_modloader: copy-on-write {} -> {}",
-                    vanilla_dir.display(),
-                    isolated_dir.display()
-                ),
-            );
-            installer::copy_dir_recursive_reported(
-                vanilla_dir,
-                &isolated_dir,
-                self.reporter.as_ref(),
+        // An isolated install writes to `versions/<id>` (resolved by `target_version_dir`), and
+        // that directory starts empty on purpose: the profile inherits from the vanilla version,
+        // so duplicating the vanilla files here would only double the client JAR and the natives.
+        // An in-place install writes into `vanilla_dir` instead.
+        let isolated_dir = isolate.then(|| {
+            installer::version_dir(
+                &self.root,
+                &installer::installer_version_id(&mc_version, loader, loader_version),
             )
-            .await?;
-            debug_line(
-                self.reporter.as_ref(),
-                "install_modloader: copy-on-write done",
-            );
-            isolated = Some((isolated_id, isolated_dir));
+        });
+        let target_dir = if isolate {
             None
         } else {
             Some(vanilla_dir.to_path_buf())
         };
+        // Whether this call is the one that brings the directory into existence: only then is it
+        // safe to clean up after a failure.
+        let created_here = isolated_dir.as_ref().is_some_and(|dir| !dir.exists());
 
         let req = InstallRequest {
             mc_version,
@@ -336,19 +328,15 @@ impl MdtClient {
         };
         let result = installer::install_modloader(self.downloader.as_ref(), req).await;
 
-        // A loader may still choose a different directory than the copy above
-        // (a failed install leaves an unused vanilla copy). Drop it unless the
-        // finished install actually lives there, so the launcher does not list a
-        // phantom version with no JSON.
-        if let Some((isolated_id, isolated_dir)) = &isolated {
-            let keep = result
-                .as_ref()
-                .is_ok_and(|installed| installed.id == *isolated_id);
-            if !keep {
+        // A failed install can leave a half-written profile in a directory this call created.
+        // Drop it, so the launcher does not list a phantom version with no JSON. A directory that
+        // was already there is left alone: it may be a working install being repaired.
+        if let (true, Some(isolated_dir)) = (created_here, &isolated_dir) {
+            if result.is_err() {
                 debug_line(
                     self.reporter.as_ref(),
                     &format!(
-                        "install_modloader: removing unused copy {}",
+                        "install_modloader: removing failed install {}",
                         isolated_dir.display()
                     ),
                 );
@@ -362,9 +350,10 @@ impl MdtClient {
     /// Install a complete stack — vanilla and then a mod loader — in one call.
     ///
     /// If the vanilla version isn't on disk yet it is downloaded first; otherwise the existing
-    /// install is reused. Then the loader is installed with the same copy-on-write behavior as
-    /// [`MdtClient::install_modloader`]. This is what the [`full_install!`](crate::full_install)
-    /// macro expands to.
+    /// install is reused. Then the loader is installed with the same isolation behavior as
+    /// [`MdtClient::install_modloader`]: a separate `versions/<id>` that inherits from the vanilla
+    /// profile, with nothing copied into it. This is what the
+    /// [`full_install!`](crate::full_install) macro expands to.
     ///
     /// Returns the loader [`InstalledVersion`].
     pub async fn full_install(
@@ -372,7 +361,7 @@ impl MdtClient {
         version: &str,
         loader: ModLoader,
         loader_version: &str,
-        copy_vanilla: bool,
+        isolate: bool,
     ) -> Result<InstalledVersion, MdtError> {
         debug_line(
             self.reporter.as_ref(),
@@ -401,13 +390,13 @@ impl MdtClient {
         debug_line(
             self.reporter.as_ref(),
             &format!(
-                "full_install: installing loader {} {} (copy_vanilla={copy_vanilla})",
+                "full_install: installing loader {} {} (isolate={isolate})",
                 loader.display_name(),
                 loader_version
             ),
         );
         let result = self
-            .install_modloader(&vanilla_dir, loader, loader_version, copy_vanilla)
+            .install_modloader(&vanilla_dir, loader, loader_version, isolate)
             .await;
         debug_line(
             self.reporter.as_ref(),

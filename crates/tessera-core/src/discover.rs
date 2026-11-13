@@ -36,9 +36,9 @@ pub struct LocalVersion {
     pub release_time: Option<String>,
     /// True when this version only exists as the parent of a loader profile.
     ///
-    /// A loader install copies the vanilla directory and writes a profile with
-    /// `inheritsFrom`, so the vanilla version must stay on disk — but showing it
-    /// next to the loader as if it were a second, independent install is noise.
+    /// A loader profile is written with `inheritsFrom`, so the vanilla version it
+    /// builds on must stay on disk — but showing it next to the loader as if it
+    /// were a second, independent install is noise.
     pub is_base_only: bool,
     /// Whether `<dir>/<dir>.json` parsed. A directory can survive an interrupted
     /// install without one; such a version is listed (so it can be removed) but

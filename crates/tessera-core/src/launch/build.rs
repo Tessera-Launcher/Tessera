@@ -58,9 +58,10 @@ pub(super) fn prepare_inner(
     } else {
         find_java(&runtimes, required, kind)?
     };
-    // A loader install copies the parent's client jar without renaming it, so the
-    // jar next to a `26.3+Fabric…` profile is still `26.3.jar`. A trained
-    // vanilla profile uses the unsigned copy the cache was built from.
+    // A loader profile has no jar of its own (it inherits from the vanilla
+    // version, whose client jar it borrows), so the lookup walks the parent
+    // chain too. A trained vanilla profile uses the unsigned copy the cache was
+    // built from.
     let client_jar = if let Some(selection) = &aot {
         selection.unsigned_jar.clone()
     } else {

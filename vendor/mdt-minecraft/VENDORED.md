@@ -260,6 +260,29 @@ still open with `开始下载 N 个文件（M MiB）` and close with a summary.
 `dedupe_keeps_the_last_declaration_for_a_destination`,
 `version_json_tasks_are_deduped_and_natives_go_to_the_legacy_dir`.
 
+### 12. A loader install no longer clones the vanilla directory
+
+`install_modloader`/`full_install` cloned the whole vanilla directory into
+`versions/<mc>-<loader>-<version>` before installing ("copy-on-write isolation"),
+then wrote a profile there with `inheritsFrom: <mc>` anyway. The clone was never
+read: the JSON inherits the client jar, natives and assets from the vanilla
+profile, and every loader built on that version can share the same one. What it
+did produce was a second full copy of vanilla — client jar included — inside
+every loader directory, so installing one loader cost two installs' worth of disk.
+
+- The `copy_vanilla: bool` parameter is now `isolate: bool`: `true` writes the
+  loader profile into its own `versions/<id>` (which is created empty), `false`
+  keeps the in-place behaviour the uninstall flow uses. The bool was never
+  "copy or not"; both values were already choosing a directory.
+- `copy_dir_recursive_reported` is no longer called from this path (legacy Forge
+  still uses it for its `maven/` tree).
+- A failed install now removes `versions/<id>` **only if this call created it**,
+  instead of unconditionally dropping "the copy". A directory that already
+  existed is a working install being repaired and is left alone.
+
+Nothing in the generated JSON changed, so the vanilla profile is still required
+on disk — it is the `inheritsFrom` parent and the owner of the shared client jar.
+
 ## Example
 
 `examples/download_bench.rs` installs 1.8.9 from a chosen mirror into a directory passed on the
@@ -275,7 +298,7 @@ cargo run --release --example download_bench -- /tmp/mdt-1.8.9 --asset-concurren
 
 The changes touch `src/downloader.rs` (struct fields, classifier selection, task
 dedupe, progress cadence), `src/asset.rs` (materialisation), `src/client.rs`
-(`VanillaInstall`, installer JVM), `src/http.rs` (HTTP/1.1 default),
+(`VanillaInstall`, installer JVM, no vanilla clone), `src/http.rs` (HTTP/1.1 default),
 `src/installer/*` (version ids, legacy Forge), `src/lib.rs` (exports) and the
 tests beside them. They do not touch the mirror/URL/provider table, so upstream
 mirror work applies cleanly; re-run the crate's tests after a rebase and re-check
