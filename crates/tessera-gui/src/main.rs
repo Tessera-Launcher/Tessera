@@ -10,6 +10,7 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::StyledExt;
+use gpui_kit::component::TitleBar;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
@@ -274,7 +275,6 @@ impl Render for Launcher {
             .v_flex()
             .relative()
             .size_full()
-            .p(px(space::MD))
             .bg(rgb(colors.canvas))
             .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
             .text_size(px(font::BODY))
@@ -285,10 +285,36 @@ impl Render for Launcher {
                 this.on_key(event, window, cx);
             }))
             .child(
+                TitleBar::new()
+                    .bg(rgb(colors.canvas))
+                    .border_color(rgb(colors.border_default))
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .child(
+                                div()
+                                    .text_size(px(font::TITLE))
+                                    .line_height(relative(font::LINE_HEIGHT_TITLE))
+                                    .font_weight(FontWeight(weight::BOLD))
+                                    .text_color(rgb(colors.text_accent))
+                                    .child("Tessera"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(font::CAPTION))
+                                    .text_color(rgb(colors.text_secondary))
+                                    .child("Minecraft 启动器"),
+                            ),
+                    ),
+            )
+            .child(
                 div()
                     .h_flex()
                     .flex_1()
                     .min_h(px(0.0))
+                    .p(px(space::MD))
                     .gap(px(space::MD))
                     .children(sidebar)
                     .child(content),
@@ -313,7 +339,7 @@ fn main() {
                     origin: point(px(120.0), px(90.0)),
                     size: size(px(layout::WINDOW_WIDTH), px(layout::WINDOW_HEIGHT)),
                 })),
-                ..WindowOptions::default()
+                ..TitleBar::window_options()
             },
             cx,
             move |window, cx| {
