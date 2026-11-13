@@ -369,9 +369,11 @@ renamed into place. A `<jar>.mdt-unsigned` sidecar stores the upstream and
 rewritten SHA-1 so the next install can verify and skip the file instead of
 re-downloading it (the upstream hash no longer matches the stored jar).
 
-`jar::unseal_classpath` also moved here from Tessera's AOT code. The launcher no
-longer implements JAR rewriting; its only remaining call is the AOT classpath
-unseal, which is a use of this module rather than a second implementation.
+Every JAR task from a version JSON now has `normalize_jar` set, not just the
+client jar: a sealed library is unsealed at install time too, because the AOT
+cache cannot replay classes from a sealed package. `needs_rewrite` skips the
+rewrite for ordinary jars, and the sidecar still makes repeat installs cheap.
+Tessera contains no JAR rewriting or JAR-handling calls at all.
 
 ## Example
 

@@ -43,6 +43,16 @@ pub struct ManifestFile {
     pub url: String,
     /// Expected byte size (used to fast-skip unchanged files).
     pub size: u64,
+    /// Whether this file is stored in normalized (unsigned, unsealed) form.
+    pub normalize_jar: bool,
+}
+
+impl ManifestFile {
+    fn matches(&self, actual: &str) -> bool {
+        actual == self.sha1
+            || (self.normalize_jar
+                && crate::jar::read_sidecar(&self.path).is_some_and(|(_, output)| output == actual))
+    }
 }
 
 /// The result of one scan pass: every file classified as Modified, Created, or Removed.
@@ -65,6 +75,7 @@ pub fn build_manifest(version_json: &VersionJson, root: &Path) -> Vec<ManifestFi
             sha1: task.sha1,
             url: task.url,
             size: task.size,
+            normalize_jar: task.normalize_jar,
         })
         .collect()
 }
@@ -151,7 +162,7 @@ fn collect_removed(
             }
             collect_removed(&path, known, out)?;
         } else if entry.file_type()?.is_file() {
-            if is_marker_file(&name) || known.contains(&path) {
+            if is_marker_file(&name) || name.ends_with(".mdt-unsigned") || known.contains(&path) {
                 continue;
             }
             out.push(path);
@@ -192,7 +203,7 @@ pub async fn write_markers(scan: &ScanResult, marker_dir: &Path) -> Result<(), M
 pub fn verify_manifest(manifest: &[ManifestFile]) -> Result<(), MdtError> {
     for entry in manifest {
         match sha1_of_file(&entry.path)? {
-            Some(actual) if actual == entry.sha1 => {}
+            Some(actual) if entry.matches(&actual) => {}
             Some(actual) => {
                 return Err(MdtError::ChecksumMismatch {
                     path: entry.path.display().to_string(),
@@ -245,7 +256,7 @@ fn hash_worker(files: &[ManifestFile]) -> Result<ScanResult, MdtError> {
     let mut result = ScanResult::default();
     for entry in files {
         match sha1_of_file(&entry.path)? {
-            Some(actual) if actual == entry.sha1 => {}
+            Some(actual) if entry.matches(&actual) => {}
             Some(_) => result.modified.push(entry.clone()),
             None => result.created.push(entry.clone()),
         }
@@ -299,6 +310,7 @@ mod tests {
             sha1: sha1_hex(content),
             url: "https://example.invalid/file".to_string(),
             size: content.len() as u64,
+            normalize_jar: false,
         }
     }
 
@@ -336,6 +348,30 @@ mod tests {
     }
 
     #[test]
+    fn a_normalized_jar_is_recognised_by_its_sidecar_hash() {
+        let dir = unique_dir("normalized");
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("client.jar");
+        fs::write(&jar, b"unsigned").unwrap();
+
+        let mut file = entry(&jar, b"original");
+        file.normalize_jar = true;
+        std::fs::write(
+            crate::jar::sidecar_path(&jar),
+            format!("{} {}\n", file.sha1, sha1_hex(b"unsigned")),
+        )
+        .unwrap();
+        let version_json = dir.join("1.0.json");
+        fs::write(&version_json, b"{}").unwrap();
+
+        let scan = scan_manifest(&[file.clone()], &dir, &version_json).unwrap();
+        assert!(scan.modified.is_empty(), "{scan:?}");
+        verify_manifest(&[file]).unwrap();
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn removed_scan_flags_extra_files_but_preserves_mods_and_markers() {
         let dir = unique_dir("removed");
         let mods = dir.join("mods");
@@ -345,8 +381,10 @@ mod tests {
 
         let extra = dir.join("extra.json");
         let keep = dir.join("keep.bin");
+        let sidecar = dir.join("keep.bin.mdt-unsigned");
         fs::write(&extra, b"x").unwrap();
         fs::write(&keep, b"y").unwrap();
+        fs::write(&sidecar, b"sidecar").unwrap();
         fs::write(mods.join("my-mod.jar"), b"z").unwrap();
         fs::write(marker_dir.join("deadbeef.pinned"), b"").unwrap();
 

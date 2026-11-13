@@ -7,7 +7,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::MdtError;
 
@@ -20,6 +20,25 @@ pub fn is_signature_entry(name: &str) -> bool {
             || upper.ends_with(".RSA")
             || upper.ends_with(".DSA")
             || upper.ends_with(".EC"))
+}
+
+/// Sidecar next to a normalized JAR, recording the upstream and rewritten SHA-1.
+#[must_use]
+pub fn sidecar_path(dest: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.mdt-unsigned", dest.display()))
+}
+
+/// Read a sidecar, validating both hashes. Returns `(upstream, rewritten)`.
+#[must_use]
+pub fn read_sidecar(dest: &Path) -> Option<(String, String)> {
+    let text = fs::read_to_string(sidecar_path(dest)).ok()?;
+    let mut parts = text.split_whitespace();
+    let source = parts.next()?;
+    let output = parts.next()?;
+    if !crate::security::is_sha1_hex(source) || !crate::security::is_sha1_hex(output) {
+        return None;
+    }
+    Some((source.to_string(), output.to_string()))
 }
 
 /// Whether a JAR still carries signature files.
@@ -91,6 +110,13 @@ pub fn strip_signatures(source: &Path, destination: &Path) -> Result<(), MdtErro
     Ok(())
 }
 
+/// Whether a JAR needs [`strip_signatures`] to become a normalized class-path
+/// entry: it either carries signature files or a `Sealed:` manifest attribute.
+#[must_use]
+pub fn needs_rewrite(path: &Path) -> bool {
+    is_signed(path) || is_sealed(path)
+}
+
 /// Whether a JAR's manifest seals one or more packages.
 #[must_use]
 pub fn is_sealed(path: &Path) -> bool {
@@ -108,47 +134,6 @@ pub fn is_sealed(path: &Path) -> bool {
         && text
             .lines()
             .any(|line| line.trim().to_ascii_lowercase().starts_with("sealed:"))
-}
-
-/// Rewrite a sealed JAR in place. Returns whether it changed.
-pub fn unseal_in_place(path: &Path) -> Result<bool, MdtError> {
-    if !is_sealed(path) {
-        return Ok(false);
-    }
-    let tmp = Path::new(&format!("{}.unsealed", path.display())).to_path_buf();
-    strip_signatures(path, &tmp)?;
-    fs::rename(&tmp, path).map_err(|error| {
-        MdtError::IoError(error).context(format!("replacing {}", path.display()))
-    })?;
-    Ok(true)
-}
-
-/// Unseal every sealed JAR on a Java class path in place.
-///
-/// Returns the number of JARs rewritten. A cache cannot replay a class from a
-/// sealed JAR: the cached class defines its package with the cache as its code
-/// source, so the first class from that package which missed the cache trips a
-/// sealing violation at launch.
-pub fn unseal_classpath(args: &mut [String]) -> Result<usize, MdtError> {
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    let Some(classpath) = args
-        .windows(2)
-        .rev()
-        .find(|pair| pair[0] == "-cp" || pair[0] == "-classpath")
-        .map(|pair| pair[1].clone())
-    else {
-        return Ok(0);
-    };
-    let mut count = 0;
-    for entry in classpath.split(separator) {
-        if !entry.ends_with(".jar") {
-            continue;
-        }
-        if unseal_in_place(Path::new(entry))? {
-            count += 1;
-        }
-    }
-    Ok(count)
 }
 
 #[cfg(test)]
@@ -179,7 +164,9 @@ mod tests {
         }
 
         assert!(is_signed(&source));
+        assert!(needs_rewrite(&source));
         strip_signatures(&source, &unsigned).unwrap();
+        assert!(!needs_rewrite(&unsigned));
         assert!(!is_signed(&unsigned));
         assert!(!is_sealed(&unsigned));
 
@@ -196,35 +183,24 @@ mod tests {
             .unwrap();
         assert!(!manifest.to_ascii_lowercase().contains("sealed:"));
     }
-
     #[test]
-    fn unsealing_a_classpath_changes_only_sealed_jars() {
+    fn an_unsigned_but_sealed_jar_is_normalized() {
         let tmp = tempfile::tempdir().unwrap();
-        let sealed = tmp.path().join("sealed.jar");
-        let plain = tmp.path().join("plain.jar");
-        for (path, manifest) in [
-            (
-                &sealed,
-                b"Manifest-Version: 1.0\r\nSealed: true\r\n".as_slice(),
-            ),
-            (&plain, b"Manifest-Version: 1.0\r\n".as_slice()),
-        ] {
-            let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        let jar = tmp.path().join("sealed.jar");
+        {
+            let mut zip = zip::ZipWriter::new(File::create(&jar).unwrap());
             let options = zip::write::SimpleFileOptions::default();
             zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
-            zip.write_all(manifest).unwrap();
+            zip.write_all(b"Manifest-Version: 1.0\r\nSealed: true\r\n")
+                .unwrap();
             zip.start_file("org/example/Thing.class", options).unwrap();
             zip.write_all(b"x").unwrap();
             zip.finish().unwrap();
         }
-        let before = fs::read(&plain).unwrap();
-        let mut args = vec![
-            "-cp".to_string(),
-            format!("{}:{}", sealed.display(), plain.display()),
-        ];
-        assert_eq!(unseal_classpath(&mut args).unwrap(), 1);
-        assert!(!is_sealed(&sealed));
-        assert_eq!(fs::read(&plain).unwrap(), before, "plain jar untouched");
-        assert_eq!(args[1], format!("{}:{}", sealed.display(), plain.display()));
+        assert!(!is_signed(&jar));
+        assert!(needs_rewrite(&jar));
+        let out = tmp.path().join("plain.jar");
+        strip_signatures(&jar, &out).unwrap();
+        assert!(!needs_rewrite(&out));
     }
 }

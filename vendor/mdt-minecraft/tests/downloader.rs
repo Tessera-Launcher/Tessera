@@ -131,13 +131,10 @@ fn test_build_tasks_from_version_json() {
         .iter()
         .find(|t| t.dest_path.ends_with("versions/1.20.1/1.20.1.jar"))
         .expect("client jar task");
-    assert!(client.strip_signatures, "client jars are stored unsigned");
+    assert!(client.normalize_jar, "client jars are stored unsigned");
     assert!(
-        tasks
-            .iter()
-            .filter(|t| t.dest_path != client.dest_path)
-            .all(|t| !t.strip_signatures),
-        "libraries keep their signatures"
+        tasks.iter().all(|t| t.normalize_jar),
+        "every JAR on the class path is normalized"
     );
 
     assert!(tasks.iter().any(|t| t

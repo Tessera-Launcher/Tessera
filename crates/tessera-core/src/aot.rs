@@ -172,13 +172,6 @@ fn train(
         java.major,
     )?;
     let mut args = prepared.command.args.clone();
-    // A cache cannot replay classes from a sealed jar: the cached class defines
-    // its package with the cache as its code source, so the first class from
-    // that package which missed the cache trips a sealing violation at launch.
-    // LWJGL 2.9.4 (every pre-1.13 version) is sealed, so a 1.8.9 cache would
-    // crash the game while a 26.3 one would not.
-    mdt::jar::unseal_classpath(&mut args)
-        .map_err(|error| Error::invalid(format!("无法解除库 jar 的 sealing: {error}")))?;
     let total = classpath_classes(&args);
     let _ = sender.send(Event::Progress {
         version: version.to_string(),
