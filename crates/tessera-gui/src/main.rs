@@ -10,11 +10,11 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::StyledExt;
-use gpui_kit::component::TitleBar;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
+use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, gui_key, open_browser};
