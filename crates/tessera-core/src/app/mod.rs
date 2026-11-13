@@ -232,6 +232,27 @@ impl Account {
     pub fn is_offline(&self) -> bool {
         matches!(self, Account::Offline { .. })
     }
+
+    /// The identity behind one account file.
+    ///
+    /// The file says which kind it is: an offline account has no session, so it
+    /// must never be treated as one (a refresh would fail with "no token").
+    pub fn from_saved(account: &accounts::Account) -> Account {
+        if account.offline {
+            Account::Offline {
+                name: account.player_name.clone(),
+                copy: account.copy,
+                file: account.file.clone(),
+            }
+        } else {
+            Account::SignedIn {
+                name: account.player_name.clone(),
+                copy: account.copy,
+                application: account.application.clone(),
+                file: account.file.clone(),
+            }
+        }
+    }
 }
 
 mod account_manager;
@@ -376,12 +397,7 @@ impl App {
             app.accounts.len()
         ));
         if let Some(newest) = app.accounts.last() {
-            app.account = Account::SignedIn {
-                name: newest.player_name.clone(),
-                copy: newest.copy,
-                application: newest.application.clone(),
-                file: newest.file.clone(),
-            };
+            app.account = Account::from_saved(newest);
             app.log(format!("使用已保存账户 {}", newest.label()));
         }
         app
@@ -1141,6 +1157,9 @@ impl App {
     pub fn handle_game_event(&mut self, event: launch::GameEvent) {
         use launch::GameEvent;
         match event {
+            GameEvent::Note(line) => {
+                self.log(line);
+            }
             GameEvent::Started { dir, pid } => {
                 self.status = format!("已启动 {dir}");
                 self.log(format!("游戏进程已启动（pid {pid}）"));

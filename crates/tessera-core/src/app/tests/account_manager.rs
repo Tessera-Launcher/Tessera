@@ -185,3 +185,16 @@ fn removing_an_offline_account_deletes_only_its_file() {
     assert!(tmp.path().join("Steve.json").exists(), "sessions untouched");
     assert_eq!(app.accounts.len(), 2);
 }
+
+#[test]
+fn an_offline_account_is_not_treated_as_a_session_at_startup() {
+    let tmp = tempfile::tempdir().unwrap();
+    crate::accounts::save_offline(tmp.path(), "Steve").unwrap();
+    let saved = crate::accounts::list(tmp.path());
+    let app = App::new("/mc", tmp.path(), vec![version("1.8.9")], saved);
+
+    // Startup picks the only account; the file says it has no session, so it
+    // must come back as offline and never ask for a token refresh.
+    assert!(app.account.is_offline(), "{:?}", app.account);
+    assert_eq!(app.account.label(), "Steve · Offline");
+}

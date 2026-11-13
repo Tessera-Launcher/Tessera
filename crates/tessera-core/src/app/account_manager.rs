@@ -100,20 +100,7 @@ impl App {
         let Some(account) = self.selected_account() else {
             return;
         };
-        self.account = if account.offline {
-            Account::Offline {
-                name: account.player_name.clone(),
-                copy: account.copy,
-                file: account.file.clone(),
-            }
-        } else {
-            Account::SignedIn {
-                name: account.player_name.clone(),
-                copy: account.copy,
-                application: account.application.clone(),
-                file: account.file.clone(),
-            }
-        };
+        self.account = Account::from_saved(&account);
         let label = self.account.label();
         self.status = format!("当前账户 {label}");
         self.log(format!("切换账户：{label}"));
