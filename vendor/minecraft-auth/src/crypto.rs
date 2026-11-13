@@ -17,7 +17,7 @@ impl EcKeyPair {
     pub fn generate() -> Self {
         let mut rng = rand_core::OsRng;
         Self {
-            signing_key: SigningKey::generate_from_rng(&mut rng)
+            signing_key: SigningKey::try_generate_from_rng(&mut rng)
                 .expect("OS RNG unavailable"),
         }
     }
