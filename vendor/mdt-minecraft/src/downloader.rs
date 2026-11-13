@@ -13,16 +13,15 @@ use futures::stream::{self, StreamExt};
 use futures::FutureExt;
 
 use crate::customize::{debug_line, redact_credentials, Downloader, ProgressReporter};
-use crate::security::{is_safe_http_url, is_sha1_hex};
-use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
 #[cfg(feature = "tokio")]
-
 #[cfg(not(feature = "minimal"))]
 use crate::error::io_error;
 use crate::error::{FailedDownload, MdtError};
 use crate::mirror::Mirror;
+use crate::security::{is_safe_http_url, is_sha1_hex};
 use crate::urls::ManifestUrls;
+use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 
 // ===== 1. data structures =====
 
@@ -240,8 +239,8 @@ pub async fn execute_downloads(
     urls: &ManifestUrls,
     reporter: &dyn ProgressReporter,
 ) -> Result<(), MdtError> {
-    let batch = execute_downloads_verified(downloader, tasks, concurrency, mirror, urls, reporter)
-        .await?;
+    let batch =
+        execute_downloads_verified(downloader, tasks, concurrency, mirror, urls, reporter).await?;
     if batch.failed.is_empty() {
         Ok(())
     } else {
@@ -590,10 +589,8 @@ async fn download_from_url(
             // Most libraries are neither signed nor sealed; rewriting them would
             // copy every byte for nothing (and force a second SHA-1 pass).
             let source = tmp.clone();
-            let needs_rewrite = crate::io::spawn_blocking(move || {
-                crate::jar::needs_rewrite(&source)
-            })
-            .await?;
+            let needs_rewrite =
+                crate::io::spawn_blocking(move || crate::jar::needs_rewrite(&source)).await?;
             if needs_rewrite {
                 let unsigned = PathBuf::from(format!("{}.unsigned", tmp.display()));
                 let source = tmp.clone();
@@ -1690,8 +1687,7 @@ mod tests {
                 .and(path("/range.bin"))
                 .and(header("range", format!("bytes={start}-{end}").as_str()))
                 .respond_with(
-                    ResponseTemplate::new(206)
-                        .set_body_bytes(content[start..=end].to_vec()),
+                    ResponseTemplate::new(206).set_body_bytes(content[start..=end].to_vec()),
                 )
                 .mount(&server)
                 .await;
@@ -1737,8 +1733,14 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!done, "a 200 response must fall back to the single-stream path");
-        assert!(!dest.exists(), "a declined attempt must leave nothing behind");
+        assert!(
+            !done,
+            "a 200 response must fall back to the single-stream path"
+        );
+        assert!(
+            !dest.exists(),
+            "a declined attempt must leave nothing behind"
+        );
     }
 
     // ===== natives extraction (Zip Slip) =====

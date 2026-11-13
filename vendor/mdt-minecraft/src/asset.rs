@@ -226,7 +226,9 @@ impl AssetRegistry {
         crate::io::spawn_blocking(move || -> Result<Vec<AssetObject>, MdtError> {
             let mut missing: Vec<AssetObject> = objects
                 .values()
-                .filter(|object| !file_has_size(&object_path(&objects_dir, &object.hash), object.size))
+                .filter(|object| {
+                    !file_has_size(&object_path(&objects_dir, &object.hash), object.size)
+                })
                 .cloned()
                 .collect();
             // An asset index may name one object several times (1.8.9 lists 734 names over 722
