@@ -14,7 +14,7 @@ use std::time::Duration;
 #[cfg(feature = "tokio")]
 use futures::StreamExt;
 #[cfg(feature = "tokio")]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 #[cfg(any(feature = "tokio", feature = "blocking"))]
 use crate::error::io_error;
@@ -265,6 +265,27 @@ pub trait Downloader: Send + Sync {
         dest: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), MdtError>> + Send + 'a>>;
 
+    /// Download `url` into `dest` with `connections` parallel HTTP Range requests.
+    ///
+    /// Returns `Ok(true)` when the whole file arrived this way and is ready to be
+    /// verified. `Ok(false)` means the transport (or the server) cannot do it — no
+    /// Range support, no usable `Content-Range`, a truncated segment — and the
+    /// caller must fall back to [`Self::download`]. A failed attempt never leaves a
+    /// believable file behind: the partial bytes are removed before returning.
+    ///
+    /// The default implementation declines, so a custom transport keeps working
+    /// unchanged and simply downloads large files on one connection.
+    fn download_parallel<'a>(
+        &'a self,
+        url: &'a str,
+        dest: &'a Path,
+        size: u64,
+        connections: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, MdtError>> + Send + 'a>> {
+        let _ = (url, dest, size, connections);
+        Box::pin(async { Ok(false) })
+    }
+
     /// Read `url` into a UTF-8 string (small metadata payloads).
     fn fetch<'a>(
         &'a self,
@@ -315,6 +336,111 @@ impl Downloader for HttpDownloader {
                 .await
                 .map_err(|e| io_error(e, "during download"))?;
             Ok(())
+        })
+    }
+
+    fn download_parallel<'a>(
+        &'a self,
+        url: &'a str,
+        dest: &'a Path,
+        size: u64,
+        connections: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, MdtError>> + Send + 'a>> {
+        let client = self.client.clone();
+        let url = url.to_string();
+        let dest = dest.to_path_buf();
+        Box::pin(async move {
+            if size == 0 || connections < 2 {
+                return Ok(false);
+            }
+            // Never open more connections than there is data to carry.
+            let connections = connections.min(16) as u64;
+            let segment = size.div_ceil(connections).max(1);
+            let count = size.div_ceil(segment);
+            if count < 2 {
+                return Ok(false);
+            }
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+
+            // Reserve the full length first so each worker can seek to its own
+            // offset; every worker opens its own handle (no shared cursor).
+            {
+                let file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&dest)
+                    .await?;
+                file.set_len(size).await?;
+            }
+
+            let segments: Vec<(u64, u64)> = (0..count)
+                .map(|index| {
+                    let start = index * segment;
+                    (start, (start + segment).min(size) - 1)
+                })
+                .collect();
+
+            let results = futures::future::join_all(segments.into_iter().map(|(start, end)| {
+                let client = client.clone();
+                let url = url.clone();
+                let dest = dest.clone();
+                async move {
+                    let expected = end - start + 1;
+                    let response = client
+                        .get(&url)
+                        .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+                        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                        .send()
+                        .await?;
+                    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                        // The mirror ignored `Range` (200 with the whole body) or
+                        // rejected it. Fall back instead of writing the wrong bytes.
+                        return Ok::<bool, MdtError>(false);
+                    }
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&dest)
+                        .await
+                        .map_err(|error| io_error(error, "opening ranged download"))?;
+                    file.seek(std::io::SeekFrom::Start(start))
+                        .await
+                        .map_err(|error| io_error(error, "seeking ranged download"))?;
+                    let mut written = 0u64;
+                    let mut stream = response.bytes_stream();
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk?;
+                        written += chunk.len() as u64;
+                        file.write_all(&chunk)
+                            .await
+                            .map_err(|error| io_error(error, "during ranged download"))?;
+                    }
+                    if written != expected {
+                        return Err(MdtError::InvalidManifest(format!(
+                            "ranged download of {url} returned {written} of {expected} bytes"
+                        )));
+                    }
+                    Ok::<bool, MdtError>(true)
+                }
+            }))
+            .await;
+
+            let mut ok = true;
+            for result in results {
+                if !matches!(result, Ok(true)) {
+                    ok = false;
+                }
+            }
+            if ok {
+                Ok(true)
+            } else {
+                // A partial multi-segment file is worse than none: the caller's
+                // fallback rewrites every byte.
+                let _ = tokio::fs::remove_file(&dest).await;
+                Ok(false)
+            }
         })
     }
 

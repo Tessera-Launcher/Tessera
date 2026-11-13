@@ -17,7 +17,6 @@ use crate::security::{is_safe_http_url, is_sha1_hex};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 #[cfg(feature = "tokio")]
-use tokio::io::AsyncReadExt;
 
 #[cfg(not(feature = "minimal"))]
 use crate::error::io_error;
@@ -217,6 +216,18 @@ fn evaluate_rules(rules: &Option<Vec<Rule>>) -> bool {
 
 // ===== 4. download execution =====
 
+/// Result of one batch: what is verifiably on disk afterwards.
+#[derive(Debug, Default)]
+pub struct DownloadBatch {
+    /// Destinations that exist and matched their manifest SHA-1 after the batch.
+    ///
+    /// Includes files that were already correct before it ran, so a caller can
+    /// use this list instead of re-hashing the destination tree afterwards.
+    pub verified: Vec<PathBuf>,
+    /// Files the batch could not fetch (already retried, already reported).
+    pub failed: Vec<FailedDownload>,
+}
+
 /// Execute a batch of download tasks concurrently, verifying each against its SHA-1.
 ///
 /// An empty task queue is treated as an error rather than a silent success. Progress is reported
@@ -229,6 +240,28 @@ pub async fn execute_downloads(
     urls: &ManifestUrls,
     reporter: &dyn ProgressReporter,
 ) -> Result<(), MdtError> {
+    let batch = execute_downloads_verified(downloader, tasks, concurrency, mirror, urls, reporter)
+        .await?;
+    if batch.failed.is_empty() {
+        Ok(())
+    } else {
+        Err(MdtError::PartialDownloadFailed(batch.failed))
+    }
+}
+
+/// [`execute_downloads`], but returns which destinations are verified on disk.
+///
+/// A caller that would otherwise re-hash the whole destination tree to decide
+/// what to mount (the asset registry) can use [`DownloadBatch::verified`]
+/// instead: every path in it was size-checked and SHA-1-verified by this batch.
+pub async fn execute_downloads_verified(
+    downloader: &dyn Downloader,
+    tasks: Vec<DownloadTask>,
+    concurrency: usize,
+    mirror: &Mirror,
+    urls: &ManifestUrls,
+    reporter: &dyn ProgressReporter,
+) -> Result<DownloadBatch, MdtError> {
     if tasks.is_empty() {
         return Err(MdtError::InvalidManifest(
             "download task queue is empty: the version manifest may be malformed".to_string(),
@@ -239,10 +272,15 @@ pub async fn execute_downloads(
     let total = tasks.len();
     let total_bytes: u64 = tasks.iter().map(|t| t.size).sum();
     let start = Instant::now();
+    // A per-file line is useful for the ~70 version files and pure noise for a
+    // 5000-object asset batch (each line crosses a channel and repaints a log
+    // pane). Only small batches get them.
+    let verbose = total <= STATUS_LINES_MAX_FILES;
 
     let remaining: Arc<AtomicU64> = Arc::new(AtomicU64::new(total_bytes));
     let largest: Arc<Mutex<Option<(String, u64)>>> = Arc::new(Mutex::new(None));
     let downloaded_count: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let verified: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::with_capacity(total)));
     let throttle = Arc::new(Mutex::new(Throttle {
         done: 0,
         last_report: Instant::now(),
@@ -261,19 +299,25 @@ pub async fn execute_downloads(
     let results = stream::iter(tasks.into_iter().map(|task| {
         let throttle = Arc::clone(&throttle);
         let failed = Arc::clone(&failed);
+        let verified = Arc::clone(&verified);
         let remaining = Arc::clone(&remaining);
         let largest = Arc::clone(&largest);
         let downloaded_count = Arc::clone(&downloaded_count);
         let label = task.label.clone();
         let by = task.by.clone();
         let size = task.size;
+        let dest_path = task.dest_path.clone();
         let file_name = task
             .dest_path
             .file_name()
             .and_then(|n| n.to_str())
             .map(str::to_string);
         download_single_file(task, &chain, downloader, failed, reporter).map(move |res| {
-            let downloaded = matches!(&res, Ok(true));
+            let downloaded = matches!(&res, Ok(FileOutcome::Downloaded));
+            let is_verified = matches!(&res, Ok(FileOutcome::Downloaded | FileOutcome::Cached));
+            if is_verified {
+                verified.lock().unwrap().push(dest_path);
+            }
             if downloaded {
                 downloaded_count.fetch_add(1, Ordering::Relaxed);
                 let name = label.clone().or_else(|| file_name.clone());
@@ -297,7 +341,7 @@ pub async fn execute_downloads(
             }
             drop(t);
 
-            if downloaded {
+            if downloaded && verbose {
                 if let (Some(label), Some(by)) = (&label, &by) {
                     reporter.status(&format!("Downloaded {label} by {by}"));
                 }
@@ -329,12 +373,9 @@ pub async fn execute_downloads(
         res?;
     }
 
-    let failed = failed.lock().unwrap();
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        Err(MdtError::PartialDownloadFailed(failed.clone()))
-    }
+    let verified = std::mem::take(&mut *verified.lock().unwrap());
+    let failed = std::mem::take(&mut *failed.lock().unwrap());
+    Ok(DownloadBatch { verified, failed })
 }
 
 /// Progress throttling state for [`execute_downloads`].
@@ -359,6 +400,23 @@ fn should_report(finished: bool, since_last_report: Duration) -> bool {
 /// costs nothing when the download is faster than the interval.
 const REPORT_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Batches with more files than this suppress the per-file `Downloaded ...`
+/// status line. An asset batch is thousands of tiny objects; one log line each
+/// costs a channel message and a log-pane repaint per object and tells the user
+/// nothing they cannot see from the progress bar.
+const STATUS_LINES_MAX_FILES: usize = 200;
+
+/// Files at least this large are fetched with parallel HTTP Range requests.
+///
+/// The client JAR (~40 MiB) and a handful of music assets are the only entries
+/// that qualify, but they are also the ones where a single stream wastes the
+/// available bandwidth: several segments usually finish before one stream would.
+const RANGE_MIN_SIZE: u64 = 8 * 1024 * 1024;
+
+/// Connections used for one large file. Small enough that the global
+/// concurrency budget (not this) still decides total parallelism.
+const RANGE_CONNECTIONS: usize = 4;
+
 /// Default concurrency for asset downloads. Assets are many and small, so this is much higher than
 /// the conservative default used for large files like the client JAR.
 ///
@@ -376,42 +434,31 @@ pub const ASSET_CONCURRENCY: usize = 16;
 /// which is ~130k of them per gigabyte.
 pub(crate) const HASH_BUF_SIZE: usize = 256 * 1024;
 
-/// Stream a file in chunks and compute its SHA-1, avoiding loading the whole file into memory.
+/// Compute a file's SHA-1 in chunks, without loading it into memory.
+///
+/// Runs on the blocking pool: hashing a 500 MiB asset set is pure CPU and must
+/// not stall the single reactor thread that also drives every transfer.
 pub(crate) async fn sha1_file(path: &Path) -> Result<String, MdtError> {
-    #[cfg(not(feature = "tokio"))]
-    {
-        use std::io::Read;
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| MdtError::IoError(e).context(format!("opening {}", path.display())))?;
-        let mut hasher = Sha1::new();
-        let mut buf = vec![0u8; HASH_BUF_SIZE];
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        Ok(hex::encode(hasher.finalize()))
-    }
+    let path = path.to_path_buf();
+    crate::io::spawn_blocking(move || sha1_file_sync(&path)).await?
+}
 
-    #[cfg(feature = "tokio")]
-    {
-        let file = tokio::fs::File::open(path)
-            .await
-            .map_err(|e| MdtError::IoError(e).context(format!("opening {}", path.display())))?;
-        let mut reader = tokio::io::BufReader::new(file);
-        let mut hasher = Sha1::new();
-        let mut buf = vec![0u8; HASH_BUF_SIZE];
-        loop {
-            let n = reader.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
+/// Blocking half of [`sha1_file`].
+fn sha1_file_sync(path: &Path) -> Result<String, MdtError> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| MdtError::IoError(e).context(format!("opening {}", path.display())))?;
+    let mut hasher = Sha1::new();
+    let mut buf = vec![0u8; HASH_BUF_SIZE];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
         }
-        Ok(hex::encode(hasher.finalize()))
+        hasher.update(&buf[..n]);
     }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Download a single file and verify its SHA-1, trying a chain of URLs until one works.
@@ -519,7 +566,17 @@ async fn download_from_url(
     let sidecar = crate::jar::sidecar_path(&task.dest_path);
 
     let result = async {
-        downloader.download(url, &tmp).await?;
+        // Large files with a known size go out as several Range requests. A
+        // transport that declines (or a mirror that ignores `Range`) leaves
+        // nothing behind and the single-stream path runs instead.
+        let parallel = task.extract_to.is_none() && task.size >= RANGE_MIN_SIZE;
+        let done = parallel
+            && downloader
+                .download_parallel(url, &tmp, task.size, RANGE_CONNECTIONS)
+                .await?;
+        if !done {
+            downloader.download(url, &tmp).await?;
+        }
         let actual = sha1_file(&tmp).await?;
         if actual != task.sha1 {
             return Err(MdtError::ChecksumMismatch {
@@ -530,15 +587,28 @@ async fn download_from_url(
         }
 
         if task.normalize_jar {
-            let unsigned = PathBuf::from(format!("{}.unsigned", tmp.display()));
+            // Most libraries are neither signed nor sealed; rewriting them would
+            // copy every byte for nothing (and force a second SHA-1 pass).
             let source = tmp.clone();
-            let destination = unsigned.clone();
-            crate::io::spawn_blocking(move || crate::jar::strip_signatures(&source, &destination))
+            let needs_rewrite = crate::io::spawn_blocking(move || {
+                crate::jar::needs_rewrite(&source)
+            })
+            .await?;
+            if needs_rewrite {
+                let unsigned = PathBuf::from(format!("{}.unsigned", tmp.display()));
+                let source = tmp.clone();
+                let destination = unsigned.clone();
+                crate::io::spawn_blocking(move || {
+                    crate::jar::strip_signatures(&source, &destination)
+                })
                 .await??;
-            let _ = crate::io::remove_file(&tmp).await;
-            crate::io::rename(&unsigned, &task.dest_path).await?;
-            let unsigned_sha1 = sha1_file(&task.dest_path).await?;
-            crate::io::write(&sidecar, format!("{} {}\n", task.sha1, unsigned_sha1)).await?;
+                let _ = crate::io::remove_file(&tmp).await;
+                crate::io::rename(&unsigned, &task.dest_path).await?;
+                let unsigned_sha1 = sha1_file(&task.dest_path).await?;
+                crate::io::write(&sidecar, format!("{} {}\n", task.sha1, unsigned_sha1)).await?;
+            } else {
+                crate::io::rename(&tmp, &task.dest_path).await?;
+            }
         } else {
             crate::io::rename(&tmp, &task.dest_path).await?;
         }
@@ -618,30 +688,37 @@ async fn download_with_retries(
 /// natives when requested. Returns `true` when a fresh copy was actually downloaded.
 ///
 /// File-level network failures are retried with backoff and then *soft-failed* (a
-/// [`FailedDownload`] carrying the underlying reason is pushed onto `failed` and `Ok(false)` is
-/// returned) so one bad asset never kills the whole batch.
+/// [`FailedDownload`] carrying the underlying reason is pushed onto `failed` and
+/// [`FileOutcome::Failed`] is returned) so one bad asset never kills the whole batch.
 async fn download_single_file(
     task: DownloadTask,
     chain: &MirrorChain,
     downloader: &dyn Downloader,
     failed: Arc<Mutex<Vec<FailedDownload>>>,
     reporter: &dyn ProgressReporter,
-) -> Result<bool, MdtError> {
+) -> Result<FileOutcome, MdtError> {
     // 1. Pre-check: skip a plain file whose SHA-1 matches, or a rewritten JAR
     //    whose sidecar names this task's upstream hash and whose current hash
-    //    matches the rewritten one.
+    //    matches the rewritten one. A JAR that needed no rewriting has no
+    //    sidecar and is byte-identical to upstream, so it hash-matches directly.
     let sidecar = crate::jar::sidecar_path(&task.dest_path);
     let mut need_download = true;
     if task.dest_path.exists() {
         if task.normalize_jar {
+            let mut already = false;
             if let Some((source_sha1, output_sha1)) = crate::jar::read_sidecar(&task.dest_path) {
                 if source_sha1 == task.sha1 {
                     let hash = sha1_file(&task.dest_path).await?;
-                    if hash == output_sha1 {
-                        need_download = false;
-                    }
+                    already = hash == output_sha1;
                 }
             }
+            if !already {
+                let meta = crate::io::metadata(&task.dest_path).await?;
+                if meta.len() == task.size {
+                    already = sha1_file(&task.dest_path).await? == task.sha1;
+                }
+            }
+            need_download = !already;
         } else {
             let meta = crate::io::metadata(&task.dest_path).await?;
             if meta.len() == task.size {
@@ -680,7 +757,7 @@ async fn download_single_file(
                 .lock()
                 .unwrap()
                 .push(FailedDownload::new(task.url.clone(), reason));
-            return Ok(false);
+            return Ok(FileOutcome::Failed);
         }
     }
 
@@ -733,7 +810,22 @@ async fn download_single_file(
         .await??;
     }
 
-    Ok(need_download)
+    Ok(if need_download {
+        FileOutcome::Downloaded
+    } else {
+        FileOutcome::Cached
+    })
+}
+
+/// What happened to one file in a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileOutcome {
+    /// The bytes came from the network during this batch.
+    Downloaded,
+    /// The destination already held a verified copy.
+    Cached,
+    /// Every source and retry failed; recorded in the batch's failure list.
+    Failed,
 }
 
 // ===== 5. task generators =====
@@ -1014,7 +1106,7 @@ mod tests {
         LibraryDownloads, MirrorChain, OsRule, Rule, VersionJson,
     };
     #[cfg(feature = "tokio")]
-    use crate::customize::HttpDownloader;
+    use crate::customize::{Downloader, HttpDownloader};
     use crate::customize::{NoopReporter, ProgressReporter, StderrReporter};
     use crate::error::MdtError;
     use crate::mirror::Mirror;
@@ -1025,7 +1117,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
     #[cfg(feature = "tokio")]
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     #[cfg(feature = "tokio")]
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1585,6 +1677,68 @@ mod tests {
         assert!(events.iter().any(|e| e == "finish"), "{events:?}");
 
         let _ = std::fs::remove_file(&dest);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn ranged_download_writes_each_segment_at_its_offset() {
+        let server = MockServer::start().await;
+        let content: Vec<u8> = (0u8..32).collect();
+        // 32 bytes over 4 connections -> 8-byte segments.
+        for (start, end) in [(0usize, 7usize), (8, 15), (16, 23), (24, 31)] {
+            Mock::given(method("GET"))
+                .and(path("/range.bin"))
+                .and(header("range", format!("bytes={start}-{end}").as_str()))
+                .respond_with(
+                    ResponseTemplate::new(206)
+                        .set_body_bytes(content[start..=end].to_vec()),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let dest = unique_path("ranged");
+        let http = test_client();
+        let done = http
+            .download_parallel(
+                &format!("{}/range.bin", server.uri()),
+                &dest,
+                content.len() as u64,
+                4,
+            )
+            .await
+            .unwrap();
+        assert!(done, "206 responses must complete the parallel path");
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn ranged_download_declines_when_the_server_ignores_range() {
+        let server = MockServer::start().await;
+        let content: Vec<u8> = (0u8..32).collect();
+        // A mirror that answers every request with the whole body (200) cannot be
+        // used for segments; the caller must get `false` and no believable file.
+        Mock::given(method("GET"))
+            .and(path("/norange.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(content.clone()))
+            .mount(&server)
+            .await;
+
+        let dest = unique_path("norange");
+        let http = test_client();
+        let done = http
+            .download_parallel(
+                &format!("{}/norange.bin", server.uri()),
+                &dest,
+                content.len() as u64,
+                4,
+            )
+            .await
+            .unwrap();
+        assert!(!done, "a 200 response must fall back to the single-stream path");
+        assert!(!dest.exists(), "a declined attempt must leave nothing behind");
     }
 
     // ===== natives extraction (Zip Slip) =====

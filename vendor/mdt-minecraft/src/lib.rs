@@ -143,7 +143,7 @@ pub use customize::{
     ProgressReporter, RegistryCache, StderrReporter,
 };
 pub use downloader::{
-    AssetIndex, AssetIndexInfo, AssetObject, DownloadTask, VersionJson, VirtualAssets,
+    AssetIndex, AssetIndexInfo, AssetObject, DownloadBatch, DownloadTask, VersionJson, VirtualAssets,
 };
 pub use error::{FailedDownload, MdtError};
 #[cfg(not(feature = "minimal"))]
