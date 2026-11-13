@@ -144,17 +144,17 @@ fn account_label_distinguishes_signed_out_and_in() {
 }
 
 #[test]
-fn vanilla_versions_are_labelled_with_the_newest_runtime() {
+fn vanilla_versions_are_labelled_java_28() {
     let mut app = App::new("/mc", "/acc", vec![version("1.8.9")], Vec::new());
     let selected = version("1.8.9");
-    // `version` pins Java 17, so 8 alone is not enough and shows nothing.
-    app.installed_java = vec![8];
+    // `version` pins Java 17; without 28 on disk nothing can start it.
+    app.installed_java = vec![8, 17];
     assert_eq!(app.java_for(&selected), None);
     app.installed_java = vec![28, 17];
     assert_eq!(app.java_for(&selected), Some(28));
 
     // Mojang's 1.5.2 profile has no parent but boots LaunchWrapper; the launch
-    // shims (class loader, and java.applet past 25) let it take the newest too.
+    // shims (class loader, and java.applet past 25) let it take 28 too.
     let mut legacy = version("1.5.2");
     legacy.java = Some(8);
     legacy.main_class = Some(crate::launch::LAUNCHWRAPPER.to_string());

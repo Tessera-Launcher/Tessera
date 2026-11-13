@@ -387,10 +387,10 @@ impl App {
     /// The Java major this version will launch with, for display.
     ///
     /// Same rule as [`launch::find_java`]: vanilla and LaunchWrapper-era profiles
-    /// take the newest runtime at or above their minimum (the legacy agent
-    /// supplies the removed `java.applet` classes), while a loader profile keeps
-    /// its own pin. An AOT-trained version always runs on the JVM recorded next
-    /// to its cache.
+    /// are locked to [`launch::VANILLA_JAVA`] (the runtime the launch shims were
+    /// tested on, which also supplies the removed `java.applet` classes), while
+    /// a loader profile keeps its own pin. An AOT-trained version always runs on
+    /// the JVM recorded next to its cache.
     pub fn java_for(&self, version: &LocalVersion) -> Option<u32> {
         if version.aot {
             return Some(28);

@@ -32,7 +32,7 @@ mod tests;
 pub use aot_cache::aot_status;
 pub use java::{
     find_java, java_is_acceptable, java_kind, parse_java_major, pick_major, probe_java,
-    required_java, uses_launchwrapper, JavaKind, LAUNCHWRAPPER, LEGACY_MAIN,
+    required_java, uses_launchwrapper, JavaKind, LAUNCHWRAPPER, LEGACY_MAIN, VANILLA_JAVA,
 };
 pub use manifest::{references, References};
 

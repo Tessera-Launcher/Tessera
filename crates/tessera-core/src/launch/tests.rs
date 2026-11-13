@@ -99,8 +99,8 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
 fn prepare_uses_a_downloaded_runtime_when_it_has_one() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
-    let runtimes = managed_runtime(tmp.path(), 8);
-    let java = crate::java::install_dir(&runtimes, "8.0.1+1").join("bin/java");
+    let runtimes = managed_runtime(tmp.path(), 28);
+    let java = crate::java::install_dir(&runtimes, "28.0.1+1").join("bin/java");
 
     let options = Options {
         runtimes: Some(runtimes),
@@ -114,7 +114,7 @@ fn prepare_uses_a_downloaded_runtime_when_it_has_one() {
     )
     .unwrap();
     assert_eq!(launch.command.exe, java, "the managed runtime is used");
-    assert_eq!(launch.java_major, 8);
+    assert_eq!(launch.java_major, 28);
 }
 
 #[test]
@@ -196,19 +196,19 @@ fn only_managed_runtimes_are_considered() {
 }
 
 #[test]
-fn vanilla_takes_the_newest_runtime_and_loaders_keep_their_pin() {
+fn vanilla_locks_java_28_and_loaders_keep_their_pin() {
     let tmp = tempfile::tempdir().unwrap();
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 17);
     managed_runtime(tmp.path(), 28);
     let runtimes = tmp.path().join("运行时");
 
-    // Vanilla: newest wins, even for a 1.8.9 profile that pins 8. This is
-    // what lets one Java 28 runtime serve every unmodded version.
+    // Vanilla: 28 and only 28, even for a 1.8.9 profile that pins 8. That is
+    // the only runtime the launch shims have been tested on.
     assert_eq!(find_java(&runtimes, 8, JavaKind::Vanilla).unwrap().1, 28);
     assert_eq!(find_java(&runtimes, 17, JavaKind::Vanilla).unwrap().1, 28);
     assert_eq!(find_java(&runtimes, 26, JavaKind::Vanilla).unwrap().1, 28);
-    // A newer minimum than anything installed still fails, and says so.
+    // A newer minimum than 28 cannot be run here, and the message says why.
     let error = find_java(&runtimes, 30, JavaKind::Vanilla).unwrap_err();
     assert!(error.to_string().contains("30"), "{error}");
 
@@ -219,14 +219,20 @@ fn vanilla_takes_the_newest_runtime_and_loaders_keep_their_pin() {
 }
 
 #[test]
-fn a_vanilla_launch_without_runtimes_suggests_the_newest_java() {
+fn a_vanilla_launch_without_java_28_asks_for_java_28() {
     let tmp = tempfile::tempdir().unwrap();
+    let error = find_java(&tmp.path().join("运行时"), 8, JavaKind::Vanilla).unwrap_err();
+    assert!(error.to_string().contains("Java 28"), "{error}");
+
+    // A 21 on disk is not a substitute: vanilla is locked, not "newest".
+    managed_runtime(tmp.path(), 8);
+    managed_runtime(tmp.path(), 21);
     let error = find_java(&tmp.path().join("运行时"), 8, JavaKind::Vanilla).unwrap_err();
     assert!(error.to_string().contains("Java 28"), "{error}");
 }
 
 #[test]
-fn an_applet_era_version_takes_the_newest_java_too() {
+fn an_applet_era_version_locks_java_28_too() {
     let tmp = tempfile::tempdir().unwrap();
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 25);
@@ -243,7 +249,7 @@ fn an_applet_era_version_takes_the_newest_java_too() {
 fn a_legacy_launch_goes_through_the_agent() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
-    let runtimes = managed_runtime(tmp.path(), 25);
+    let runtimes = managed_runtime(tmp.path(), 28);
     let version_dir = tmp.path().join("versions/1.5.2");
     std::fs::create_dir_all(&version_dir).unwrap();
     std::fs::write(
@@ -586,7 +592,7 @@ fn natives_placeholders_are_substituted_with_an_absolute_path() {
     std::fs::create_dir_all(root.join("versions/26.3/26.3-natives")).unwrap();
 
     let options = Options {
-        runtimes: Some(managed_runtime(root, 21)),
+        runtimes: Some(managed_runtime(root, 28)),
         ..Options::default()
     };
     let launch = prepare(root, "26.3", &Credentials::offline("Steve"), &options).unwrap();
@@ -698,7 +704,7 @@ fn a_modern_profile_gets_the_classpath_from_its_own_jvm_arguments() {
     std::fs::write(root.join("versions/1.20.1/1.20.1.jar"), b"jar").unwrap();
 
     let options = Options {
-        runtimes: Some(managed_runtime(root, 17)),
+        runtimes: Some(managed_runtime(root, 28)),
         ..Options::default()
     };
     let launch = prepare(root, "1.20.1", &Credentials::offline("Steve"), &options).unwrap();
@@ -735,7 +741,7 @@ fn a_profile_whose_id_disagrees_with_its_directory_still_uses_the_directory() {
     std::fs::write(root.join("versions/my-instance/my-instance.jar"), b"jar").unwrap();
 
     let options = Options {
-        runtimes: Some(managed_runtime(root, 17)),
+        runtimes: Some(managed_runtime(root, 28)),
         ..Options::default()
     };
     let launch = prepare(
@@ -768,7 +774,7 @@ fn placeholders_receive_the_session_values() {
     creds.access_token = "tok".into();
     creds.uuid = "uuid-1".into();
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 8)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
     };
     let launch = prepare(tmp.path(), "1.8.9", &creds, &options).unwrap();
@@ -793,7 +799,7 @@ fn a_missing_library_is_reported_instead_of_launching_half_a_classpath() {
     .unwrap();
 
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 8)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
     };
     let error = prepare(
@@ -812,7 +818,7 @@ fn a_missing_client_jar_is_reported() {
     fixture(tmp.path());
     std::fs::remove_file(tmp.path().join("versions/1.8.9/1.8.9.jar")).unwrap();
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 8)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
     };
     let error = prepare(
@@ -843,7 +849,7 @@ fn a_profile_without_java_version_gets_it_from_the_version_number() {
     );
     std::fs::write(tmp.path().join("versions/1.20.5/1.20.5.jar"), b"jar").unwrap();
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 21)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
     };
     let launch = prepare(
@@ -854,40 +860,58 @@ fn a_profile_without_java_version_gets_it_from_the_version_number() {
     )
     .unwrap();
     assert_eq!(launch.required_major, 21, "1.20.5 needs 21");
-    assert_eq!(launch.java_major, 21);
+    // The minimum says 21, but vanilla is locked to 28 either way.
+    assert_eq!(launch.java_major, 28);
 }
 
 #[test]
-fn a_too_old_java_is_refused_with_what_was_found() {
+fn a_profile_newer_than_java_28_is_refused_with_what_was_found() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 8)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
     };
-    // Only Java 8 is installed, and this profile asks for 21.
+    // A profile that wants a runtime newer than the one the shims know about
+    // cannot be guessed at: 28 would reject the class files anyway.
     write_version(
         tmp.path(),
-        "1.21.11",
+        "1.30",
         serde_json::json!({
-            "id": "1.21.11",
+            "id": "1.30",
             "type": "release",
             "mainClass": "net.minecraft.client.main.Main",
-            "javaVersion": { "majorVersion": 21 },
+            "javaVersion": { "majorVersion": 30 },
             "libraries": []
         }),
     );
     // Give it a jar so only the Java decision is under test.
-    std::fs::write(tmp.path().join("versions/1.21.11/1.21.11.jar"), b"jar").unwrap();
+    std::fs::write(tmp.path().join("versions/1.30/1.30.jar"), b"jar").unwrap();
+    let error = prepare(tmp.path(), "1.30", &Credentials::offline("Steve"), &options)
+        .expect_err("Java 28 cannot run a 30 profile");
+    assert!(error.to_string().contains("Java 30"), "{error}");
+    assert!(error.to_string().contains("Java 28"), "{error}");
+}
+
+#[test]
+fn a_vanilla_profile_below_28_still_asks_for_28() {
+    let tmp = tempfile::tempdir().unwrap();
+    fixture(tmp.path());
+    let options = Options {
+        runtimes: Some(managed_runtime(tmp.path(), 21)),
+        ..Options::default()
+    };
+    // A 21 runtime meets every minimum here and is still not used: vanilla is
+    // locked to the one runtime the shims were tested on.
     let error = prepare(
         tmp.path(),
-        "1.21.11",
+        "1.8.9",
         &Credentials::offline("Steve"),
         &options,
     )
-    .expect_err("Java 8 cannot run a 21 profile");
+    .expect_err("a 21 runtime is not Java 28");
+    assert!(error.to_string().contains("Java 28"), "{error}");
     assert!(error.to_string().contains("Java 21"), "{error}");
-    assert!(error.to_string().contains("Java 8"), "{error}");
     assert!(error.to_string().contains("Java 运行时界面"), "{error}");
 }
 
@@ -957,7 +981,7 @@ fn custom_resolution_is_announced_to_the_game() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 8)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         width: 1280,
         height: 720,
         ..Options::default()

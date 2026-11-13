@@ -328,12 +328,12 @@ fn a_spawned_game_is_watched_with_its_version_directory() {
 
     // A runtime that exits as soon as it is started, so the test never waits.
     let runtimes = tmp.path().join("运行时");
-    let bin = crate::java::install_dir(&runtimes, "17.0.1+1").join("bin");
+    let bin = crate::java::install_dir(&runtimes, "28.0.1+1").join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let java = bin.join("java");
     std::fs::write(
         &java,
-        "#!/bin/sh\necho 'openjdk version \"17.0.1\"' >&2\nexit 0\n",
+        "#!/bin/sh\necho 'openjdk version \"28.0.1\"' >&2\nexit 0\n",
     )
     .unwrap();
     #[cfg(unix)]

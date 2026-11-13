@@ -2,12 +2,24 @@
 //!
 //! The launcher only considers the JREs it downloaded itself; there is no
 //! `JAVA_HOME` or `PATH` fallback. Plain vanilla and LaunchWrapper-era profiles
-//! prefer the newest installed runtime (the agent shims make old clients work
-//! there), while a loader profile keeps its own pin.
+//! are locked to Java 28 EA, the only runtime the shims have been tested on,
+//! while a loader profile keeps its own pin.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+
+/// The runtime every unmodded profile launches on.
+///
+/// Java 28 EA is the only JVM the launch shims (the applet renamer, the
+/// LaunchWrapper entry point, the netty workaround, the ASCII natives mirror)
+/// have been tested against. Running vanilla on any other runtime is untested,
+/// so it is refused instead of being picked silently: an untested JVM is a
+/// guess, and a wrong guess shows up as an opaque crash inside the game.
+///
+/// AOT training already forces this same runtime, and a cache only replays on
+/// the JVM that wrote it, so the launch path and the cache path now agree.
+pub const VANILLA_JAVA: u32 = 28;
 
 /// Whether a runtime of `major` can run a **loader** profile that asks for
 /// `required`.
@@ -15,7 +27,8 @@ use crate::error::{Error, Result};
 /// A Java 8 pin in a loader profile means exactly 8: Forge and friends use
 /// reflection and LWJGL 2 in ways that break on 17+, and the failures are
 /// opaque (`NoSuchMethodError` half a minute in). Plain and LaunchWrapper-era
-/// profiles instead go through [`pick_major`], which prefers the newest runtime.
+/// profiles instead go through [`pick_major`], which only accepts
+/// [`VANILLA_JAVA`].
 pub fn java_is_acceptable(required: u32, major: u32) -> bool {
     if required <= 8 {
         major == 8
@@ -37,11 +50,10 @@ pub const LEGACY_MAIN: &str = "tessera.legacy.Main";
 /// Which Java rule a profile follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JavaKind {
-    /// Plain Minecraft: any runtime at or above the profile's minimum, newest
-    /// first.
+    /// Plain Minecraft: [`VANILLA_JAVA`], whatever the profile's minimum says.
     Vanilla,
     /// Minecraft that boots through LaunchWrapper with no loader on top, i.e.
-    /// up to 1.5.2. It takes the newest runtime like vanilla; a java agent
+    /// up to 1.5.2. It takes [`VANILLA_JAVA`] like vanilla; a java agent
     /// replaces the wrapper's entry point and renames the `java.applet`
     /// references JDK 28 no longer resolves.
     Legacy,
@@ -66,17 +78,18 @@ pub fn java_kind(has_parent: bool, main_class: Option<&str>) -> JavaKind {
 /// a row is the version that will actually start.
 pub fn pick_major(installed: &[u32], required: u32, kind: JavaKind) -> Option<u32> {
     match kind {
-        JavaKind::Vanilla => installed
-            .iter()
-            .copied()
-            .filter(|major| *major >= required)
-            .max(),
-        // Same choice as vanilla: the shims below make the newest JVM work.
-        JavaKind::Legacy => installed
-            .iter()
-            .copied()
-            .filter(|major| *major >= required)
-            .max(),
+        // Locked, not preferred: a profile that needs a runtime newer than the
+        // one the shims were tested on cannot be run correctly here at all, so
+        // this fails rather than falling back to 28.
+        JavaKind::Vanilla | JavaKind::Legacy => {
+            if required > VANILLA_JAVA {
+                return None;
+            }
+            installed
+                .iter()
+                .copied()
+                .find(|major| *major == VANILLA_JAVA)
+        }
         JavaKind::Loader => installed
             .iter()
             .copied()
@@ -94,8 +107,8 @@ pub fn pick_major(installed: &[u32], required: u32, kind: JavaKind) -> Option<u3
 /// Whether this profile boots through LaunchWrapper.
 ///
 /// It only says how the game starts. The Java choice still depends on whether a
-/// loader is present: a bare LaunchWrapper profile gets the legacy agent and the
-/// newest runtime, while a loader profile keeps its own pin.
+/// loader is present: a bare LaunchWrapper profile gets the legacy agent and
+/// [`VANILLA_JAVA`], while a loader profile keeps its own pin.
 pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
     main_class == Some(LAUNCHWRAPPER)
 }
@@ -109,10 +122,10 @@ pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
 /// Vanilla and loader profiles want opposite things from a JVM, so they get
 /// separate rules:
 ///
-/// * Vanilla takes the **newest** runtime that still satisfies the profile's
-///   minimum. Minecraft itself has no upper bound — a 1.8.9 world runs on Java
-///   28 — and the newest JVM is the one that can replay an AOT cache.
-/// * A legacy (LaunchWrapper, no loader) profile also takes the newest runtime:
+/// * Vanilla takes [`VANILLA_JAVA`] (28 EA) and nothing else. That is the one
+///   runtime the shims have been tested on, and it is also the one that can
+///   replay an AOT cache. A profile asking for a newer minimum is refused.
+/// * A legacy (LaunchWrapper, no loader) profile also takes [`VANILLA_JAVA`]:
 ///   the legacy agent replaces LaunchWrapper's entry point and supplies the
 ///   `java.applet` classes that JDK 28 removed.
 /// * A loader profile pins the range: Forge's launch wrapper only works on the
@@ -126,11 +139,15 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
     if installed.is_empty() {
         return Err(Error::missing(match kind {
             JavaKind::Vanilla => format!(
-                "还没有下载 Java：原版统一跑最新的 Java（去 Java 运行时界面装 Java 28，{}）",
+                "还没有下载 Java：原版统一跑 Java {} EA（去 Java 运行时界面装一个，{}）",
+                VANILLA_JAVA,
                 runtimes.display()
             ),
+            // Before 1.6 the game is an applet, so it needs the shims, and the
+            // shims only know Java 28.
             JavaKind::Legacy => format!(
-                "还没有下载 Java：1.5.2 及更早的版本跑最新的 Java 就行（去 Java 运行时界面装一个，{}）",
+                "还没有下载 Java：1.5.2 及更早的版本要 Java {} EA（去 Java 运行时界面装一个，{}）",
+                VANILLA_JAVA,
                 runtimes.display()
             ),
             JavaKind::Loader => format!(
@@ -152,7 +169,17 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
             .join("、");
         return Err(Error::missing(
             if kind == JavaKind::Vanilla || kind == JavaKind::Legacy {
-                format!("这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）")
+                // Distinguish "too new" from "28 not installed": the first is
+                // a version this launcher cannot run, the second is a download.
+                if required > VANILLA_JAVA {
+                    format!(
+                        "这个版本需要 Java {required}，比支持的最高版本 Java {VANILLA_JAVA} 还新（现在只有 {seen}）"
+                    )
+                } else {
+                    format!(
+                        "原版统一跑 Java {VANILLA_JAVA} EA，现在只有 {seen}（去 Java 运行时界面下载 Java {VANILLA_JAVA} EA）"
+                    )
+                }
             } else if required <= 8 {
                 format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
             } else {
