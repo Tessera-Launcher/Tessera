@@ -63,7 +63,7 @@ fn apply(mode: ThemeMode, cx: &mut App) {
             colors.status_danger => [red, red_light, chart_3, chart_bearish]
         }
         // Keep the 16 px scrollbar lane from painting a visible rail behind the 6 px thumb.
-        theme.colors.scrollbar = rgba(0x00000000).into();
+        theme.colors.scrollbar.a = 0.0;
         theme.colors.overlay = rgba(colors.backdrop).into();
         // Keep the library's platform fallback if none of our families exists.
         if let Some(family) = ui_family {
