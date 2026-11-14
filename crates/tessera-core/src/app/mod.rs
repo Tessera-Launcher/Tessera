@@ -274,8 +274,8 @@ pub use self::music::{MusicFocus, MusicKind, MusicUi, PlayOrder};
 pub struct App {
     pub root: PathBuf,
     pub accounts_dir: PathBuf,
-    /// `data/运行时`: the Java runtimes this launcher downloaded, one directory
-    /// per version. Set by `main` from [`crate::paths::Paths`]; the default is
+    /// `data/依赖/java`: the Java runtimes this launcher downloaded, one
+    /// directory per version. Set by `main` from [`crate::paths::Paths`]; the default is
     /// derived from `accounts_dir` so tests and `TESSERA_DATA` runs stay self-contained.
     pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
@@ -332,7 +332,7 @@ pub struct App {
     ///
     /// The list pane prints the Java a launch would actually use, and a vanilla
     /// profile always takes the newest one, so the answer has to be cached here
-    /// instead of re-reading `data/运行时` on every frame.
+    /// instead of re-reading `data/依赖/java` on every frame.
     pub installed_java: Vec<u32>,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
@@ -354,7 +354,7 @@ impl App {
     ) -> Self {
         let root = root.into();
         let accounts_dir = accounts_dir.into();
-        // `<data>/凭据/账户` → `<data>/运行时`.
+        // `<data>/凭据/账户` → `<data>/依赖/java`.
         let runtimes = crate::paths::runtime_dir_beside(&accounts_dir);
         let dependencies = crate::paths::dependencies_dir_beside(&accounts_dir);
         let mut app = App {

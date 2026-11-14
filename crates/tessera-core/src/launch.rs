@@ -119,7 +119,7 @@ pub struct Options {
     pub fastmenu_agent: Option<PathBuf>,
     pub width: u32,
     pub height: u32,
-    /// `data/运行时`: where the launcher's own JREs live. There is deliberately no
+    /// `data/依赖/java`: where the launcher's own JREs live. There is deliberately no
     /// way to point a launch at some other Java — every instance runs on a runtime
     /// the launcher downloaded, so the version is known and explainable.
     pub runtimes: Option<PathBuf>,

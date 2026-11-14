@@ -86,7 +86,7 @@ impl JavaUi {
     /// The installed build when the API has a newer one for this feature.
     ///
     /// Only launcher-managed directory names are compared: a hand-made
-    /// `运行时/21` is the user's copy, not something an update should replace.
+    /// `依赖/java/21` is the user's copy, not something an update should replace.
     pub fn update_for(&self, runtime: &crate::java::Runtime) -> Option<&crate::java::Installed> {
         let installed = self
             .installed

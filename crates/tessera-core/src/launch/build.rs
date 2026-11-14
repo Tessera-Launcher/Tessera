@@ -40,7 +40,7 @@ pub(super) fn prepare_inner(
     let runtimes = options
         .runtimes
         .clone()
-        .ok_or_else(|| Error::internal("没有配置 Java 运行时目录"))?;
+        .ok_or_else(|| Error::internal("没有配置 Java 依赖目录"))?;
     let version_dir = root.join("versions").join(version_dir_name);
     // A finished AOT training run stores the exact JVM build it used. Launching
     // with a different JVM would make the cache silently unusable, so the cache

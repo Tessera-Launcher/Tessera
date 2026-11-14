@@ -1,4 +1,5 @@
-//! The optional download engine: one pinned `aria2c` binary per platform.
+//! The optional download engine: one pinned `aria2c` binary per platform, next
+//! to the Java runtimes under `data/依赖/`.
 //!
 //! aria2's own 1.37.0 release only ships Windows and Android builds, and its
 //! assets were uploaded before GitHub started computing release-asset digests
@@ -26,7 +27,7 @@ use crate::error::{Error, Result};
 /// The aria2 release every build below was cut from.
 pub const VERSION: &str = "1.37.0";
 
-/// Where the binary is installed: `<data>/依赖/aria2`.
+/// Where the binary is installed: `<data>/依赖/aria2`, beside `<data>/依赖/java`.
 pub const DIRECTORY: &str = "aria2";
 
 /// The platforms with a pinned build.

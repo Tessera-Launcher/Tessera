@@ -330,7 +330,7 @@ fn a_spawned_game_is_watched_with_its_version_directory() {
     .unwrap();
 
     // A runtime that exits as soon as it is started, so the test never waits.
-    let runtimes = tmp.path().join("运行时");
+    let runtimes = tmp.path().join("依赖").join("java");
     let bin = crate::java::install_dir(&runtimes, "28.0.1+1").join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let java = bin.join("java");

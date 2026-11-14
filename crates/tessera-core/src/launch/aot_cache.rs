@@ -84,7 +84,7 @@ fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Ao
         .find(|runtime| runtime.version == meta.java_version && runtime.major == meta.java_major)
     else {
         return AotLookup::Broken(format!(
-            "训练时使用的 Java {}（major {}）已不在运行时目录",
+            "训练时使用的 Java {}（major {}）已不在依赖目录",
             meta.java_version, meta.java_major
         ));
     };
