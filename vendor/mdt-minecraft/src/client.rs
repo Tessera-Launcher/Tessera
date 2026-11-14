@@ -23,11 +23,6 @@ use crate::mirror::Mirror;
 use crate::modloader::ModLoader;
 use crate::urls::ManifestUrls;
 
-/// Default download concurrency.
-///
-/// Three is enough for most connections; go higher and some mirrors will rate-limit or 403 you.
-const DEFAULT_CONCURRENCY: usize = 3;
-
 /// The `MdtClient`. One instance holds everything a download needs: a pooled HTTP client, the
 /// active [`Mirror`], and the `.minecraft` root directory. Build one with [`MdtClient::builder`]
 /// and reuse it for as many installs as you want.
@@ -49,21 +44,14 @@ const DEFAULT_CONCURRENCY: usize = 3;
 /// }
 /// ```
 pub struct MdtClient {
-    #[cfg(feature = "tokio")]
-    http: reqwest::Client,
     downloader: Arc<dyn Downloader>,
     mirror: Mirror,
     root: PathBuf,
     /// Where the download lists are written; `root/列表` unless the front-end
     /// keeps them in its own cache.
     list_dir: PathBuf,
-    concurrency: usize,
-    asset_concurrency: usize,
     http1_only: bool,
     reporter: Arc<dyn ProgressReporter>,
-    proxy: Option<String>,
-    connect_timeout: Duration,
-    read_timeout: Duration,
 }
 
 impl MdtClient {
@@ -71,12 +59,6 @@ impl MdtClient {
     #[must_use]
     pub fn builder() -> MdtClientBuilder {
         MdtClientBuilder::new()
-    }
-
-    /// The shared HTTP client (connection-pooled, with a browser User-Agent).
-    #[cfg(feature = "tokio")]
-    pub fn http(&self) -> &reqwest::Client {
-        &self.http
     }
 
     /// The active transport (files and metadata).
@@ -92,48 +74,6 @@ impl MdtClient {
     /// The target `.minecraft` root directory.
     pub fn root_dir(&self) -> &Path {
         &self.root
-    }
-
-    /// The configured download concurrency.
-    pub fn concurrency(&self) -> usize {
-        self.concurrency
-    }
-
-    /// The configured HTTP proxy URL, if any.
-    pub fn proxy(&self) -> Option<&str> {
-        self.proxy.as_deref()
-    }
-
-    /// The configured connect timeout.
-    pub fn connect_timeout(&self) -> Duration {
-        self.connect_timeout
-    }
-
-    /// The configured read timeout.
-    pub fn read_timeout(&self) -> Duration {
-        self.read_timeout
-    }
-
-    /// Change the download concurrency at runtime (clamped to at least 1).
-    ///
-    /// Unlike [`MdtClientBuilder::concurrency`], this works after the client is built — handy for
-    /// a user preference or a `--jobs`-style CLI flag.
-    pub fn set_concurrency(&mut self, concurrency: usize) {
-        self.concurrency = concurrency.max(1);
-    }
-
-    /// The configured concurrency for asset downloads.
-    pub fn asset_concurrency(&self) -> usize {
-        self.asset_concurrency
-    }
-
-    /// Change the asset download concurrency at runtime (clamped to at least 1).
-    ///
-    /// Assets are thousands of small files, so this is the knob that matters most for install
-    /// time — and the one least suited to a single fixed value, since it is bounded by the
-    /// mirror's tolerance for parallel connections, not by local resources.
-    pub fn set_asset_concurrency(&mut self, concurrency: usize) {
-        self.asset_concurrency = concurrency.max(1);
     }
 
     /// Whether the transport is pinned to HTTP/1.1 (see [`MdtClientBuilder::http1_only`]).
@@ -363,8 +303,6 @@ pub struct MdtClientBuilder {
     mirror: Mirror,
     root: PathBuf,
     list_dir: Option<PathBuf>,
-    concurrency: usize,
-    asset_concurrency: usize,
     http1_only: bool,
     reporter: Option<Arc<dyn ProgressReporter>>,
     downloader: Option<Arc<dyn Downloader>>,
@@ -374,15 +312,13 @@ pub struct MdtClientBuilder {
 }
 
 impl MdtClientBuilder {
-    /// Start building with defaults ([`Mirror::BMCLAPI`], root `.`, 3 concurrent downloads).
+    /// Start building with defaults ([`Mirror::BMCLAPI`], root `.`).
     #[must_use]
     pub fn new() -> Self {
         Self {
             mirror: Mirror::default(),
             root: PathBuf::from("."),
             list_dir: None,
-            concurrency: DEFAULT_CONCURRENCY,
-            asset_concurrency: 64,
             http1_only: true,
             reporter: None,
             downloader: None,
@@ -413,25 +349,6 @@ impl MdtClientBuilder {
     #[must_use]
     pub fn list_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.list_dir = Some(dir.into());
-        self
-    }
-
-    /// Override the download concurrency (clamped to at least 1; default 3).
-    #[must_use]
-    pub fn concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency.max(1);
-        self
-    }
-
-    /// Override the asset download concurrency (clamped to at least 1; default 16).
-    ///
-    /// `concurrency` above governs the few large files (client JAR, libraries, natives); this one
-    /// governs the thousands of small asset objects, where per-request overhead rather than
-    /// bandwidth sets the ceiling. It also sizes the HTTP connection pool, so raising it does not
-    /// leave the pool as the new bottleneck.
-    #[must_use]
-    pub fn asset_concurrency(mut self, concurrency: usize) -> Self {
-        self.asset_concurrency = concurrency.max(1);
         self
     }
 
@@ -504,7 +421,6 @@ impl MdtClientBuilder {
             self.proxy.as_deref(),
             self.connect_timeout,
             self.read_timeout,
-            self.asset_concurrency,
             self.http1_only,
         )?;
 
@@ -528,21 +444,14 @@ impl MdtClientBuilder {
         std::fs::create_dir_all(&list_dir)?;
 
         Ok(MdtClient {
-            #[cfg(feature = "tokio")]
-            http,
             downloader,
             mirror: self.mirror,
             root: self.root,
             list_dir,
-            concurrency: self.concurrency,
-            asset_concurrency: self.asset_concurrency,
             http1_only: self.http1_only,
             reporter: self
                 .reporter
                 .unwrap_or_else(|| Arc::new(StderrReporter::new())),
-            proxy: self.proxy,
-            connect_timeout: self.connect_timeout,
-            read_timeout: self.read_timeout,
         })
     }
 }
@@ -557,62 +466,6 @@ impl Default for MdtClientBuilder {
 mod tests {
     use super::*;
 
-    #[cfg(any(feature = "tokio", feature = "blocking"))]
-    #[test]
-    fn builder_defaults_to_three_threads() {
-        let client = MdtClient::builder().build().unwrap();
-        assert_eq!(client.concurrency(), 3);
-    }
-
-    #[cfg(any(feature = "tokio", feature = "blocking"))]
-    #[test]
-    fn builder_concurrency_is_clamped_to_at_least_one() {
-        let client = MdtClient::builder().concurrency(0).build().unwrap();
-        assert_eq!(client.concurrency(), 1);
-    }
-
-    #[cfg(any(feature = "tokio", feature = "blocking"))]
-    #[test]
-    fn builder_concurrency_can_be_overridden() {
-        let client = MdtClient::builder().concurrency(8).build().unwrap();
-        assert_eq!(client.concurrency(), 8);
-    }
-
-    #[cfg(any(feature = "tokio", feature = "blocking"))]
-    #[test]
-    fn set_concurrency_updates_at_runtime() {
-        let mut client = MdtClient::builder().build().unwrap();
-        client.set_concurrency(6);
-        assert_eq!(client.concurrency(), 6);
-    }
-
-    #[cfg(any(feature = "tokio", feature = "blocking"))]
-    #[test]
-    fn set_concurrency_clamps_to_at_least_one() {
-        let mut client = MdtClient::builder().build().unwrap();
-        client.set_concurrency(0);
-        assert_eq!(client.concurrency(), 1);
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    #[cfg(any(feature = "tokio", feature = "blocking"))]
-    #[test]
-    fn asset_concurrency_defaults_to_the_constant_and_is_configurable() {
-        // The thousands of small asset objects need their own knob: `concurrency` stays
-        // deliberately low for the client JAR and libraries.
-        let client = MdtClient::builder().build().unwrap();
-        assert_eq!(client.asset_concurrency(), 64);
-
-        let client = MdtClient::builder().asset_concurrency(64).build().unwrap();
-        assert_eq!(client.asset_concurrency(), 64);
-
-        let mut client = MdtClient::builder().build().unwrap();
-        client.set_asset_concurrency(0);
-        assert_eq!(client.asset_concurrency(), 1);
-        // The two knobs are independent.
-        assert_eq!(client.concurrency(), 3);
-    }
-
     #[cfg(not(any(feature = "tokio", feature = "blocking")))]
     #[test]
     fn build_without_transport_returns_missing_downloader() {
@@ -626,8 +479,7 @@ mod tests {
     #[cfg(all(feature = "minimal", any(feature = "tokio", feature = "blocking")))]
     #[test]
     fn minimal_client_builds_without_advanced_modules() {
-        let client = MdtClient::builder().build().unwrap();
-        assert_eq!(client.concurrency(), 3);
+        let _client = MdtClient::builder().build().unwrap();
     }
 
     /// Every regular file under `dir` (recursive).

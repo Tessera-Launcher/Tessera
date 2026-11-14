@@ -28,6 +28,7 @@ Upstream downloads everything itself. This copy does not:
 | `MdtClient::install_vanilla*`, `install_loader*`, `install_modloader`, `full_install`, `uninstall_modloader` | replaced by `plan_vanilla` / `plan_loader` |
 | `installer::mcr` (post-uninstall manifest scan), `installer::uninstall` | uninstall needs the downloader to restore files |
 | `jar` (JAR re-packing), `cli`, `tui`, `blocking`, `macros` | download-side conveniences; this crate has one consumer |
+| `DownloadTask::{label, by}`, `MdtClientBuilder::{concurrency, asset_concurrency}` | no transfer happens here; aria2 owns progress and concurrency |
 | `MdtError::{PartialDownloadFailed, UninstallFailed}` | nothing can produce them now |
 
 Added:

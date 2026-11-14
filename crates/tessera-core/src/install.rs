@@ -112,18 +112,13 @@ pub enum InstallEvent {
 }
 
 /// Fetch the version list for the picker.
-pub fn spawn_versions(
-    root: PathBuf,
-    source: Source,
-    asset_concurrency: usize,
-) -> Receiver<InstallEvent> {
+pub fn spawn_versions(root: PathBuf, source: Source) -> Receiver<InstallEvent> {
     spawn_worker(move |sender| {
         let transferred = Arc::new(AtomicU64::new(0));
         let client = build_client(
             &root,
             &root.join(mdt::plan::LIST_DIR),
             source,
-            asset_concurrency,
             sender.clone(),
             transferred.clone(),
         )?;
@@ -159,7 +154,6 @@ pub fn spawn_install(
     // Where the aria2 list goes (`data/缓存`); `None` keeps it in `<root>/列表`.
     list_dir: Option<PathBuf>,
     source: Source,
-    asset_concurrency: usize,
     version: String,
     loader: Loader,
 ) -> Receiver<InstallEvent> {
@@ -173,7 +167,6 @@ pub fn spawn_install(
             &root,
             &list_dir,
             source,
-            asset_concurrency,
             sender.clone(),
             transferred.clone(),
         )?;
@@ -361,7 +354,6 @@ fn build_client(
     root: &PathBuf,
     list_dir: &std::path::Path,
     source: Source,
-    asset_concurrency: usize,
     sender: Sender<InstallEvent>,
     transferred: Arc<AtomicU64>,
 ) -> Result<MdtClient> {
@@ -369,8 +361,6 @@ fn build_client(
         .mirror(source.to_mdt())
         .root_dir(root)
         .list_dir(list_dir)
-        .concurrency(FILE_CONCURRENCY)
-        .asset_concurrency(asset_concurrency)
         .progress_reporter(Reporter {
             sender,
             transferred,
@@ -458,24 +448,6 @@ impl ProgressReporter for Reporter {
     fn finish(&self) {}
 }
 
-/// Asset download concurrency, for both mirrors.
-///
-/// Asset downloads are latency-bound, not bandwidth-bound: 5149 objects average
-/// ~90 KiB, so the wall time is (files / concurrency) x per-request latency. The
-/// old 32 was chosen from a 219-object sample and scaled badly to a full modern
-/// index; 96 keeps enough requests in flight to hide mirror latency (a separate
-/// per-request timer is avoided by the shared keep-alive pool).
-pub const ASSET_CONCURRENCY: usize = 96;
-
-/// Concurrency for the version's own files: the client jar, libraries and
-/// natives.
-///
-/// 67 files for 26.3, and the client jar is now fetched with parallel Range
-/// requests, so this is mostly about not serialising the many small libraries
-/// behind it. 96 means the whole batch is in flight at once; the HTTP pool is
-/// sized from the asset concurrency, so this does not thrash connections.
-pub const FILE_CONCURRENCY: usize = 96;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,10 +467,6 @@ mod tests {
         assert_eq!(Source::Mojang.label(), "官方源");
         // Official servers are the default; the mirror is one keypress away.
         assert_eq!(Source::default(), Source::Mojang);
-        // The concurrency values are measured rather than guessed (see
-        // `ASSET_CONCURRENCY`).
-        assert_eq!(ASSET_CONCURRENCY, 96);
-        assert_eq!(FILE_CONCURRENCY, 96);
     }
 
     /// Live check of the picker's data path: one manifest request, no install.
@@ -510,7 +478,7 @@ mod tests {
     #[ignore = "network"]
     fn live_version_list_arrives_from_the_mirror() {
         let dir = std::env::temp_dir().join("tessera-live-versions");
-        let receiver = spawn_versions(dir, Source::Mojang, 8);
+        let receiver = spawn_versions(dir, Source::Mojang);
         let mut versions = Vec::new();
         while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(60)) {
             match event {
@@ -548,7 +516,6 @@ mod tests {
             deps,
             None,
             Source::Mojang,
-            ASSET_CONCURRENCY,
             "26.3".into(),
             Loader::None,
         );

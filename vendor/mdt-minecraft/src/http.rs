@@ -13,10 +13,9 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 /// Cheap to clone (`Arc` under the hood) and reuses one connection pool across all downloads,
 /// so you're not doing a TLS handshake per file.
 ///
-/// The keep-alive pool is deliberately generous (90s idle) so a burst of asset downloads reuses
-/// warm connections. Its per-host ceiling is derived from the caller's asset concurrency: a pool
-/// smaller than the concurrency thrashes connections exactly when the extra parallelism was
-/// supposed to help, so the pool is `asset_concurrency + 4` with a floor of 20.
+/// The keep-alive pool is deliberately generous (90s idle) so a burst of metadata requests reuses
+/// warm connections. Downloads are no longer done here (aria2 moves the bytes), so a small fixed
+/// ceiling is enough; it stays above the few concurrent metadata fetches the installer makes.
 ///
 /// # HTTP/1.1 by default, and why
 ///
@@ -46,13 +45,12 @@ pub fn build_client(
     proxy: Option<&str>,
     connect_timeout: Duration,
     read_timeout: Duration,
-    asset_concurrency: usize,
     http1_only: bool,
 ) -> Result<reqwest::Client, MdtError> {
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .pool_idle_timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(asset_concurrency.saturating_add(4).max(20))
+        .pool_max_idle_per_host(20)
         .connect_timeout(connect_timeout)
         .read_timeout(read_timeout);
 
@@ -85,14 +83,8 @@ mod tests {
 
     #[test]
     fn build_client_succeeds() {
-        let _client = build_client(
-            None,
-            Duration::from_secs(15),
-            Duration::from_secs(30),
-            16,
-            true,
-        )
-        .unwrap();
+        let _client =
+            build_client(None, Duration::from_secs(15), Duration::from_secs(30), true).unwrap();
     }
 
     #[test]
@@ -101,7 +93,6 @@ mod tests {
             Some("http://127.0.0.1:1"),
             Duration::from_secs(15),
             Duration::from_secs(30),
-            16,
             true,
         )
         .unwrap();
@@ -115,7 +106,6 @@ mod tests {
             None,
             Duration::from_secs(15),
             Duration::from_secs(30),
-            16,
             false,
         )
         .unwrap();

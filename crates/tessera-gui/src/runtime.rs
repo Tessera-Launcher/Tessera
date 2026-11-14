@@ -130,11 +130,7 @@ impl Launcher {
                         .watch(TaskKind::Login, rx, deliver_login, login_done);
                 }
                 Effect::FetchVersions => {
-                    let rx = install::spawn_versions(
-                        self.state.root.clone(),
-                        self.state.source,
-                        ASSET_CONCURRENCY,
-                    );
+                    let rx = install::spawn_versions(self.state.root.clone(), self.state.source);
                     // The picker's list and an actual install have separate
                     // kinds: opening the picker must never steal a running
                     // install's events.
@@ -147,7 +143,6 @@ impl Launcher {
                         self.state.dependencies.clone(),
                         self.state.cache.clone(),
                         self.state.source,
-                        ASSET_CONCURRENCY,
                         version,
                         loader,
                     );
