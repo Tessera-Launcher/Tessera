@@ -25,10 +25,13 @@ pub const APP_IDS_FILE: &str = "azure_app_ids.toml";
 pub const LOGS: &str = "日志";
 /// The vendored download layer's content-addressed cache (`MDT_HOME`).
 pub const CACHE: &str = "缓存";
-/// Downloaded Java runtimes, one directory per version.
-pub const RUNTIMES: &str = "运行时";
-/// Downloaded helper programs (the aria2 binary today).
+/// Downloaded helper programs (Java runtimes, the aria2 binary).
 pub const DEPENDENCIES: &str = "依赖";
+/// The subtree of [`DEPENDENCIES`] Java runtimes live in.
+pub const JAVA: &str = "java";
+/// The old top-level runtime directory, kept only so [`Paths::ensure`] can move
+/// an existing installation into `data/依赖/java` once.
+pub const LEGACY_RUNTIMES: &str = "运行时";
 
 /// Resolved portable data directories.
 #[derive(Debug, Clone)]
@@ -91,9 +94,9 @@ impl Paths {
         self.launchers().join(APP_IDS_FILE)
     }
 
-    /// `data/运行时` — the JREs the launcher downloaded, named by version.
+    /// `data/依赖/java` — the JREs the launcher downloaded, named by version.
     pub fn runtimes(&self) -> PathBuf {
-        self.root.join(RUNTIMES)
+        self.dependencies().join(JAVA)
     }
 
     /// `data/依赖` — helper programs the launcher downloaded for itself.
@@ -139,6 +142,31 @@ impl Paths {
         }
     }
 
+    /// Move a `data/运行时` installation into `data/依赖/java`.
+    ///
+    /// The top-level directory is gone from the layout, so an existing tree is
+    /// moved rather than left behind and re-downloaded. Anything already in the
+    /// new place wins; the old directory is removed once empty.
+    fn adopt_legacy_runtimes(&self) {
+        let legacy = self.root.join(LEGACY_RUNTIMES);
+        if !legacy.is_dir() {
+            return;
+        }
+        let target = self.runtimes();
+        if !target.exists() && std::fs::rename(&legacy, &target).is_ok() {
+            return;
+        }
+        if let Ok(entries) = std::fs::read_dir(&legacy) {
+            for entry in entries.flatten() {
+                let destination = target.join(entry.file_name());
+                if !destination.exists() {
+                    let _ = std::fs::rename(entry.path(), destination);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(&legacy);
+    }
+
     /// Create the whole tree; safe to call every start.
     ///
     /// The app-id list is seeded with the commented-out template so the format is
@@ -149,6 +177,8 @@ impl Paths {
         // Refresh tokens land here, and the file names are player names.
         crate::accounts::restrict_dir(&self.accounts());
         std::fs::create_dir_all(self.launchers())?;
+        std::fs::create_dir_all(self.dependencies())?;
+        self.adopt_legacy_runtimes();
         std::fs::create_dir_all(self.runtimes())?;
         std::fs::create_dir_all(self.logs())?;
         let app_ids = self.app_ids();
@@ -159,16 +189,13 @@ impl Paths {
     }
 }
 
-/// `data/运行时` for an account directory at `<data>/凭据/账户`.
+/// `data/依赖/java` for an account directory at `<data>/凭据/账户`.
 ///
 /// The app keeps its own copy of the data root but is built from
 /// directory paths, so this single derivation keeps the runtime directory next to
 /// the credentials the app already knows about.
 pub fn runtime_dir_beside(accounts_dir: &Path) -> PathBuf {
-    accounts_dir
-        .parent()
-        .and_then(Path::parent)
-        .map_or_else(|| PathBuf::from(RUNTIMES), |data| data.join(RUNTIMES))
+    dependencies_dir_beside(accounts_dir).join(JAVA)
 }
 
 /// `data/依赖` for the same account directory [[`runtime_dir_beside`] was given.
@@ -257,7 +284,8 @@ mod tests {
             Path::new("/opt/tessera/data/凭据/启动器/azure_app_ids.toml")
         );
         assert_eq!(paths.logs(), Path::new("/opt/tessera/data/日志"));
-        assert_eq!(paths.runtimes(), Path::new("/opt/tessera/data/运行时"));
+        assert_eq!(paths.runtimes(), Path::new("/opt/tessera/data/依赖/java"));
+        assert_eq!(paths.dependencies(), Path::new("/opt/tessera/data/依赖"));
         assert_eq!(paths.cache(), Path::new("/opt/tessera/data/缓存"));
     }
 
@@ -278,6 +306,7 @@ mod tests {
         assert!(paths.game().is_dir());
         assert!(paths.accounts().is_dir());
         assert!(paths.logs().is_dir());
+        assert!(paths.dependencies().is_dir());
         assert!(paths.runtimes().is_dir());
         assert!(paths.launchers().is_dir());
         #[cfg(unix)]
@@ -304,6 +333,19 @@ mod tests {
         assert!(std::fs::read_to_string(paths.app_ids())
             .unwrap()
             .contains("mine"));
+    }
+
+    #[test]
+    fn a_legacy_runtime_directory_is_moved_under_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::at(tmp.path());
+        let legacy = tmp.path().join("运行时").join("28+24-ea-beta");
+        std::fs::create_dir_all(legacy.join("bin")).unwrap();
+
+        paths.ensure().unwrap();
+
+        assert!(!tmp.path().join("运行时").exists());
+        assert!(paths.runtimes().join("28+24-ea-beta/bin").is_dir());
     }
 
     #[test]

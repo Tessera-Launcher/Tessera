@@ -88,7 +88,7 @@ pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
 /// Find the Java every profile launches on among the runtimes this launcher
 /// manages.
 ///
-/// Only `data/运行时` is consulted: there is no `JAVA_HOME`, no `PATH`, no
+/// Only `data/依赖/java` is consulted: there is no `JAVA_HOME`, no `PATH`, no
 /// `--java`. Whatever the game runs on was downloaded here on purpose, so the
 /// version on disk is a fact the launcher owns and can explain.
 ///

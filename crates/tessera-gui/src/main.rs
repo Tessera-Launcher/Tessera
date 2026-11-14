@@ -191,7 +191,7 @@ impl Launcher {
             ));
         }
         state.log(format!("游戏目录 {}", root.display()));
-        state.log(format!("JRE 目录 {}", data.runtimes().display()));
+        state.log(format!("Java 依赖目录 {}", data.runtimes().display()));
         let log_file = match logfile::LogFile::open(&data.log_file()) {
             Ok(file) => Some(file),
             Err(error) => {

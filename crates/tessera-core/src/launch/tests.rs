@@ -93,14 +93,14 @@ fn offline_credentials_are_stable_and_legacy() {
     assert_ne!(a.uuid, Credentials::offline("Alex").uuid);
 }
 
-/// A managed runtime at `<root>/运行时/<version>/bin/java`, as the picker
+/// A managed runtime at `<root>/依赖/java/<version>/bin/java`, as the picker
 /// leaves it. Returns the runtimes directory.
 fn managed_runtime(root: &Path, major: u32) -> PathBuf {
     let version = format!("{major}.0.1+1");
-    let bin = crate::java::install_dir(&root.join("运行时"), &version).join("bin");
+    let bin = crate::java::install_dir(&root.join("依赖").join("java"), &version).join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     fake_java(&bin, major);
-    root.join("运行时")
+    root.join("依赖").join("java")
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
 #[test]
 fn only_managed_runtimes_are_considered() {
     let tmp = tempfile::tempdir().unwrap();
-    let runtimes = tmp.path().join("运行时");
+    let runtimes = tmp.path().join("依赖").join("java");
     // Nothing installed: the error says what to do, not "install Java on PATH".
     let error = find_java(&runtimes, 21).unwrap_err();
     assert!(error.to_string().contains("依赖页"), "{error}");
@@ -257,7 +257,7 @@ fn every_profile_runs_on_java_28() {
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 17);
     managed_runtime(tmp.path(), 28);
-    let runtimes = tmp.path().join("运行时");
+    let runtimes = tmp.path().join("依赖").join("java");
 
     // Whatever the profile asks for, 28 is what starts it: it is the only
     // runtime the launch shims have been tested on.
@@ -272,13 +272,13 @@ fn every_profile_runs_on_java_28() {
 #[test]
 fn a_launch_without_java_28_asks_for_java_28() {
     let tmp = tempfile::tempdir().unwrap();
-    let error = find_java(&tmp.path().join("运行时"), 8).unwrap_err();
+    let error = find_java(&tmp.path().join("依赖").join("java"), 8).unwrap_err();
     assert!(error.to_string().contains("Java 28"), "{error}");
 
     // A 21 on disk is not a substitute: 28 is the only runtime that launches.
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 21);
-    let error = find_java(&tmp.path().join("运行时"), 8).unwrap_err();
+    let error = find_java(&tmp.path().join("依赖").join("java"), 8).unwrap_err();
     assert!(error.to_string().contains("Java 28"), "{error}");
 }
 
@@ -1293,7 +1293,7 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
     lwjgl3_install(root);
 
     let options = Options {
-        runtimes: Some(root.join("运行时")),
+        runtimes: Some(root.join("依赖").join("java")),
         ..Options::default()
     };
     let launch = prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();
@@ -1365,7 +1365,7 @@ fn a_trained_lwjgl3_version_replays_its_cache_from_the_unsigned_jar() {
     .unwrap();
 
     let options = Options {
-        runtimes: Some(root.join("运行时")),
+        runtimes: Some(root.join("依赖").join("java")),
         ..Options::default()
     };
     let launch = prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();

@@ -434,7 +434,7 @@ fn launching_without_a_managed_runtime_says_where_to_get_one() {
 
     let scanned = crate::discover::scan(&root);
     let mut app = App::new(&root, "/acc", scanned, vec![]);
-    app.set_runtimes(tmp.path().join("运行时"));
+    app.set_runtimes(tmp.path().join("依赖").join("java"));
     app.start_game(launch::Credentials::offline("Steve"));
     let (dir, credentials) =
         launch_effect(&mut app).expect("the launch is handed to the main loop");

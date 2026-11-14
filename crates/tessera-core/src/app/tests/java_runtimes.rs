@@ -22,13 +22,13 @@ fn launching_looks_in_the_runtime_directory_first() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = App::new(tmp.path(), "/acc", vec![], vec![]);
     // The default derivation puts it next to the credentials; `main` overrides
-    // it with `data/运行时`, and either way launching has to see it.
-    app.set_runtimes(tmp.path().join("运行时"));
+    // it with `data/依赖/java`, and either way launching has to see it.
+    app.set_runtimes(tmp.path().join("依赖").join("java"));
     assert_eq!(
         app.launch_options.runtimes.as_deref(),
-        Some(tmp.path().join("运行时").as_path())
+        Some(tmp.path().join("依赖").join("java").as_path())
     );
-    assert_eq!(app.runtimes, tmp.path().join("运行时"));
+    assert_eq!(app.runtimes, tmp.path().join("依赖").join("java"));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
 #[test]
 fn u_updates_every_outdated_runtime_in_turn() {
     let tmp = tempfile::tempdir().unwrap();
-    let runtimes = tmp.path().join("运行时");
+    let runtimes = tmp.path().join("依赖").join("java");
     for version in ["8u502-b07", "17.0.10+1"] {
         let dir = crate::java::install_dir(&runtimes, version);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -143,12 +143,12 @@ fn the_proxy_decides_the_urls() {
 fn a_finished_java_download_is_recorded_and_shown() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
-    let dir = crate::java::install_dir(&root.join("运行时"), "21.0.1+1");
+    let dir = crate::java::install_dir(&root.join("依赖").join("java"), "21.0.1+1");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
 
     let mut app = App::new(&root, "/acc", vec![], vec![]);
-    app.set_runtimes(root.join("运行时"));
+    app.set_runtimes(root.join("依赖").join("java"));
     app.open_java();
     app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
     app.handle_java_key(Key::Enter, Modifiers::NONE);

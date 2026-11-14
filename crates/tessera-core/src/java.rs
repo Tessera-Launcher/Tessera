@@ -14,8 +14,8 @@
 //!
 //! Every download is hashed while it streams and the hash has to match the API's,
 //! so a proxy cannot quietly serve something else. What lands on disk is the
-//! archive's single top-level directory, moved to `<root>/java/<version>/` so
-//! that `bin/java` sits right below it.
+//! archive's single top-level directory, moved to `<data>/依赖/java/<version>/`
+//! so that `bin/java` sits right below it.
 //!
 //! Nothing here touches the UI or the app state: `spawn_*` runs on its own
 //! thread and reports over a channel, exactly like the game download worker.
@@ -123,7 +123,7 @@ pub fn candidates(runtime: &Runtime, proxy: &str) -> Vec<String> {
     crate::http::github_candidates(&runtime.link, proxy)
 }
 
-/// Where one runtime lives: `data/运行时/<version>`, e.g. `…/21.0.13+9`.
+/// Where one runtime lives: `data/依赖/java/<version>`, e.g. `…/21.0.13+9`.
 ///
 /// Named by version rather than by feature version, so an older build of the same
 /// feature is a different directory and can be kept or pruned knowingly.
@@ -146,7 +146,7 @@ pub struct Installed {
     pub version: String,
     pub java: PathBuf,
     /// Whether the directory has the spelling [`install_dir`] writes. A
-    /// hand-made `运行时/21` is usable but not the launcher's to replace.
+    /// hand-made `依赖/java/21` is usable but not the launcher's to replace.
     pub managed: bool,
 }
 
@@ -369,7 +369,7 @@ fn install(
         .ok_or_else(|| Error::missing(format!("{} 里没有 bin/java", dir.display())))?;
     mark_executable(&java);
     // The new build supersedes the older one of the same feature; keeping both
-    // would just grow `运行时/` with every patch release.
+    // would just grow `依赖/java/` with every patch release.
     prune_older(runtimes, runtime.major, &dir, sender);
     let _ = sender.send(Event::Installed {
         major: runtime.major,
@@ -383,8 +383,8 @@ fn install(
 ///
 /// Only directories named like the ones this launcher writes are considered:
 /// `21.0.13+9` (feature.minor.patch+build) or `8u512-b09`. A hand-made
-/// `运行时/21` or `运行时/jdk-21` is somebody's own copy — usable for launching,
-/// but not the launcher's to delete.
+/// `依赖/java/21` or `依赖/java/jdk-21` is somebody's own copy — usable for
+/// launching, but not the launcher's to delete.
 fn prune_older(runtimes: &Path, major: u32, keep: &Path, sender: &Sender<Event>) {
     let Ok(entries) = fs::read_dir(runtimes) else {
         return;
@@ -1031,8 +1031,8 @@ mod tests {
     #[test]
     fn install_directories_are_named_by_version() {
         assert_eq!(
-            install_dir(Path::new("/data/运行时"), "17.0.21+9"),
-            Path::new("/data/运行时/17.0.21+9")
+            install_dir(Path::new("/data/依赖/java"), "17.0.21+9"),
+            Path::new("/data/依赖/java/17.0.21+9")
         );
     }
 
