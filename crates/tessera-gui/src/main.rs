@@ -248,7 +248,6 @@ fn titlebar_button(
     icon: IconName,
     color: u32,
     hover_background: u32,
-    hover_color: u32,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -258,10 +257,9 @@ fn titlebar_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .text_color(rgb(color))
-        .hover(move |style| style.bg(rgb(hover_background)).text_color(rgb(hover_color)))
+        .hover(move |style| style.bg(rgb(hover_background)))
         .window_control_area(area)
-        .child(Icon::new(icon).small())
+        .child(Icon::new(icon).small().text_color(rgb(color)))
 }
 
 impl Render for Launcher {
@@ -337,17 +335,15 @@ impl Render for Launcher {
                         "titlebar-minimize",
                         WindowControlArea::Min,
                         IconName::WindowMinimize,
-                        colors.text_secondary,
-                        colors.hover,
                         colors.text_primary,
+                        colors.hover,
                     ))
                     .child(titlebar_button(
                         "titlebar-close",
                         WindowControlArea::Close,
                         IconName::WindowClose,
-                        colors.text_secondary,
-                        colors.fill_danger,
-                        colors.text_on_fill,
+                        colors.status_danger,
+                        colors.hover,
                     )),
             )
             .child(
