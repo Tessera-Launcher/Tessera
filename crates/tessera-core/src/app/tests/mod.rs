@@ -250,7 +250,6 @@ fn java_runtime(major: u32) -> crate::java::Runtime {
         link: format!(
             "https://github.com/adoptium/temurin{major}-binaries/releases/download/jdk-{major}.0.1%2B1/x.tar.gz"
         ),
-        ea: major >= 28,
     }
 }
 

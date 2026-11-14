@@ -1,15 +1,21 @@
-//! Getting the Java runtime a Minecraft version asks for.
+//! The one Java runtime this launcher offers: Java 28 EA.
 //!
-//! Metadata comes from Adoptium's public v3 API, which hands out the file name,
-//! the size and the SHA-256 in a single request; the artifact itself comes from
-//! either the Tsinghua mirror of Adoptium or the GitHub release that API points
-//! at — optionally through a GitHub proxy the user types in, because
-//! `github.com` is not reliably reachable from everywhere.
+//! Only one feature version is offered. The launch shims (the applet renamer,
+//! the LaunchWrapper entry point, the netty workaround, the ASCII natives
+//! mirror) are only tested on 28, and an AOT cache only replays on the JVM that
+//! wrote it, so shipping a picker of older runtimes would only invite launches
+//! that fail in ways the shims cannot explain.
+//!
+//! Metadata comes from Adoptium's public v3 `feature_releases/28/ea` endpoint,
+//! which hands out the file name, the size and the SHA-256 in a single request;
+//! the artifact itself comes from the GitHub release that API points at —
+//! optionally through a GitHub proxy the user types in, because `github.com` is
+//! not reliably reachable from everywhere.
 //!
 //! Every download is hashed while it streams and the hash has to match the API's,
-//! so neither a mirror nor a proxy can quietly serve something else. What lands
-//! on disk is the archive's single top-level directory, moved to
-//! `<root>/java/<feature>/` so that `bin/java` sits right below it.
+//! so a proxy cannot quietly serve something else. What lands on disk is the
+//! archive's single top-level directory, moved to `<root>/java/<version>/` so
+//! that `bin/java` sits right below it.
 //!
 //! Nothing here touches the UI or the app state: `spawn_*` runs on its own
 //! thread and reports over a channel, exactly like the game download worker.
@@ -25,84 +31,13 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// One runtime family the picker offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Feature {
-    pub major: u32,
-    /// Early-access releases come from Adoptium's `feature_releases` endpoint
-    /// rather than `/assets/latest`, and are not on the mirror.
-    pub ea: bool,
-}
-
-impl Feature {
-    /// `Java 28 EA` / `Java 21`, the label the picker shows.
-    pub fn label(self) -> String {
-        if self.ea {
-            format!("Java {} EA", self.major)
-        } else {
-            format!("Java {}", self.major)
-        }
-    }
-}
-
-/// The Java feature versions the picker offers, newest last.
+/// The one feature version the picker offers.
 ///
-/// 28 is still an early-access release (JEP 544 era); when it goes GA the flag
-/// here is the only thing that has to change.
-pub const FEATURES: [Feature; 5] = [
-    Feature {
-        major: 8,
-        ea: false,
-    },
-    Feature {
-        major: 17,
-        ea: false,
-    },
-    Feature {
-        major: 21,
-        ea: false,
-    },
-    Feature {
-        major: 25,
-        ea: false,
-    },
-    Feature {
-        major: 28,
-        ea: true,
-    },
-];
-
-/// Where the artifact comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Source {
-    /// The GitHub release the API points at, usually through a proxy. The
-    /// default, so nothing third-party sits between the user and Adoptium.
-    #[default]
-    Github,
-    /// Tsinghua's mirror of Adoptium, reachable from mainland China.
-    Tuna,
-}
-
-impl Source {
-    pub const ALL: [Source; 2] = [Source::Github, Source::Tuna];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Source::Tuna => "清华源",
-            Source::Github => "官方源（GitHub）",
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            Source::Tuna => Source::Github,
-            Source::Github => Source::Tuna,
-        }
-    }
-}
-
-/// The mirror's base; the file name after it is the one the API gave us.
-pub const TUNA_BASE: &str = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium";
+/// 28 is still early access, so it is fetched from Adoptium's
+/// `feature_releases` endpoint rather than `/assets/latest`, and there is no
+/// mirror of it: the artifact comes from the GitHub release the API names.
+/// When it ships GA, this constant and [`api_ea_url`] are the whole change.
+pub const FEATURE: u32 = 28;
 
 /// Adoptium's own metadata API.
 pub const API_BASE: &str = "https://api.adoptium.net/v3";
@@ -119,10 +54,9 @@ pub struct Runtime {
     pub size: u64,
     /// Lowercase hex SHA-256 of the archive, as published by the API.
     pub sha256: String,
-    /// The GitHub release asset the API links to.
+    /// The GitHub release asset the API links to. The only source: there is no
+    /// mirror of the EA build.
     pub link: String,
-    /// True for an early-access build (`jdk-28+23-ea-beta`).
-    pub ea: bool,
 }
 
 impl Runtime {
@@ -165,15 +99,7 @@ pub fn platform() -> (&'static str, &'static str) {
     (os, arch)
 }
 
-/// The URL the API resource for `feature`'s latest JRE lives at.
-pub fn api_url(feature: u32, (os, arch): (&str, &str)) -> String {
-    format!(
-        "{API_BASE}/assets/latest/{feature}/hotspot\
-         ?os={os}&architecture={arch}&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk"
-    )
-}
-
-/// The URL for an early-access release.
+/// The URL for the early-access release.
 ///
 /// `/assets/latest/28` is empty until 28 ships GA; EA builds are only exposed
 /// through `feature_releases/<feature>/ea`.
@@ -182,14 +108,6 @@ pub fn api_ea_url(feature: u32, (os, arch): (&str, &str)) -> String {
         "{API_BASE}/assets/feature_releases/{feature}/ea\
          ?os={os}&architecture={arch}&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk\
          &page=0&page_size=1&sort_method=DATE&sort_order=DESC"
-    )
-}
-
-/// The same archive on Tsinghua's mirror: `<base>/<feature>/jre/<arch>/<os>/<file>`.
-pub fn tuna_url(runtime: &Runtime, (os, arch): (&str, &str)) -> String {
-    format!(
-        "{TUNA_BASE}/{}/jre/{arch}/{os}/{}",
-        runtime.major, runtime.name
     )
 }
 
@@ -211,31 +129,13 @@ pub fn normalize_proxy(input: &str) -> Option<String> {
 
 /// Every URL to try for `runtime`, in order.
 ///
-/// The official GitHub asset is what [`Source::default`] asks for. The Tsinghua
-/// mirror, when selected, is tried first because it is the one that works from
-/// mainland China; the GitHub link stays behind it, so a mirror that has not
-/// synced a release yet is a slow download rather than a dead end.
-pub fn candidates(
-    runtime: &Runtime,
-    source: Source,
-    proxy: &str,
-    platform: (&str, &str),
-) -> Vec<String> {
+/// The GitHub release is the only source, so the list is the direct link plus,
+/// when the user typed a proxy, the two spellings proxies expect in front of it.
+/// The direct link stays last: a proxy that is down is a slow download rather
+/// than a dead end.
+pub fn candidates(runtime: &Runtime, proxy: &str) -> Vec<String> {
     let mut urls = Vec::new();
-    // The Tsinghua mirror only carries GA releases; an EA build is GitHub-only,
-    // so the source switch must not produce a guaranteed 404 first.
-    if runtime.ea {
-        push_github(&mut urls, runtime, proxy);
-        urls.dedup();
-        return urls;
-    }
-    match source {
-        Source::Tuna => urls.push(tuna_url(runtime, platform)),
-        Source::Github => push_github(&mut urls, runtime, proxy),
-    }
-    if !urls.iter().any(|url| url == &runtime.link) {
-        urls.push(runtime.link.clone());
-    }
+    push_github(&mut urls, runtime, proxy);
     urls.dedup();
     urls
 }
@@ -354,38 +254,28 @@ pub fn is_newer(latest: &str, installed: &str) -> bool {
     }
 }
 
-/// Make sure a feature's latest JRE is installed, downloading it if needed.
+/// Make sure the Java 28 EA runtime is installed, downloading it if needed.
 ///
-/// Used by the forced AOT training for Java 28 EA: it must not silently fall
-/// back to an older JVM, because the cache is tied to the exact build.
-pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Installed> {
+/// Used by the forced AOT training: it must not silently fall back to an older
+/// JVM, because the cache is tied to the exact build.
+pub fn ensure_feature(runtimes: &Path, proxy: &str) -> Result<Installed> {
     if let Some(found) = installed_runtimes(runtimes)
         .into_iter()
-        .find(|runtime| runtime.major == feature)
+        .find(|runtime| runtime.major == FEATURE)
     {
         return Ok(found);
     }
-    let spec = FEATURES
-        .iter()
-        .find(|spec| spec.major == feature)
-        .ok_or_else(|| Error::invalid(format!("不提供 Java {feature}")))?;
     let client = blocking_client()?;
     let (sender, _receiver) = mpsc::channel();
-    let runtime = if spec.ea {
-        let url = api_ea_url(feature, platform());
-        let text = blocking_fetch(&client, &url, &sender)?;
-        parse_ea_assets(&text, feature)?
-    } else {
-        let url = api_url(feature, platform());
-        let text = blocking_fetch(&client, &url, &sender)?;
-        parse_assets(&text, feature)?
-    };
-    let urls = candidates(&runtime, Source::default(), proxy, platform());
+    let url = api_ea_url(FEATURE, platform());
+    let text = blocking_fetch(&client, &url, &sender)?;
+    let runtime = parse_ea_assets(&text, FEATURE)?;
+    let urls = candidates(&runtime, proxy);
     install(&client, runtimes, &runtime, &urls, &sender)?;
     installed_runtimes(runtimes)
         .into_iter()
-        .find(|installed| installed.major == feature)
-        .ok_or_else(|| Error::missing(format!("Java {feature} 安装后没有找到 bin/java")))
+        .find(|installed| installed.major == FEATURE)
+        .ok_or_else(|| Error::missing(format!("Java {FEATURE} 安装后没有找到 bin/java")))
 }
 
 /// `bin/java` under an unpacked runtime, if there is one.
@@ -396,24 +286,14 @@ pub fn java_binary(dir: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// Fetch the latest JRE for each of [`FEATURES`].
+/// Fetch the Java 28 EA JRE.
 pub fn spawn_list() -> Receiver<Event> {
     spawn(move |sender| {
         let client = blocking_client()?;
-        let mut runtimes = Vec::new();
-        for feature in FEATURES {
-            let runtime = if feature.ea {
-                let url = api_ea_url(feature.major, platform());
-                let text = blocking_fetch(&client, &url, &sender)?;
-                parse_ea_assets(&text, feature.major)?
-            } else {
-                let url = api_url(feature.major, platform());
-                let text = blocking_fetch(&client, &url, &sender)?;
-                parse_assets(&text, feature.major)?
-            };
-            runtimes.push(runtime);
-        }
-        let _ = sender.send(Event::Listed(runtimes));
+        let url = api_ea_url(FEATURE, platform());
+        let text = blocking_fetch(&client, &url, &sender)?;
+        let runtime = parse_ea_assets(&text, FEATURE)?;
+        let _ = sender.send(Event::Listed(vec![runtime]));
         Ok(())
     })
 }
@@ -436,7 +316,7 @@ fn blocking_client() -> Result<reqwest::blocking::Client> {
 /// What the worker tells the UI.
 #[derive(Debug)]
 pub enum Event {
-    /// The latest runtime of every offered feature, in [`FEATURES`] order.
+    /// The runtime the picker offers (Java 28 EA).
     Listed(Vec<Runtime>),
     Log(String),
     Progress {
@@ -745,27 +625,7 @@ fn blocking_fetch(
     }
 }
 
-/// Pull one runtime out of an `/assets/latest/…` response.
-pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime> {
-    let assets: Vec<Asset> = serde_json::from_str(text)
-        .map_err(|error| Error::invalid(format!("Java {feature} 的响应无法解析：{error}")))?;
-    let asset = assets
-        .into_iter()
-        .find(|asset| asset.binary.image_type == "jre")
-        .ok_or_else(|| Error::missing(format!("Adoptium 没有 Java {feature} 的 JRE")))?;
-    let ea = asset.release_name.contains("-ea");
-    Ok(Runtime {
-        major: feature,
-        release: asset.release_name,
-        name: asset.binary.package.name,
-        size: asset.binary.package.size,
-        sha256: asset.binary.package.checksum,
-        link: asset.binary.package.link,
-        ea,
-    })
-}
-
-/// Pull one runtime out of a `/assets/feature_releases/<feature>/ea` response.
+/// Pull the runtime out of a `/assets/feature_releases/<feature>/ea` response.
 ///
 /// That endpoint returns releases with a `binaries` array, not the flat
 /// one-binary-per-asset shape of `/assets/latest`.
@@ -788,14 +648,7 @@ pub fn parse_ea_assets(text: &str, feature: u32) -> Result<Runtime> {
         size: binary.package.size,
         sha256: binary.package.checksum,
         link: binary.package.link,
-        ea: true,
     })
-}
-
-#[derive(Debug, Deserialize)]
-struct Asset {
-    release_name: String,
-    binary: Binary,
 }
 
 #[derive(Debug, Deserialize)]
@@ -850,32 +703,28 @@ mod tests {
 
     fn runtime() -> Runtime {
         Runtime {
-            major: 21,
-            release: "jdk-21.0.13+9".to_string(),
-            name: "OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz".to_string(),
-            size: 52181297,
-            sha256: "a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd"
+            major: FEATURE,
+            release: "jdk-28+23-ea-beta".to_string(),
+            name: "OpenJDK-jre_x64_linux_hotspot_28_23-ea-beta.tar.gz".to_string(),
+            size: 79777499,
+            sha256: "b95395db6acc6aa4ff46495b0c58814356676787d2f50f64dbfed77d76ae9523"
                 .to_string(),
-            link: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz".to_string(),
-            ea: false,
+            link: "https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B23-ea-beta/OpenJDK-jre_x64_linux_hotspot_28_23-ea-beta.tar.gz".to_string(),
         }
     }
 
     #[test]
-    #[ignore = "network: queries Adoptium for every feature, including Java 28 EA"]
-    fn live_list_includes_the_ea_feature() {
+    #[ignore = "network: queries Adoptium for the Java 28 EA release"]
+    fn live_list_offers_java28_ea() {
         let receiver = spawn_list();
         match receiver
             .recv_timeout(Duration::from_secs(120))
             .expect("a list event")
         {
             Event::Listed(runtimes) => {
-                assert_eq!(runtimes.len(), FEATURES.len(), "{runtimes:?}");
-                let ea = runtimes
-                    .iter()
-                    .find(|runtime| runtime.major == 28)
-                    .expect("Java 28 is offered");
-                assert!(ea.ea, "28 is EA until it ships GA");
+                assert_eq!(runtimes.len(), 1, "{runtimes:?}");
+                let ea = &runtimes[0];
+                assert_eq!(ea.major, FEATURE);
                 assert!(
                     ea.name.contains("jre"),
                     "only a JRE is downloaded: {}",
@@ -888,31 +737,10 @@ mod tests {
     }
 
     #[test]
-    fn the_api_url_asks_for_a_normal_jre() {
-        let url = api_url(21, ("linux", "x64"));
-        assert_eq!(
-            url,
-            "https://api.adoptium.net/v3/assets/latest/21/hotspot?os=linux&architecture=x64&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk"
-        );
-    }
-
-    #[test]
     fn early_access_uses_the_feature_releases_endpoint() {
         assert_eq!(
             api_ea_url(28, ("linux", "x64")),
             "https://api.adoptium.net/v3/assets/feature_releases/28/ea?os=linux&architecture=x64&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk&page=0&page_size=1&sort_method=DATE&sort_order=DESC"
-        );
-        assert_eq!(
-            FEATURES.last().map(|feature| (feature.major, feature.ea)),
-            Some((28, true))
-        );
-        assert_eq!(
-            Feature {
-                major: 28,
-                ea: true
-            }
-            .label(),
-            "Java 28 EA"
         );
     }
 
@@ -928,27 +756,17 @@ mod tests {
         }]"#;
         let runtime = parse_ea_assets(text, 28).unwrap();
         assert_eq!(runtime.major, 28);
-        assert!(runtime.ea);
         assert_eq!(runtime.version(), "28+23-ea-beta");
         assert_eq!(runtime.size, 79777499);
         assert!(runtime.name.starts_with("OpenJDK-jre"));
     }
 
     #[test]
-    fn ea_is_github_only_even_when_the_mirror_is_selected() {
-        let mut ea = runtime();
-        ea.major = 28;
-        ea.ea = true;
-        ea.release = "jdk-28+23-ea-beta".to_string();
-        ea.link = "https://github.com/adoptium/temurin28-binaries/releases/download/x/y.tar.gz"
-            .to_string();
-        let urls = candidates(&ea, Source::Tuna, "", ("linux", "x64"));
-        assert_eq!(
-            urls,
-            [ea.link.clone()],
-            "no guaranteed 404 on the mirror first"
-        );
-        let urls = candidates(&ea, Source::Github, "gh-proxy.com", ("linux", "x64"));
+    fn the_ea_build_comes_from_github_only() {
+        // No mirror carries an EA build, so the direct link is all there is; a
+        // proxy the user typed in goes in front of it.
+        assert_eq!(candidates(&runtime(), ""), [runtime().link]);
+        let urls = candidates(&runtime(), "gh-proxy.com");
         assert_eq!(urls.len(), 3, "{urls:?}");
         assert!(urls[0].starts_with("https://gh-proxy.com/github.com/"));
     }
@@ -994,49 +812,25 @@ mod tests {
     }
 
     #[test]
-    fn the_mirror_url_keeps_the_api_file_name() {
-        assert_eq!(
-            tuna_url(&runtime(), ("linux", "x64")),
-            "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/x64/linux/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz"
-        );
-        // Windows and mac differ only in os name and archive extension.
-        assert!(tuna_url(&runtime(), ("windows", "x64")).ends_with(".tar.gz"));
-        assert!(tuna_url(&runtime(), ("mac", "aarch64")).contains("/21/jre/aarch64/mac/"));
-    }
-
-    #[test]
-    fn the_default_source_is_the_mirror_and_it_falls_back_to_github() {
-        let urls = candidates(&runtime(), Source::Tuna, "", ("linux", "x64"));
-        assert_eq!(urls.len(), 2, "{urls:?}");
-        assert!(urls[0].starts_with("https://mirrors.tuna.tsinghua.edu.cn/Adoptium/"));
-        assert_eq!(urls[1], runtime().link, "GitHub stays as the fallback");
-    }
-
-    #[test]
     fn github_goes_direct_without_a_proxy() {
-        let urls = candidates(&runtime(), Source::Github, "  ", ("linux", "x64"));
+        let urls = candidates(&runtime(), "  ");
         assert_eq!(urls, [runtime().link]);
     }
 
     #[test]
     fn a_proxy_is_put_in_front_of_the_github_url_both_ways() {
-        let urls = candidates(&runtime(), Source::Github, "gh-proxy.com", ("linux", "x64"));
+        let urls = candidates(&runtime(), "gh-proxy.com");
         assert_eq!(urls.len(), 3, "{urls:?}");
         assert_eq!(
             urls[0],
-            "https://gh-proxy.com/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz"
+            "https://gh-proxy.com/github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B23-ea-beta/OpenJDK-jre_x64_linux_hotspot_28_23-ea-beta.tar.gz"
         );
         // The spelling other proxies want, then the direct URL.
         assert!(urls[1].starts_with("https://gh-proxy.com/https://github.com/"));
         assert_eq!(urls[2], runtime().link);
 
         // A proxy that already carries a scheme and a trailing slash still works.
-        let urls = candidates(
-            &runtime(),
-            Source::Github,
-            "http://127.0.0.1:8080/",
-            ("linux", "x64"),
-        );
+        let urls = candidates(&runtime(), "http://127.0.0.1:8080/");
         assert!(
             urls[0].starts_with("http://127.0.0.1:8080/github.com/"),
             "{urls:?}"
@@ -1058,43 +852,16 @@ mod tests {
     }
 
     #[test]
-    fn assets_are_read_out_of_the_api_response() {
-        // Trimmed from a real `/v3/assets/latest/21/hotspot` answer.
-        let text = r#"[{
-            "release_name": "jdk-21.0.13+9",
-            "version": { "semver": "21.0.13+9.0.LTS", "major": 21 },
-            "binary": {
-                "os": "linux", "architecture": "x64", "image_type": "jre",
-                "package": {
-                    "name": "OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz",
-                    "size": 52181297,
-                    "checksum": "a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd",
-                    "link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz"
-                }
-            }
-        }]"#;
-        let runtime = parse_assets(text, 21).unwrap();
-        assert_eq!(runtime.major, 21);
-        assert_eq!(runtime.version(), "21.0.13+9");
-        assert_eq!(runtime.size, 52181297);
-        assert!(runtime.sha256.starts_with("a535a1df"));
-    }
-
-    #[test]
-    fn java_eight_keeps_its_own_version_spelling() {
-        let mut runtime = runtime();
-        runtime.release = "jdk8u512-b09".to_string();
-        assert_eq!(runtime.version(), "8u512-b09");
-        runtime.release = "jdk-17.0.21+9".to_string();
-        assert_eq!(runtime.version(), "17.0.21+9");
+    fn ea_versions_keep_the_spelling_the_api_uses() {
+        assert_eq!(runtime().version(), "28+23-ea-beta");
     }
 
     #[test]
     fn a_response_without_a_jre_is_an_error_not_a_panic() {
-        let text = r#"[{"release_name":"jdk-16.0.2+7","binary":{"image_type":"jdk","package":{"name":"x","size":1,"checksum":"0","link":"https://example/x"}}}]"#;
-        let error = parse_assets(text, 16).unwrap_err();
+        let text = r#"[{"release_name":"jdk-28+23-ea-beta","binaries":[{"image_type":"jdk","package":{"name":"x","size":1,"checksum":"0","link":"https://example/x"}}]}]"#;
+        let error = parse_ea_assets(text, 28).unwrap_err();
         assert_eq!(error.kind(), crate::error::Kind::Missing);
-        assert!(error.to_string().contains("Java 16"), "{error}");
+        assert!(error.to_string().contains("Java 28"), "{error}");
     }
 
     #[test]
@@ -1111,9 +878,9 @@ mod tests {
                 .expect("Java 28 is offered"),
             other => panic!("unexpected event: {other:?}"),
         };
-        assert!(runtime.ea);
+        assert!(runtime.name.contains("jre"), "only a JRE is downloaded");
         let dir = tempfile::tempdir().unwrap();
-        let urls = candidates(&runtime, Source::Tuna, "", platform());
+        let urls = candidates(&runtime, "");
         let events = spawn_install(dir.path().to_path_buf(), runtime, urls);
         let mut installed = None;
         while let Ok(event) = events.recv_timeout(Duration::from_secs(600)) {
@@ -1190,7 +957,7 @@ mod tests {
         let dir = install_dir(tmp.path(), "28+23-ea-beta");
         fs::create_dir_all(dir.join("bin")).unwrap();
         fs::write(dir.join("bin/java"), b"#!/bin/sh\n").unwrap();
-        let found = ensure_feature(tmp.path(), 28, "").unwrap();
+        let found = ensure_feature(tmp.path(), "").unwrap();
         assert_eq!(found.major, 28);
         assert_eq!(found.version, "28+23-ea-beta");
     }
@@ -1304,19 +1071,10 @@ mod tests {
     fn log_lines_keep_the_host_and_the_file_name() {
         assert_eq!(
             shorten(
-                "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/x64/linux/OpenJDK21U.tar.gz"
+                "https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B23-ea-beta/OpenJDK-jre_x64_linux_hotspot_28_23-ea-beta.tar.gz"
             ),
-            "mirrors.tuna.tsinghua.edu.cn/…/OpenJDK21U.tar.gz"
+            "github.com/…/OpenJDK-jre_x64_linux_hotspot_28_23-ea-beta.tar.gz"
         );
         assert_eq!(shorten("https://gh-proxy.com"), "gh-proxy.com");
-    }
-
-    #[test]
-    fn sources_have_labels_and_flip() {
-        assert_eq!(Source::default(), Source::Github, "官方源 by default");
-        assert_eq!(Source::Tuna.label(), "清华源");
-        assert_eq!(Source::Tuna.next(), Source::Github);
-        assert_eq!(Source::Github.next(), Source::Tuna);
-        assert_eq!(Source::ALL, [Source::Github, Source::Tuna]);
     }
 }

@@ -19,7 +19,7 @@ use crate::error::{Error, Result};
 ///
 /// AOT training already forces this same runtime, and a cache only replays on
 /// the JVM that wrote it, so the launch path and the cache path now agree.
-pub const VANILLA_JAVA: u32 = 28;
+pub const VANILLA_JAVA: u32 = crate::java::FEATURE;
 
 /// Whether a runtime of `major` can run a **loader** profile that asks for
 /// `required`.
@@ -155,7 +155,8 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
                 runtimes.display()
             ),
             JavaKind::Loader => format!(
-                "还没有下载 Java {required}：先去 Java 运行时界面装一个（{}）",
+                "还没有下载 Java：本启动器只提供 Java {} EA（去 Java 运行时界面装一个，{}）",
+                VANILLA_JAVA,
                 runtimes.display()
             ),
         }));
@@ -185,11 +186,14 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
                     )
                 }
             } else if required <= 8 {
-                format!("这个版本需要 Java 8，现在只有 {seen}（去 Java 运行时界面下载 Java 8）")
+                format!(
+                    "这个版本需要 Java 8，本启动器只提供 Java {VANILLA_JAVA} EA，现在只有 {seen}（Java 8 要自己放进 {}）",
+                    runtimes.display()
+                )
             } else {
                 format!(
-                "这个版本需要 Java {required} 或更高，现在只有 {seen}（去 Java 运行时界面下载）"
-            )
+                    "这个版本需要 Java {required} 或更高，本启动器只提供 Java {VANILLA_JAVA} EA，现在只有 {seen}（去 Java 运行时界面装一个）"
+                )
             },
         ));
     };
