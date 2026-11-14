@@ -212,6 +212,7 @@ impl MdtClient {
             );
         }
 
+        crate::plan::apply_mirror_to_entries(&mut entries, &urls, &self.mirror);
         let plan = crate::plan::DownloadPlan::new(version_json.id.clone(), entries);
         let path = plan.write(&self.root).await?;
         self.reporter.status(&format!(
@@ -309,6 +310,7 @@ impl MdtClient {
             );
         }
 
+        crate::plan::apply_mirror_to_entries(&mut entries, &urls, &self.mirror);
         crate::plan::fill_missing_hashes(
             self.downloader.as_ref(),
             self.reporter.as_ref(),
