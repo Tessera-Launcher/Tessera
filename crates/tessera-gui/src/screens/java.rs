@@ -159,6 +159,7 @@ impl Launcher {
         let aria2_installed = aria2.installed.clone();
         let aria2_build = aria2.build;
         let aria2_busy = aria2.downloading;
+        let aria2_update = aria2.update_available();
         let aria2_progress = aria2.progress_text();
         let aria2_fraction = if aria2.progress.1 > 0 {
             aria2.progress.0 as f32 / aria2.progress.1 as f32
@@ -166,6 +167,20 @@ impl Launcher {
             0.0
         };
         let aria2_message = aria2.message.clone();
+
+        // Same shape as the Java card: download until installed, then a greyed
+        // out update that lights up when the pinned build is newer.
+        let (aria2_label, aria2_can_click) = match (
+            aria2_build.is_some(),
+            aria2_installed.is_some(),
+            aria2_update,
+        ) {
+            (false, _, _) => ("下载", false),
+            (true, false, _) => ("下载", true),
+            (true, true, true) => ("更新", true),
+            (true, true, false) => ("更新", false),
+        };
+        let aria2_can_click = aria2_can_click && !aria2_busy;
 
         let mut aria2_card = div().v_flex().gap(px(space::SM)).p(px(space::LG));
         let mut aria2_summary = div()
@@ -182,6 +197,10 @@ impl Launcher {
                 aria2_installed
                     .is_some()
                     .then(|| chip(colors, "已装", colors.status_success)),
+            )
+            .children(
+                (aria2_installed.is_some() && aria2_update)
+                    .then(|| chip(colors, "可更新", colors.status_warning)),
             );
         if let Some(version) = &aria2_installed {
             aria2_summary = aria2_summary.child(
@@ -262,12 +281,8 @@ impl Launcher {
                 .child(div().flex_1())
                 .children(aria2_busy.then(|| chip(colors, "下载中", colors.status_warning)))
                 .child(primary_button_when(
-                    if aria2_installed.is_some() {
-                        "重装"
-                    } else {
-                        "下载"
-                    },
-                    aria2_build.is_some() && !aria2_busy,
+                    aria2_label,
+                    aria2_can_click,
                     cx,
                     |this, cx| {
                         this.state.start_aria2_install();
