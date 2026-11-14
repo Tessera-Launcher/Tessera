@@ -75,15 +75,16 @@ pub const FEATURES: [Feature; 5] = [
 /// Where the artifact comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Source {
-    /// Tsinghua's mirror of Adoptium, reachable from mainland China.
+    /// The GitHub release the API points at, usually through a proxy. The
+    /// default, so nothing third-party sits between the user and Adoptium.
     #[default]
-    Tuna,
-    /// The GitHub release the API points at, usually through a proxy.
     Github,
+    /// Tsinghua's mirror of Adoptium, reachable from mainland China.
+    Tuna,
 }
 
 impl Source {
-    pub const ALL: [Source; 2] = [Source::Tuna, Source::Github];
+    pub const ALL: [Source; 2] = [Source::Github, Source::Tuna];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -210,9 +211,10 @@ pub fn normalize_proxy(input: &str) -> Option<String> {
 
 /// Every URL to try for `runtime`, in order.
 ///
-/// The mirror is tried before GitHub because it is the one that works from
-/// mainland China; GitHub stays as the fallback, so a mirror that has not synced
-/// a release yet is a slow download rather than a dead end.
+/// The official GitHub asset is what [`Source::default`] asks for. The Tsinghua
+/// mirror, when selected, is tried first because it is the one that works from
+/// mainland China; the GitHub link stays behind it, so a mirror that has not
+/// synced a release yet is a slow download rather than a dead end.
 pub fn candidates(
     runtime: &Runtime,
     source: Source,
@@ -378,7 +380,7 @@ pub fn ensure_feature(runtimes: &Path, feature: u32, proxy: &str) -> Result<Inst
         let text = blocking_fetch(&client, &url, &sender)?;
         parse_assets(&text, feature)?
     };
-    let urls = candidates(&runtime, Source::Tuna, proxy, platform());
+    let urls = candidates(&runtime, Source::default(), proxy, platform());
     install(&client, runtimes, &runtime, &urls, &sender)?;
     installed_runtimes(runtimes)
         .into_iter()
@@ -1311,10 +1313,10 @@ mod tests {
 
     #[test]
     fn sources_have_labels_and_flip() {
-        assert_eq!(Source::default(), Source::Tuna, "清华源 by default");
+        assert_eq!(Source::default(), Source::Github, "官方源 by default");
         assert_eq!(Source::Tuna.label(), "清华源");
         assert_eq!(Source::Tuna.next(), Source::Github);
         assert_eq!(Source::Github.next(), Source::Tuna);
-        assert_eq!(Source::ALL, [Source::Tuna, Source::Github]);
+        assert_eq!(Source::ALL, [Source::Github, Source::Tuna]);
     }
 }
