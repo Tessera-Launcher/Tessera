@@ -29,9 +29,6 @@ pub const CACHE: &str = "缓存";
 pub const DEPENDENCIES: &str = "依赖";
 /// The subtree of [`DEPENDENCIES`] Java runtimes live in.
 pub const JAVA: &str = "java";
-/// The old top-level runtime directory, kept only so [`Paths::ensure`] can move
-/// an existing installation into `data/依赖/java` once.
-pub const LEGACY_RUNTIMES: &str = "运行时";
 
 /// Resolved portable data directories.
 #[derive(Debug, Clone)]
@@ -142,31 +139,6 @@ impl Paths {
         }
     }
 
-    /// Move a `data/运行时` installation into `data/依赖/java`.
-    ///
-    /// The top-level directory is gone from the layout, so an existing tree is
-    /// moved rather than left behind and re-downloaded. Anything already in the
-    /// new place wins; the old directory is removed once empty.
-    fn adopt_legacy_runtimes(&self) {
-        let legacy = self.root.join(LEGACY_RUNTIMES);
-        if !legacy.is_dir() {
-            return;
-        }
-        let target = self.runtimes();
-        if !target.exists() && std::fs::rename(&legacy, &target).is_ok() {
-            return;
-        }
-        if let Ok(entries) = std::fs::read_dir(&legacy) {
-            for entry in entries.flatten() {
-                let destination = target.join(entry.file_name());
-                if !destination.exists() {
-                    let _ = std::fs::rename(entry.path(), destination);
-                }
-            }
-        }
-        let _ = std::fs::remove_dir(&legacy);
-    }
-
     /// Create the whole tree; safe to call every start.
     ///
     /// The app-id list is seeded with the commented-out template so the format is
@@ -178,7 +150,6 @@ impl Paths {
         crate::accounts::restrict_dir(&self.accounts());
         std::fs::create_dir_all(self.launchers())?;
         std::fs::create_dir_all(self.dependencies())?;
-        self.adopt_legacy_runtimes();
         std::fs::create_dir_all(self.runtimes())?;
         std::fs::create_dir_all(self.logs())?;
         let app_ids = self.app_ids();
@@ -333,19 +304,6 @@ mod tests {
         assert!(std::fs::read_to_string(paths.app_ids())
             .unwrap()
             .contains("mine"));
-    }
-
-    #[test]
-    fn a_legacy_runtime_directory_is_moved_under_dependencies() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths::at(tmp.path());
-        let legacy = tmp.path().join("运行时").join("28+24-ea-beta");
-        std::fs::create_dir_all(legacy.join("bin")).unwrap();
-
-        paths.ensure().unwrap();
-
-        assert!(!tmp.path().join("运行时").exists());
-        assert!(paths.runtimes().join("28+24-ea-beta/bin").is_dir());
     }
 
     #[test]
