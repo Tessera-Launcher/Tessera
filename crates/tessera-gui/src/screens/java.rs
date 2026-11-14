@@ -1,4 +1,6 @@
-//! The runtime picker: Adoptium list, installed runtimes, progress.
+//! The dependency page. It holds one thing today — the Java 28 EA runtime —
+//! so the Java block is a compact card instead of a page-filling list; the
+//! space below is where the next dependency goes.
 
 use crate::widgets::*;
 use crate::*;
@@ -11,179 +13,86 @@ impl Launcher {
     ) -> impl IntoElement {
         let colors = theme::colors(cx);
         // GitHub is the only source, so the proxy field is always useful.
-        let proxy = Some(self.ensure_proxy(window, cx));
+        let proxy = self.ensure_proxy(window, cx);
+        let show_loading = self.loading_visible(crate::LoadingKey::Java);
 
         let java = &self.state.java;
-        let show_loading = self.loading_visible(crate::LoadingKey::Java);
-        let mut runtimes = div()
-            .id("java-runtimes")
-            .v_flex()
-            .gap(px(space::XS))
-            .p(px(space::MD))
-            .overflow_y_scroll();
-        if show_loading {
-            runtimes = runtimes.child(
-                div()
-                    .p(px(space::LG))
-                    .text_size(px(font::BODY))
-                    .text_color(rgb(colors.text_secondary))
-                    .child("正在查询 Adoptium…"),
-            );
-        } else if java.runtimes.is_empty() && java.stage != JavaStage::Loading {
-            runtimes = runtimes.child(
-                div()
-                    .p(px(space::LG))
-                    .text_size(px(font::BODY))
-                    .text_color(rgb(colors.text_secondary))
-                    .child("没有可下载的运行时"),
-            );
-        }
-        if !show_loading {
-            for (index, runtime) in java.runtimes.iter().enumerate() {
-                let selected = index == java.selected;
-                let installed = java.is_installed(runtime.major);
-                let update = java.update_for(runtime).is_some();
-                let major = runtime.major;
-                let version = runtime.version();
-                let size = discover::human_size(runtime.size);
-                runtimes = runtimes.child(
-                    div()
-                        .id(format!("java-{index}"))
-                        .h_flex()
-                        .items_center()
-                        .gap(px(space::MD))
-                        .px(px(space::MD))
-                        .py(px(space::SM))
-                        .rounded(px(radius::SM))
-                        .bg(if selected {
-                            rgb(colors.selected)
-                        } else {
-                            rgb(colors.surface)
-                        })
-                        .min_h(px(layout::ROW_HEIGHT))
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(rgb(colors.hover)))
-                        .on_click(cx.listener(
-                            move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
-                                this.state.java.selected = index;
-                                // Double click installs, like Enter in the state machine.
-                                if event.click_count() > 1 {
-                                    this.state.handle_java_key(Key::Enter, Modifiers::NONE);
-                                }
-                                // `refresh` also runs the effect the key just queued.
-                                this.refresh(cx);
-                            },
-                        ))
-                        .child(
-                            div()
-                                .w(px(layout::STATUS_DOT))
-                                .h(px(layout::STATUS_DOT))
-                                .rounded(px(radius::PILL))
-                                .bg(rgb(if installed {
-                                    colors.fill_primary
-                                } else {
-                                    colors.text_secondary
-                                })),
-                        )
-                        .child(
-                            div()
-                                .w(px(layout::METADATA_WIDTH))
-                                .text_size(px(font::BODY))
-                                .text_color(rgb(if selected {
-                                    colors.text_accent
-                                } else {
-                                    colors.text_primary
-                                }))
-                                .child(format!("Java {major}")),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(font::CAPTION))
-                                .text_color(rgb(colors.text_secondary))
-                                .child(version),
-                        )
-                        .child(
-                            div()
-                                .w(px(layout::METADATA_WIDTH))
-                                .text_size(px(font::CAPTION))
-                                .text_color(rgb(colors.text_secondary))
-                                .child(size),
-                        )
-                        .children(update.then(|| chip(colors, "可更新", colors.status_warning)))
-                        .children(installed.then(|| chip(colors, "已装", colors.status_success)))
-                        // The only feature offered is still early access.
-                        .child(chip(colors, "EA", colors.text_secondary)),
-                );
-            }
-        }
+        let runtime = java.selected_runtime().cloned();
+        let installed = java.is_installed(crate::java::FEATURE);
+        let update = java.update_count() > 0;
+        let busy = java.stage == JavaStage::Downloading;
+        let progress = java.progress_text();
+        let fraction = if java.progress.1 > 0 {
+            java.progress.0 as f32 / java.progress.1 as f32
+        } else {
+            0.0
+        };
+        let message = java.message.clone();
+        let stage = java.stage;
 
-        let mut installed = div().v_flex().gap(px(space::XS)).p(px(space::MD));
-        if java.installed.is_empty() {
-            installed = installed.child(
-                div()
-                    .p(px(space::MD))
-                    .text_size(px(font::BODY))
-                    .text_color(rgb(colors.text_secondary))
-                    .child("运行时目录还是空的"),
-            );
-        }
-        for runtime in &java.installed {
-            installed = installed.child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap(px(space::MD))
-                    .px(px(space::MD))
-                    .py(px(space::SM))
-                    .rounded(px(radius::SM))
-                    .bg(rgb(colors.surface))
-                    .child(
-                        div()
-                            .w(px(layout::METADATA_WIDTH))
-                            .text_size(px(font::BODY))
-                            .text_color(rgb(colors.text_primary))
-                            .child(format!("Java {}", runtime.major)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(font::CAPTION))
-                            .text_color(rgb(colors.text_secondary))
-                            .child(runtime.version.clone()),
-                    )
-                    .children(
-                        (!runtime.managed).then(|| chip(colors, "手装", colors.text_secondary)),
-                    ),
-            );
-        }
+        // One button, three states: nothing installed → download; installed and
+        // current → a greyed-out update; installed and behind → an update.
+        let (label, can_click, key) = match (runtime.is_some(), installed, update) {
+            (false, _, _) => ("下载", false, Key::Enter),
+            (true, false, _) => ("下载", true, Key::Enter),
+            (true, true, true) => ("更新", true, Key::Char('u')),
+            (true, true, false) => ("更新", false, Key::Char('u')),
+        };
+        let can_click = can_click && !busy;
 
-        let mut progress = div().v_flex().gap(px(space::XS)).p(px(space::MD));
-        let text = java.progress_text();
-        if text.is_empty() {
-            progress = progress.child(
+        let mut card = div().v_flex().gap(px(space::SM)).p(px(space::LG));
+        let summary = div()
+            .h_flex()
+            .items_center()
+            .gap(px(space::MD))
+            .child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_primary))
+                    .child(format!("Java {} EA", crate::java::FEATURE)),
+            )
+            .children(installed.then(|| chip(colors, "已装", colors.status_success)))
+            .children((installed && update).then(|| chip(colors, "可更新", colors.status_warning)));
+        card = card.child(summary);
+        if let Some(runtime) = &runtime {
+            card = card.child(
                 div()
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
-                    .child("源：GitHub（Adoptium）"),
+                    .child(format!(
+                        "{} · {}",
+                        runtime.version(),
+                        discover::human_size(runtime.size)
+                    )),
             );
-        } else {
-            let fraction = if java.progress.1 > 0 {
-                java.progress.0 as f32 / java.progress.1 as f32
+        }
+
+        if runtime.is_none() {
+            let empty = if show_loading || stage == JavaStage::Loading {
+                "正在查询 Adoptium…"
             } else {
-                0.0
+                "Adoptium 没有返回可下载的 Java"
             };
-            progress = progress
+            card = card.child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(empty),
+            );
+        }
+
+        if !progress.is_empty() {
+            card = card
                 .child(
                     div()
                         .text_size(px(font::CAPTION))
                         .text_color(rgb(colors.text_primary))
-                        .child(text),
+                        .child(progress),
                 )
                 .child(
                     div()
                         .w_full()
-                        .h(px(layout::STATUS_DOT))
+                        .h(px(layout::PROGRESS_HEIGHT))
                         .rounded(px(radius::SM))
                         .bg(rgb(colors.raised))
                         .child(
@@ -195,85 +104,73 @@ impl Launcher {
                         ),
                 );
         }
-        if let Some(message) = &java.message {
-            progress = progress.child(
+        if let Some(message) = message {
+            card = card.child(
                 div()
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
-                    .child(message.clone()),
+                    .child(message),
             );
         }
 
-        let updates = java.update_count();
-        let busy = java.stage == JavaStage::Downloading;
-        let proxy = proxy.map(|proxy| {
+        card = card.child(
             div()
                 .v_flex()
                 .gap(px(space::XS))
-                .p(px(space::MD))
                 .child(
                     div()
                         .text_size(px(font::CAPTION))
                         .text_color(rgb(colors.text_secondary))
-                        .child("GitHub Proxy"),
+                        .child("GitHub Proxy（留空直连）"),
                 )
                 .child(
                     Input::new(&proxy)
                         .appearance(true)
                         .text_size(px(font::BODY)),
-                )
-        });
+                ),
+        );
 
+        // The button lives with the thing it acts on, not in the page footer:
+        // the footer stays for the status line, and the next dependency will
+        // bring its own button.
+        card = card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(space::MD))
+                .child(div().flex_1())
+                .children(busy.then(|| chip(colors, "下载中", colors.status_warning)))
+                .child(primary_button_when(
+                    label,
+                    can_click,
+                    cx,
+                    move |this, cx| {
+                        this.state.handle_java_key(key, Modifiers::NONE);
+                        this.refresh(cx);
+                    },
+                )),
+        );
+
+        let status = self.state.status.clone();
         div()
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
             .gap(px(space::MD))
-            .child(screen_title(colors, "Java 运行时"))
+            .child(screen_title(colors, "依赖"))
             .child(
-                div()
-                    .h_flex()
-                    .flex_1()
-                    .items_stretch()
-                    .min_h(px(0.0))
-                    .gap(px(space::MD))
-                    .child(panel(
-                        colors,
-                        &format!("运行时 ({})", self.state.java.runtimes.len()),
-                        runtimes,
-                        true,
-                    ))
-                    .child(
-                        div()
-                            .v_flex()
-                            .w(px(layout::INSPECTOR))
-                            .h_full()
-                            .gap(px(space::MD))
-                            .min_h(px(0.0))
-                            .child(panel(colors, "已装", installed, true))
-                            .child(panel(colors, "进度", progress, false))
-                            .children(proxy),
-                    ),
+                div().h_flex().w_full().gap(px(space::MD)).child(
+                    div()
+                        .w(px(layout::DETAILS))
+                        .child(panel_fit(colors, "Java", card)),
+                ),
             )
-            .child(
-                footer_bar(colors, &self.state.status)
-                    .child(primary_button("下载", cx, |this: &mut Launcher, cx| {
-                        this.state.handle_java_key(Key::Enter, Modifiers::NONE);
-                        this.refresh(cx);
-                    }))
-                    .child(button(
-                        &format!("全部更新 ({updates})"),
-                        cx,
-                        |this: &mut Launcher, cx| {
-                            this.state.handle_java_key(Key::Char('u'), Modifiers::NONE);
-                            this.refresh(cx);
-                        },
-                    ))
-                    .children(busy.then(|| chip(colors, "下载中", colors.status_warning))),
-            )
+            .child(div().flex_1())
+            .child(footer_bar(colors, &status))
     }
 
-    /// The GitHub proxy field on the Java screen, created once.
+    /// The GitHub proxy field on the dependency page, created once.
     fn ensure_proxy(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
         if let Some(state) = &self.proxy_input {
             return state.clone();

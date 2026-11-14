@@ -13,7 +13,7 @@
     arrow: '<path d="m9 5 7 7-7 7"/>',
   };
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.box}</svg>`;
-  const pages = [['home', '主页', '1'], ['accounts', '账户', '2'], ['download', '下载', '3'], ['java', '运行时', '4'], ['music', '音乐', '5']];
+  const pages = [['home', '主页', '1'], ['accounts', '账户', '2'], ['download', '下载', '3'], ['java', '依赖', '4'], ['music', '音乐', '5']];
   const versions = [
     { id: '1.21.4', type: 'release', java: '28 EA', size: '47.2 MiB', aot: true },
     { id: '1.21.4-fabric-0.16.10', type: 'release', java: '21', size: '52.8 MiB', loader: 'Fabric' },
@@ -79,7 +79,7 @@
     const list = runtimes.map((runtime, i) => `<button class="row ${state.java === i ? 'selected' : ''}" data-action="runtime" data-index="${i}" aria-pressed="${state.java === i}"><i class="dot"></i><span class="name">Java ${runtime.major}<span class="subtitle">${runtime.version}</span></span>${runtime.ea ? badge('EA', 'legacy') : ''}${runtime.installed ? badge('已安装') : ''}<small>${runtime.size}</small></button>`).join('');
     const installed = runtimes.filter(x => x.installed).map(runtime => `<div class="row"><span class="name">Java ${runtime.major}<span class="subtitle">${runtime.version}</span></span>${icon('check')}</div>`).join('');
     const progress = state.javaProgress;
-    return header('Java 运行时', '为不同的游戏版本准备合适的运行环境。', badge('Adoptium')) + `<div class="content">${panel('可用运行时', scenario(`<div class="panel-body list scroll">${list}</div>`, '没有可用运行时', '正在查询 Adoptium…'), 'grow')}<div class="stack inspector">${panel('已安装', `<div class="panel-body list">${installed}</div>`, 'grow')}${panel('下载与来源', `<div class="progress-box"><p class="caption" id="java-progress-text">${progress ? `演示下载 Java ${progress.major} · ${progress.percent}%` : '当前没有下载任务'}</p><div class="progress"><span id="java-bar" style="width:${progress?.percent || 0}%"></span></div><small class="muted">源：GitHub（Adoptium）</small><label class="caption muted" for="proxy">GitHub Proxy</label><input id="proxy" placeholder="例如 gh-proxy.com（可留空）"></div>`)}</div></div>` + footer('运行时独立保存在 data/运行时', button('全部更新', 'java-update') + button('下载运行时', 'java-install', 'primary', state.scenario !== 'normal' || progress?.percent < 100 ? 'disabled' : ''));
+    return header('依赖', '启动器替你准备的运行环境与工具。', badge('Adoptium')) + `<div class="content">${panel('Java', scenario(`<div class="panel-body list scroll">${list}</div>`, '没有可下载的 Java', '正在查询 Adoptium…'), 'grow')}<div class="stack inspector">${panel('已安装的依赖', `<div class="panel-body list">${installed}</div>`, 'grow')}${panel('下载与来源', `<div class="progress-box"><p class="caption" id="java-progress-text">${progress ? `演示下载 Java ${progress.major} · ${progress.percent}%` : '当前没有下载任务'}</p><div class="progress"><span id="java-bar" style="width:${progress?.percent || 0}%"></span></div><small class="muted">源：GitHub（Adoptium）</small><label class="caption muted" for="proxy">GitHub Proxy</label><input id="proxy" placeholder="例如 gh-proxy.com（可留空）"></div>`)}</div></div>` + footer('依赖独立保存在 data/运行时', button('下载', 'java-install', 'primary', state.scenario !== 'normal' || progress?.percent < 100 ? 'disabled' : ''));
   }
   function music() {
     const collection = tracks();
@@ -141,7 +141,6 @@
     'install-back': () => { if (state.install.percent >= 100) state.install = null; else { navigate('home'); return; } render(); },
     runtime: el => { state.java = Number(el.dataset.index); render(); },
     'java-install': startJava,
-    'java-update': () => { notify('演示更新所选运行时。'); startJava(); },
     'music-version': el => { state.musicVersion = Number(el.dataset.index); render(); },
     'music-kind': el => { state.musicKind = el.dataset.value; state.track = 0; state.position = 0; state.playing = false; render(); },
     track: el => { state.track = Number(el.dataset.index); state.position = 0; render(); },
@@ -222,7 +221,7 @@
     }
     if (state.javaProgress && state.javaProgress.percent < 100) {
       state.javaProgress.percent = Math.min(100, state.javaProgress.percent + 10);
-      if (state.javaProgress.percent === 100) { runtimes.find(r => r.major === state.javaProgress.major).installed = true; if (state.page === 'java') render(); notify('运行时演示下载完成。'); }
+      if (state.javaProgress.percent === 100) { runtimes.find(r => r.major === state.javaProgress.major).installed = true; if (state.page === 'java') render(); notify('演示下载完成。'); }
       else if ($('#java-bar')) { $('#java-bar').style.width = state.javaProgress.percent + '%'; $('#java-progress-text').textContent = `演示下载 Java ${state.javaProgress.major} · ${state.javaProgress.percent}%`; }
     }
     if (state.playing) {

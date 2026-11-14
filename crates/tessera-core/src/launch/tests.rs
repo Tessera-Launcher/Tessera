@@ -180,7 +180,7 @@ fn only_managed_runtimes_are_considered() {
     let runtimes = tmp.path().join("运行时");
     // Nothing installed: the error says what to do, not "install Java on PATH".
     let error = find_java(&runtimes, 21, JavaKind::Loader).unwrap_err();
-    assert!(error.to_string().contains("Java 运行时界面"), "{error}");
+    assert!(error.to_string().contains("依赖页"), "{error}");
     assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
 
     managed_runtime(tmp.path(), 8);
@@ -997,7 +997,7 @@ fn a_vanilla_profile_below_28_still_asks_for_28() {
     .expect_err("a 21 runtime is not Java 28");
     assert!(error.to_string().contains("Java 28"), "{error}");
     assert!(error.to_string().contains("Java 21"), "{error}");
-    assert!(error.to_string().contains("Java 运行时界面"), "{error}");
+    assert!(error.to_string().contains("依赖页"), "{error}");
 }
 
 #[test]

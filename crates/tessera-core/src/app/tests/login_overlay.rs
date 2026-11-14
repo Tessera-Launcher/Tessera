@@ -444,8 +444,8 @@ fn launching_without_a_managed_runtime_says_where_to_get_one() {
     }
     assert_eq!(app.status, "启动失败");
     assert!(
-        app.log.iter().any(|line| line.contains("Java 运行时界面")),
-        "the log points at the Java screen: {:?}",
+        app.log.iter().any(|line| line.contains("依赖页")),
+        "the log points at the dependency page: {:?}",
         app.log
     );
 }
