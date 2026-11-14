@@ -48,6 +48,13 @@ fn java_effect(app: &App) -> Option<(crate::java::Runtime, Vec<String>)> {
     })
 }
 
+fn aria2_effect(app: &App) -> Option<(crate::aria2::Build, String)> {
+    app.effects().iter().rev().find_map(|effect| match effect {
+        Effect::InstallAria2 { build, proxy } => Some((*build, proxy.clone())),
+        _ => None,
+    })
+}
+
 fn copy_effect(app: &App) -> Option<String> {
     app.ui_requests()
         .iter()
@@ -199,6 +206,7 @@ fn select(app: &mut App, id: &str) {
 }
 
 mod account_manager;
+mod dependencies;
 mod java_runtimes;
 mod loader_bases;
 mod login_overlay;

@@ -111,21 +111,7 @@ pub fn api_ea_url(feature: u32, (os, arch): (&str, &str)) -> String {
     )
 }
 
-/// Normalise what the user typed into a proxy base.
-///
-/// `gh-proxy.com`, `https://gh-proxy.com/` and `http://127.0.0.1:8080` all work;
-/// anything without a scheme gets `https://`.
-pub fn normalize_proxy(input: &str) -> Option<String> {
-    let trimmed = input.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(if trimmed.contains("://") {
-        trimmed.to_string()
-    } else {
-        format!("https://{trimmed}")
-    })
-}
+pub use crate::http::normalize_proxy;
 
 /// Every URL to try for `runtime`, in order.
 ///
@@ -134,24 +120,7 @@ pub fn normalize_proxy(input: &str) -> Option<String> {
 /// The direct link stays last: a proxy that is down is a slow download rather
 /// than a dead end.
 pub fn candidates(runtime: &Runtime, proxy: &str) -> Vec<String> {
-    let mut urls = Vec::new();
-    push_github(&mut urls, runtime, proxy);
-    urls.dedup();
-    urls
-}
-
-fn push_github(urls: &mut Vec<String>, runtime: &Runtime, proxy: &str) {
-    if let Some(proxy) = normalize_proxy(proxy) {
-        // `gh-proxy.com/github.com/…` is what was asked for; the form that
-        // keeps the scheme is what other proxies expect, so both are tried.
-        let bare = runtime
-            .link
-            .split_once("://")
-            .map_or(runtime.link.as_str(), |(_, rest)| rest);
-        urls.push(format!("{proxy}/{bare}"));
-        urls.push(format!("{proxy}/{}", runtime.link));
-    }
-    urls.push(runtime.link.clone());
+    crate::http::github_candidates(&runtime.link, proxy)
 }
 
 /// Where one runtime lives: `data/运行时/<version>`, e.g. `…/21.0.13+9`.

@@ -138,6 +138,10 @@ impl App {
         // Cheap (one directory listing), and it is what tells the page which
         // runtimes are already on disk after a download elsewhere.
         self.java.installed = crate::java::installed_runtimes(&self.runtimes);
+        // One `--version` run; the card has to show what is actually on disk.
+        // The aria2 proxy is its own field, seeded once like the Java one.
+        self.aria2.proxy = self.settings.aria2_proxy.clone();
+        self.refresh_aria2();
         // Empty list and not already loading: first visit, or the last fetch
         // failed. A request still in flight is left alone.
         if self.java.runtimes.is_empty() && !self.java.fetching {
@@ -221,6 +225,7 @@ impl App {
                     self.java.editing_proxy = true;
                     self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
                 }
+                Key::Char('a') => self.start_aria2_install(),
                 Key::Enter => self.start_java_download(),
                 Key::Char('u') => self.start_java_updates(),
                 _ => {}
@@ -367,6 +372,8 @@ impl App {
             } => {
                 self.java.progress = (0, 0, 0.0);
                 self.java.installed = crate::java::installed_runtimes(&self.runtimes);
+                // One `--version` run; the card has to show what is actually on disk.
+                self.refresh_aria2();
                 self.log(format!("Java {major} {version} → {}", java.display()));
                 if self.java.updating {
                     self.java.update_done += 1;

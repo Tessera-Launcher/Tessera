@@ -1,7 +1,9 @@
 //! `data/配置.toml` — launch defaults that outlive a run.
 //!
 //! Only things the launcher genuinely owns live here: the heap size and the
-//! window size, plus the GitHub proxy the user typed for the Java screen. The
+//! window size, plus the GitHub proxies the user typed on the dependency page
+//! (one for the Java runtime, one for aria2 — they are separate downloads and
+//! are not always reachable through the same proxy). The
 //! download source is deliberately *not* persisted (a one-off switch should not
 //! become the new normal), and nothing about
 //! credentials or accounts is written here.
@@ -33,6 +35,8 @@ pub struct Settings {
     pub window_height: u32,
     /// `gh-proxy.com`-style base for the Java download; empty for none.
     pub github_proxy: String,
+    /// The same, for the aria2 download on the dependency page.
+    pub aria2_proxy: String,
 }
 
 impl Default for Settings {
@@ -43,6 +47,7 @@ impl Default for Settings {
             window_width: 854,
             window_height: 480,
             github_proxy: String::new(),
+            aria2_proxy: String::new(),
         }
     }
 }
@@ -191,6 +196,7 @@ mod tests {
             window_width: 1280,
             window_height: 720,
             github_proxy: "gh-proxy.com".into(),
+            aria2_proxy: "127.0.0.1:8080".into(),
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));

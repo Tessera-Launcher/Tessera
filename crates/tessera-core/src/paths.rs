@@ -27,6 +27,8 @@ pub const LOGS: &str = "日志";
 pub const CACHE: &str = "缓存";
 /// Downloaded Java runtimes, one directory per version.
 pub const RUNTIMES: &str = "运行时";
+/// Downloaded helper programs (the aria2 binary today).
+pub const DEPENDENCIES: &str = "依赖";
 
 /// Resolved portable data directories.
 #[derive(Debug, Clone)]
@@ -92,6 +94,11 @@ impl Paths {
     /// `data/运行时` — the JREs the launcher downloaded, named by version.
     pub fn runtimes(&self) -> PathBuf {
         self.root.join(RUNTIMES)
+    }
+
+    /// `data/依赖` — helper programs the launcher downloaded for itself.
+    pub fn dependencies(&self) -> PathBuf {
+        self.root.join(DEPENDENCIES)
     }
 
     /// `data/日志`.
@@ -162,6 +169,14 @@ pub fn runtime_dir_beside(accounts_dir: &Path) -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .map_or_else(|| PathBuf::from(RUNTIMES), |data| data.join(RUNTIMES))
+}
+
+/// `data/依赖` for the same account directory [[`runtime_dir_beside`] was given.
+pub fn dependencies_dir_beside(accounts_dir: &Path) -> PathBuf {
+    accounts_dir.parent().and_then(Path::parent).map_or_else(
+        || PathBuf::from(DEPENDENCIES),
+        |data| data.join(DEPENDENCIES),
+    )
 }
 
 /// Whether `dir` can hold the data tree: it must exist (or be creatable) and

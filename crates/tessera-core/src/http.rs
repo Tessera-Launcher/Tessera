@@ -46,6 +46,39 @@ pub fn blocking_client(total: Duration) -> Result<reqwest::blocking::Client> {
         .map_err(|error| Error::internal(format!("无法创建 HTTP 客户端：{error}")))
 }
 
+/// Normalise what the user typed into a proxy base.
+///
+/// `gh-proxy.com`, `https://gh-proxy.com/` and `http://127.0.0.1:8080` all work;
+/// anything without a scheme gets `https://`.
+pub fn normalize_proxy(input: &str) -> Option<String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    })
+}
+
+/// Every URL to try for a `github.com` release asset, in order.
+///
+/// The direct link comes last: a proxy that is down is a slow download rather
+/// than a dead end. Both spellings proxies expect are offered — `proxy/host/…`
+/// and `proxy/https://host/…` — because the two are not interchangeable.
+pub fn github_candidates(url: &str, proxy: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(proxy) = normalize_proxy(proxy) {
+        let bare = url.split_once("://").map_or(url, |(_, rest)| rest);
+        urls.push(format!("{proxy}/{bare}"));
+        urls.push(format!("{proxy}/{url}"));
+    }
+    urls.push(url.to_string());
+    urls.dedup();
+    urls
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +87,19 @@ mod tests {
     fn both_clients_build() {
         assert!(async_client().is_ok());
         assert!(blocking_client(Duration::from_secs(60)).is_ok());
+    }
+
+    #[test]
+    fn a_proxy_goes_in_front_of_a_github_url_both_ways() {
+        let url = "https://github.com/a/b/releases/download/v1/x.zip";
+        assert_eq!(github_candidates(url, "  "), [url]);
+        let proxied = github_candidates(url, "gh-proxy.com");
+        assert_eq!(proxied.len(), 3, "{proxied:?}");
+        assert_eq!(
+            proxied[0],
+            "https://gh-proxy.com/github.com/a/b/releases/download/v1/x.zip"
+        );
+        assert_eq!(proxied[1], format!("https://gh-proxy.com/{url}"));
+        assert_eq!(proxied[2], url);
     }
 }
