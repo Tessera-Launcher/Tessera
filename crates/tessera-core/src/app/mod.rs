@@ -110,8 +110,6 @@ pub struct AotProgress {
     /// Classes loaded so far, and how many the classpath has in total.
     pub loaded: usize,
     pub total: usize,
-    /// Java 28 is being prepared/downloaded before training starts.
-    pub preparing: bool,
     /// The game is gone and the JVM is assembling the cache.
     pub assembling: bool,
     /// The last run's result, for the status line.
@@ -123,7 +121,6 @@ impl AotProgress {
     fn reset(&mut self) {
         self.loaded = 0;
         self.total = 0;
-        self.preparing = false;
         self.assembling = false;
         self.note = None;
     }
@@ -234,11 +231,6 @@ impl Account {
             Account::SignedOut => None,
             Account::SignedIn { file, .. } | Account::Offline { file, .. } => Some(file),
         }
-    }
-
-    /// True for an offline account: no tokens, so nothing to refresh.
-    pub fn is_offline(&self) -> bool {
-        matches!(self, Account::Offline { .. })
     }
 
     /// The identity behind one account file.
@@ -522,12 +514,10 @@ impl App {
         match event {
             Event::Preparing { message, .. } => {
                 self.aot.reset();
-                self.aot.preparing = true;
                 self.status = message.clone();
                 self.log(message);
             }
             Event::Progress { loaded, total, .. } => {
-                self.aot.preparing = false;
                 self.aot.loaded = loaded;
                 self.aot.total = total;
                 self.aot.assembling = false;
@@ -538,7 +528,6 @@ impl App {
                 };
             }
             Event::Assembling { .. } => {
-                self.aot.preparing = false;
                 self.aot.assembling = true;
                 self.aot.loaded = self.aot.loaded.max(self.aot.total);
                 self.status = "AOT 训练完成，正在组装缓存…".to_string();
@@ -554,7 +543,6 @@ impl App {
                 let note = format!(
                     "AOT 缓存已生成（Java {java_major} {java_version}，{loaded}/{total} 个类）"
                 );
-                self.aot.preparing = false;
                 self.aot.assembling = false;
                 self.aot.note = Some(note.clone());
                 self.aot.training = None;
@@ -565,14 +553,12 @@ impl App {
                 self.log(note);
             }
             Event::Skipped { reason, .. } => {
-                self.aot.preparing = false;
                 self.aot.note = Some(format!("跳过 AOT：{reason}"));
                 self.aot.training = None;
                 self.status = format!("跳过 AOT：{reason}");
                 self.log(format!("跳过 AOT 训练：{reason}"));
             }
             Event::Failed { reason, .. } => {
-                self.aot.preparing = false;
                 self.aot.assembling = false;
                 self.aot.note = Some(format!("AOT 训练失败：{reason}"));
                 self.aot.training = None;
@@ -960,7 +946,6 @@ impl App {
                 // answering "已有 AOT 训练在进行" for the rest of the session.
                 if self.aot.training.take().is_some() {
                     self.aot.assembling = false;
-                    self.aot.preparing = false;
                     self.status = format!("{label}：后台任务意外结束");
                 }
             }

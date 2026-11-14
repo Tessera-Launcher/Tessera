@@ -137,7 +137,7 @@ fn switching_away_from_offline_and_back_uses_the_stored_file() {
     );
 
     app.handle_accounts_key(Key::Enter, Modifiers::NONE);
-    assert!(app.account.is_offline());
+    assert!(matches!(app.account, Account::Offline { .. }));
     assert_eq!(app.account.label(), "Offline_Guy · Offline");
 
     // A session row is a different file; going back lands on the offline one.
@@ -195,6 +195,10 @@ fn an_offline_account_is_not_treated_as_a_session_at_startup() {
 
     // Startup picks the only account; the file says it has no session, so it
     // must come back as offline and never ask for a token refresh.
-    assert!(app.account.is_offline(), "{:?}", app.account);
+    assert!(
+        matches!(app.account, Account::Offline { .. }),
+        "{:?}",
+        app.account
+    );
     assert_eq!(app.account.label(), "Steve · Offline");
 }
