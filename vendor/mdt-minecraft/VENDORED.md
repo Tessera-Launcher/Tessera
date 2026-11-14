@@ -37,6 +37,9 @@ Added:
   format (`dir=`, `out=`; one URL per file, no checksum).
 - `DownloadPlan::verify` — the single verification step: missing, empty, wrong
   size or wrong SHA-1. The list stays a download list, not a proof.
+- `DownloadPlan::extractions` — natives archives also have to be unpacked, and
+  the aria2 list cannot express that, so the plan carries `(jar, dir)` pairs out
+  of band (`Extraction`). The launcher extracts them after verification.
 - `DownloadPlan::create_dirs` — called by `write`. aria2 does not create `dir=`,
   and one missing directory fails the whole entry.
 - `plan::fill_missing_hashes` — Fabric's profile names its own artifacts without

@@ -116,10 +116,6 @@ pub struct DownloadTask {
     pub label: Option<String>,
     /// Attribution for progress output, e.g. `Minecraft 1.16.5`.
     pub by: Option<String>,
-    /// Rewrite the verified download without JAR signature files and `Sealed:`
-    /// before placing it at `dest_path`. This also unseals package manifests,
-    /// which the AOT cache requires and normal launches tolerate.
-    pub normalize_jar: bool,
 }
 
 // ===== 3. rule evaluation =====
@@ -212,7 +208,6 @@ pub fn build_tasks_from_version_json_into(
             extract_to,
             label,
             by: Some(by.clone()),
-            normalize_jar: true,
         });
     };
 
@@ -411,7 +406,6 @@ pub fn build_tasks_from_assets(objects: &[AssetObject], objects_dir: &Path) -> V
                 // wants per-file lines; a bare task only counts in the bar.
                 label: None,
                 by: None,
-                normalize_jar: false,
             }
         })
         .collect()

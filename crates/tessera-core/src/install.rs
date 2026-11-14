@@ -291,6 +291,22 @@ pub fn spawn_install(
                 )));
             }
 
+            // The aria2 list only says what to fetch; natives jars also have to
+            // be unpacked, or a pre-1.19 launch looks for a `<id>-natives`
+            // directory nothing created.
+            let mut unpacked = 0usize;
+            for extraction in &plan.extractions {
+                unpacked += crate::jar::extract_natives(
+                    &client.root_dir().join(&extraction.jar),
+                    &client.root_dir().join(&extraction.into),
+                )?;
+            }
+            if unpacked > 0 {
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "解压 natives：{unpacked} 个文件"
+                )));
+            }
+
             let _ = sender.send(InstallEvent::Finished {
                 version,
                 loader: loader_version.map(|v| format!("{} {v}", loader.label())),

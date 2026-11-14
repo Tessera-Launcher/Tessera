@@ -55,6 +55,19 @@ impl PlanEntry {
     }
 }
 
+/// A downloaded archive that is unpacked after the transfer.
+///
+/// The aria2 list cannot express extraction, so the plan carries it out of
+/// band: the installer downloads the jar like any other entry and then unpacks
+/// it into `into`. Only natives use this today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extraction {
+    /// The downloaded archive, relative to the game root.
+    pub jar: PathBuf,
+    /// Where the archive's entries go, relative to the game root.
+    pub into: PathBuf,
+}
+
 /// Everything one version needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadPlan {
@@ -62,6 +75,8 @@ pub struct DownloadPlan {
     pub id: String,
     /// The files, in metadata order, without duplicates.
     pub entries: Vec<PlanEntry>,
+    /// Archives to unpack once the entries are on disk.
+    pub extractions: Vec<Extraction>,
 }
 
 impl DownloadPlan {
@@ -79,7 +94,15 @@ impl DownloadPlan {
         DownloadPlan {
             id: id.into(),
             entries,
+            extractions: Vec::new(),
         }
+    }
+
+    /// Attach the archives that have to be unpacked after the download.
+    #[must_use]
+    pub fn with_extractions(mut self, extractions: Vec<Extraction>) -> Self {
+        self.extractions = extractions;
+        self
     }
 
     /// `<list_dir>/<id>.txt` — one file per version, named after its id.
