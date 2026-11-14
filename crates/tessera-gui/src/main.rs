@@ -14,7 +14,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::component::{Icon, IconName, TitleBar, TITLE_BAR_HEIGHT};
+use gpui_kit::component::{Icon, IconName, Sizable as _, TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, gui_key, open_browser};
