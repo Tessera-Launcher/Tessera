@@ -3,7 +3,7 @@
 //! ```sh
 //! cargo run --example plan -- <root> <mc-version> [loader-version]
 //! cargo run --example plan -- /tmp/mdt 26.3 0.20.1
-//! MDT_MIRROR=bmclapi cargo run --example plan -- /tmp/mdt 26.3 0.20.1
+//! MDT_MIRROR=bmclapi MDT_LIST_DIR=/tmp/mdt-cache cargo run --example plan -- /tmp/mdt 26.3 0.20.1
 //! ```
 //!
 //! Prints the list path and a few numbers; the file itself is the aria2
@@ -28,7 +28,16 @@ async fn main() -> ExitCode {
         Ok(other) => Mirror::Custom(other.to_owned()),
     };
 
-    let client = match MdtClient::builder().mirror(mirror).root_dir(&root).build() {
+    let list_dir = std::env::var("MDT_LIST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::Path::new(&root).join(mdt::plan::LIST_DIR));
+
+    let client = match MdtClient::builder()
+        .mirror(mirror)
+        .root_dir(&root)
+        .list_dir(&list_dir)
+        .build()
+    {
         Ok(client) => client,
         Err(error) => {
             eprintln!("client: {error}");
@@ -51,7 +60,7 @@ async fn main() -> ExitCode {
             println!("files:   {}", plan.entries.len());
             println!("hashed:  {}", plan.hashed());
             println!("bytes:   {}", plan.total_bytes());
-            println!("list:    {}", plan.path(client.root_dir()).display());
+            println!("list:    {}", plan.path(&list_dir).display());
             if std::env::var("MDT_VERIFY").is_ok() {
                 let started = std::time::Instant::now();
                 let failed = plan.verify(client.root_dir()).await;

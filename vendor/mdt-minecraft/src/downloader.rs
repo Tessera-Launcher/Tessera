@@ -33,7 +33,13 @@ pub struct LibraryDownloads {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Artifact {
     pub path: Option<String>,
+    /// Empty when the profile has no digest for this artifact (loader profiles
+    /// that only carry `{name, url}`, or a synthesized LWJGL entry). Such a task
+    /// is still planned; it just cannot be hash-verified, so `verify` falls back
+    /// to existence and size.
+    #[serde(default)]
     pub sha1: String,
+    #[serde(default)]
     pub size: u64,
     pub url: String,
 }
@@ -195,7 +201,7 @@ pub fn build_tasks_from_version_json_into(
                 size: u64,
                 label: Option<String>,
                 extract_to: Option<PathBuf>| {
-        if !is_sha1_hex(sha1) || !is_safe_http_url(url) {
+        if !(sha1.is_empty() || is_sha1_hex(sha1)) || !is_safe_http_url(url) {
             return;
         }
         tasks.push(DownloadTask {

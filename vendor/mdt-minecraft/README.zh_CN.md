@@ -9,10 +9,11 @@
 **语言 / Language:** [English](README.md) · [简体中文](README.zh_CN.md)
 
 MDT 只做三件事：取元数据、写 profile、出清单。它把版本清单、版本 JSON、资源索引、
-Fabric profile 解析出来，把 profile 写回 `versions/<id>/<id>.json`，再为每个版本写一份：
+Fabric profile 解析出来，把 profile 写回 `versions/<id>/<id>.json`，再为每个版本写一份清单
+（放在版本目录外面，它只是下载器的输入）：
 
 ```
-versions/26.3-fabric-0.20.1/26.3-fabric-0.20.1.txt
+列表/26.3-fabric-0.20.1.txt
 ```
 
 这份文件就是 `aria2c --input-file` 的格式：一行 URL，后面跟缩进的选项。
@@ -23,12 +24,14 @@ https://piston-data.mojang.com/v1/objects/e877…/client.jar
   out=26.3-fabric-0.20.1.jar
 ```
 
-写清单的同时会把每个条目的目录建好——aria2 不会创建 `dir=`，缺一个目录整条就失败。
+清单默认写到 `<root>/列表/`，可用 `.list_dir(...)` 换位置。写清单的同时会把每个条目的
+目录建好——aria2 不会创建 `dir=`，缺一个目录整条就失败。
 
 ## 特性
 
 - 全版本原版 Minecraft（manifest 里的任意版本）+ Fabric 加载器。
-- 每个版本一份清单，逐文件带 SHA-1，按目标路径去重。
+- 每个版本一份清单，按目标路径去重；清单放在调用方指定的目录（默认
+  `<root>/列表/`），不进 versions。
 - 同时写版本 JSON：启动器要读它拼命令行；Fabric profile 会与 vanilla 合并，目录自包含。
 - 镜像：`Mirror::BMCLAPI`、`Mirror::Mojang`、`Mirror::Custom("<name>")`，端点由
   `providers.compile.toml` 编译进静态表。

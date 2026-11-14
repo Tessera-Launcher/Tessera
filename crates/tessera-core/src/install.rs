@@ -121,6 +121,7 @@ pub fn spawn_versions(
         let transferred = Arc::new(AtomicU64::new(0));
         let client = build_client(
             &root,
+            &root.join(mdt::plan::LIST_DIR),
             source,
             asset_concurrency,
             sender.clone(),
@@ -155,6 +156,8 @@ pub fn spawn_versions(
 pub fn spawn_install(
     root: PathBuf,
     deps: PathBuf,
+    // Where the aria2 list goes (`data/缓存`); `None` keeps it in `<root>/列表`.
+    list_dir: Option<PathBuf>,
     source: Source,
     asset_concurrency: usize,
     version: String,
@@ -164,9 +167,11 @@ pub fn spawn_install(
         // A cleanup sweep must not delete libraries while this install writes
         // them. The guard lives for the whole install, not just the setup.
         let _maintenance = crate::task::read();
+        let list_dir = list_dir.unwrap_or_else(|| root.join(mdt::plan::LIST_DIR));
         let transferred = Arc::new(AtomicU64::new(0));
         let client = build_client(
             &root,
+            &list_dir,
             source,
             asset_concurrency,
             sender.clone(),
@@ -214,7 +219,7 @@ pub fn spawn_install(
             };
             let files = plan.entries.len();
             let total_bytes = plan.total_bytes();
-            let list = plan.path(client.root_dir());
+            let list = plan.path(&list_dir);
             let _ = sender.send(InstallEvent::Log(format!(
                 "清单：{files} 个文件 · {}",
                 crate::discover::human_size(total_bytes)
@@ -313,6 +318,7 @@ fn describe(error: &MdtError) -> Error {
 
 fn build_client(
     root: &PathBuf,
+    list_dir: &std::path::Path,
     source: Source,
     asset_concurrency: usize,
     sender: Sender<InstallEvent>,
@@ -321,6 +327,7 @@ fn build_client(
     MdtClient::builder()
         .mirror(source.to_mdt())
         .root_dir(root)
+        .list_dir(list_dir)
         .concurrency(FILE_CONCURRENCY)
         .asset_concurrency(asset_concurrency)
         .progress_reporter(Reporter {
@@ -498,6 +505,7 @@ mod tests {
         let receiver = spawn_install(
             root.clone(),
             deps,
+            None,
             Source::Mojang,
             ASSET_CONCURRENCY,
             "26.3".into(),

@@ -145,6 +145,7 @@ impl Launcher {
                     let rx = install::spawn_install(
                         self.state.root.clone(),
                         self.state.dependencies.clone(),
+                        self.state.cache.clone(),
                         self.state.source,
                         ASSET_CONCURRENCY,
                         version,
