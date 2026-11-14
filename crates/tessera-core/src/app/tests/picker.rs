@@ -293,24 +293,24 @@ fn enter_with_no_match_does_not_start_an_install() {
 }
 
 #[test]
-fn the_picker_starts_on_bmclapi_and_s_toggles_the_source() {
+fn the_picker_starts_on_the_official_source_and_s_toggles_it() {
     let mut app = downloader();
     assert_eq!(
         app.source,
-        crate::install::Source::Bmclapi,
+        crate::install::Source::Mojang,
         "the default source"
     );
-    assert_eq!(app.source_label(), "BMCLAPI");
+    assert_eq!(app.source_label(), "官方源");
 
     app.handle_download_key(Key::Char('s'), Modifiers::NONE);
-    assert_eq!(app.source, crate::install::Source::Mojang);
-    assert_eq!(app.source_label(), "官方源");
-    assert!(app.log.iter().any(|line| line.contains("下载源：官方源")));
+    assert_eq!(app.source, crate::install::Source::Bmclapi);
+    assert_eq!(app.source_label(), "BMCLAPI");
+    assert!(app.log.iter().any(|line| line.contains("下载源：BMCLAPI")));
 
     app.handle_download_key(Key::Char('s'), Modifiers::NONE);
     assert_eq!(
         app.source,
-        crate::install::Source::Bmclapi,
+        crate::install::Source::Mojang,
         "the switch is a two-way toggle"
     );
 }

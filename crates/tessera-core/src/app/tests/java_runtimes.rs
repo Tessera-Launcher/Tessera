@@ -13,7 +13,11 @@ fn opening_the_java_picker_asks_for_the_list() {
         "the loop fetches Adoptium's list"
     );
     assert!(app.java.runtimes.is_empty());
-    assert_eq!(app.java.source, crate::java::Source::Tuna, "清华源默认");
+    assert_eq!(
+        app.java.source,
+        crate::java::Source::Github,
+        "官方源默认"
+    );
     assert!(app.java.installed.is_empty(), "nothing downloaded yet");
 }
 
@@ -53,15 +57,7 @@ fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
     app.handle_java_key(Key::Enter, Modifiers::NONE);
     let (runtime, urls) = java_effect(&app).expect("a download started");
     assert_eq!(runtime.major, 21);
-    assert!(
-        urls[0].starts_with("https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/"),
-        "{urls:?}"
-    );
-    assert_eq!(
-        urls.last().unwrap(),
-        &runtime.link,
-        "GitHub is the fallback"
-    );
+    assert_eq!(urls[0], runtime.link, "官方源默认，直接取 GitHub 资产");
     assert_eq!(app.java.stage, JavaStage::Downloading);
     assert_eq!(app.java.current, Some(21));
 }
@@ -127,14 +123,8 @@ fn the_java_source_and_the_proxy_decide_the_urls() {
     app.open_java();
     app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
 
-    // The proxy is only consulted by the GitHub source.
-    app.handle_java_key(Key::Char('p'), Modifiers::NONE);
-    assert!(!app.java.editing_proxy, "not while the mirror is selected");
-    assert!(app.status.contains("官方源"), "{}", app.status);
-
-    app.handle_java_key(Key::Char('s'), Modifiers::NONE);
+    // 官方源是默认，所以代理字段开箱可用。
     assert_eq!(app.java.source, crate::java::Source::Github);
-
     app.handle_java_key(Key::Char('p'), Modifiers::NONE);
     assert!(app.java.editing_proxy);
     for c in "gh-proxy.com".chars() {
@@ -143,6 +133,15 @@ fn the_java_source_and_the_proxy_decide_the_urls() {
     app.handle_java_key(Key::Enter, Modifiers::NONE);
     assert!(!app.java.editing_proxy, "Enter leaves the field");
     assert_eq!(app.java.proxy, "gh-proxy.com");
+
+    // 切到清华源后代理字段失效，切回来又生效（代理值一直保留）。
+    app.handle_java_key(Key::Char('s'), Modifiers::NONE);
+    assert_eq!(app.java.source, crate::java::Source::Tuna);
+    app.handle_java_key(Key::Char('p'), Modifiers::NONE);
+    assert!(!app.java.editing_proxy, "not while the mirror is selected");
+    assert!(app.status.contains("先按 s"), "{}", app.status);
+    app.handle_java_key(Key::Char('s'), Modifiers::NONE);
+    assert_eq!(app.java.source, crate::java::Source::Github);
 
     app.handle_java_key(Key::Enter, Modifiers::NONE);
     let (_, urls) = java_effect(&app).expect("a download started");

@@ -18,11 +18,11 @@ use mdt::{MdtClient, MdtError, Mirror as MdtMirror, ModLoader, ProgressReporter}
 /// Which source files come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Source {
-    /// Community mirror, usually much faster from mainland China.
+    /// Official Mojang servers. The default: no third party in the path.
     #[default]
-    Bmclapi,
-    /// Official Mojang servers.
     Mojang,
+    /// Community mirror, usually much faster from mainland China.
+    Bmclapi,
 }
 
 impl Source {
@@ -422,9 +422,10 @@ mod tests {
     fn sources_have_labels_and_map_to_mdt() {
         assert_eq!(Source::Bmclapi.label(), "BMCLAPI");
         assert_eq!(Source::Mojang.label(), "官方源");
-        // The picker's switch starts on the community mirror, and the value is a
-        // measured one rather than a guess (see `ASSET_CONCURRENCY`).
-        assert_eq!(Source::default(), Source::Bmclapi);
+        // Official servers are the default; the mirror is one keypress away.
+        assert_eq!(Source::default(), Source::Mojang);
+        // The concurrency values are measured rather than guessed (see
+        // `ASSET_CONCURRENCY`).
         assert_eq!(ASSET_CONCURRENCY, 96);
         assert_eq!(FILE_CONCURRENCY, 96);
     }

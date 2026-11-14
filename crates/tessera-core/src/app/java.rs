@@ -336,7 +336,7 @@ impl App {
             source_label
         ));
         if runtime.ea {
-            self.log("Java 28 是 EA：清华源没有，直接使用 GitHub（可设 Proxy）");
+            self.log("Java 28 是 EA：只有官方源提供，清华源没有（可设 Proxy）");
         }
         self.request(Effect::InstallJava { runtime, urls });
     }
