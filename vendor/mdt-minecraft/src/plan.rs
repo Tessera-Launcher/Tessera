@@ -218,6 +218,35 @@ pub fn entries_from_libraries(profile: &serde_json::Value) -> Vec<PlanEntry> {
     entries
 }
 
+/// Fill in the hashes a loader profile did not carry.
+///
+/// Fabric's profile names its own artifacts with `{name, url}` and no digest, so
+/// the list would ask aria2 to download those unchecked. Each Maven repository
+/// publishes `<artifact>.sha1` next to the jar; that is a metadata request (a
+/// few dozen bytes), not an artifact download, and it makes every line in the
+/// list verifiable.
+///
+/// Entries that already have a hash are left alone, and a missing sidecar is not
+/// an error: the line simply stays unhashed.
+pub async fn fill_missing_hashes(
+    downloader: &dyn crate::customize::Downloader,
+    reporter: &dyn crate::customize::ProgressReporter,
+    entries: &mut [PlanEntry],
+) {
+    for entry in entries.iter_mut().filter(|entry| entry.sha1.is_none()) {
+        let url = format!("{}.sha1", entry.url);
+        let Ok(text) = downloader.fetch(&url).await else {
+            continue;
+        };
+        let hash = text.trim().to_ascii_lowercase();
+        if is_sha1(&hash) {
+            entry.sha1 = Some(hash);
+        } else {
+            reporter.status(&format!("{} 的 .sha1 内容不可用", entry.url));
+        }
+    }
+}
+
 /// Whether `value` is a 40-character hex SHA-1.
 #[must_use]
 pub fn is_sha1(value: &str) -> bool {

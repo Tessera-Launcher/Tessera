@@ -1,198 +1,116 @@
-# MDT — Minecraft 下载工具箱
+# MDT — Minecraft Download Toolkit
 
-用 Rust 下载并安装 Minecraft 版本与模组加载器。
+把 Minecraft 版本和 Fabric 解析成一份 **aria2 下载清单**。
 
 [![Crates.io](https://img.shields.io/crates/v/mdt-minecraft.svg?style=flat-square)](https://crates.io/crates/mdt-minecraft)
-[![docs.rs](https://docs.rs/mdt-minecraft/badge.svg)](https://docs.rs/mdt-minecraft)
-[![许可证: MIT](https://img.shields.io/badge/开源许可-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![docs.rs](https://docs.rs/mdt-minecraft/badge.svg?style=flat-square)](https://docs.rs/mdt-minecraft)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 **语言 / Language:** [English](README.md) · [简体中文](README.zh_CN.md)
 
-> [!NOTE]
-> **此消息仅在简体中文版自述文件才能看到**。<br>
-> 为便于位于中国大陆的爱好者在无法访问 GitHub 时能够继续访问并克隆仓库，我们已在 [AtomGit (原 GitCode)](https://gitcode.com/Lavaver/Minecraft-Download-Toolkit) 同步了该仓库的副本。<br>
-> 为了避免跨平台协作问题，并提高后续更新效率，**同步仓库仅作为访问并克隆使用，不接受任何 Issues/PR。在同步仓库的项目讨论也将会被无视，因此建议不要在此讨论代码问题。**
+MDT 只做三件事：取元数据、写 profile、出清单。它把版本清单、版本 JSON、资源索引、
+Fabric profile 解析出来，把 profile 写回 `versions/<id>/<id>.json`，再为每个版本写一份：
 
-MDT 是一个帮你填满 `.minecraft` 目录的小库——原版版本、模组加载器、依赖库、资源文件。它是启动器底下的那层「管道」：没有界面、没有进度条、没有交互提示。你调一个函数，拿到一个 `Result`。
+```
+versions/26.3-fabric-0.20.1/26.3-fabric-0.20.1.txt
+```
 
-我们帮你做了很多底层工作，隐藏了很多原本你需要在 Minecraft Wiki 当中仔细抠字眼的实现细节，你只需要调用默认实现的 API 即可开玩，或者自定义你的实现，在游戏开始前自定义你的体验
+这份文件就是 `aria2c --input-file` 的格式：一行 URL，后面跟缩进的选项。
+
+```text
+https://piston-data.mojang.com/v1/objects/e877…/client.jar
+  dir=/game/versions/26.3-fabric-0.20.1
+  out=26.3-fabric-0.20.1.jar
+  checksum=sha-1=e877b6a07acd633fb3bb475002175cec036e7b87
+```
+
+写清单的同时会把每个条目的目录建好——aria2 不会创建 `dir=`，缺一个目录整条就失败。
 
 ## 特性
 
-- 原版 Minecraft，外加 Forge、Fabric、Quilt、NeoForge 和 LiteLoader。
-- 隔离安装——每个加载器都装进各自的 `versions/<mc>+<Loader><ver>` 目录，坏掉的加载器绝不会碰到你的原版游戏。
-- 卸载——通过 SHA-1 清单比对，把加载器还原回纯净原版。
-- SHA-1 校验下载，源站慢或被墙时自动切换镜像。
-- 通过可编辑的 `providers.compile.toml` 自定义镜像（编译期内置）。
-- 极简构建——`minimal` feature 会剥离模组加载器、资源与双加载器模块，为资源受限的环境留下一个紧凑的原版专用核心。
-- 核心库零终端依赖；`cli` 和 `tui` 是可选 feature。
+- 全版本原版 Minecraft（manifest 里的任意版本）+ Fabric 加载器。
+- 每个版本一份清单，逐文件带 SHA-1，按目标路径去重。
+- 同时写版本 JSON：启动器要读它拼命令行；Fabric profile 会与 vanilla 合并，目录自包含。
+- 镜像：`Mirror::BMCLAPI`、`Mirror::Mojang`、`Mirror::Custom("<name>")`，端点由
+  `providers.compile.toml` 编译进静态表。
+- `minimal` 特性：只保留版本清单解析与清单核心。
 
-## 安装
+MDT **不**下载游戏文件、不启动游戏、不处理登录，也没有 CLI / TUI，唯一的二进制是示例。
+
+## 依赖
 
 ```toml
 [dependencies]
 mdt-minecraft = "0.7.0"
 ```
 
-## 快速上手
+## 快速开始
 
 ```rust
-use mdt::{MdtClient, Mirror, ModLoader, full_install};
+use mdt::{MdtClient, Mirror, ModLoader};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = MdtClient::builder()
-        .mirror(Mirror::BMCLAPI)
+        .mirror(Mirror::Mojang)
         .root_dir("./.minecraft")
         .build()?;
 
-    // 一行装完：先装原版 1.20.1（如果还没有），再装 Fabric。
-    full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11").await?;
+    // 原版：versions/1.20.1/1.20.1.{json,txt}
+    let plan = client.plan_vanilla("1.20.1").await?;
 
+    // Fabric：整栈一份清单，包含 loader 自己的 maven 库
+    let plan = client.plan_loader("1.20.1", ModLoader::Fabric, "0.15.11").await?;
+
+    println!(
+        "{} 个文件，{} 个带哈希，{:.1} MiB -> {}",
+        plan.entries.len(),
+        plan.hashed(),
+        plan.total_bytes() as f64 / (1024.0 * 1024.0),
+        plan.path(client.root_dir()).display()
+    );
     Ok(())
 }
 ```
 
-`install_modloader` 接收的是一个原版版本目录（不是版本号字符串）和一个写时复制开关，你可以在隔离副本和原地安装之间二选一：
+Fabric 的 loader 版本由调用方传入；用 `manifest::fetch_fabric_manifest(...)` 取列表的
+**第一条** 就是最新构建（meta 列表按最新在前排序，beta 也在里面）。
 
-```rust
-let vanilla = client.root_dir().join("versions").join("1.20.1");
+## 交给 aria2
 
-// 把原版目录复制到 versions/1.20.1+Fabric0.15.11 再安装。
-client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", true).await?;
-
-// 直接在 versions/1.20.1 内部原地安装（会改动它）。
-client.install_modloader(&vanilla, ModLoader::Quilt, "0.24.0", false).await?;
-
-// 把加载器还原回原版。
-client.uninstall_modloader(&vanilla, ModLoader::Quilt).await?;
+```sh
+aria2c -i versions/<id>/<id>.txt \
+  -j64 -x1 -s1 \
+  --no-conf=true --enable-color=false \
+  --show-console-readout=false --summary-interval=0 \
+  --console-log-level=notice \
+  --auto-file-renaming=false --allow-overwrite=true \
+  --stop-with-process=<启动器 pid>
 ```
 
-## 隔离
+实测要点：
 
-每个加载器安装都有自己的目录，与原版版本分开：
+- 几千个小文件时 `-j` 才是关键；`-x`/`-s` 只对超过 `--min-split-size`（默认 20 MiB）
+  的文件有意义，保持 1 即可。
+- aria2 会边下边校验 `checksum=sha-1=`，但 **校验失败时文件仍留在盘上**（退出码 32），
+  目标已存在则退出码 13。所以非 0 退出应当理解为“这些路径要复检”，而不是“文件在就算好”。
+- `--stop-with-process` 防止 aria2 子进程比启动器活得久。
+- `--save-session=<file>` 把失败的条目写回去，第二轮只补缺的。
 
-```
-.minecraft/
-└── versions/
-    ├── 1.20.1/                  # 原版——加载器安装从不碰它
-    └── 1.20.1+Fabric0.15.11/    # 隔离的 Fabric 安装
-```
+## 特性开关
 
-你不需要自己保证这一点——库已经帮你做了。
-
-## 镜像
-
-| 变体                     | 说明                                                                 |
-|--------------------------|----------------------------------------------------------------------|
-| `Mirror::BMCLAPI`        | 社区镜像（默认）。代理 Mojang、Fabric、Forge、NeoForge、LiteLoader。 |
-| `Mirror::Mojang`         | 官方服务器。                                                         |
-| `Mirror::Custom("name")` | 你自己的 provider，在 `providers.compile.toml` 里声明为 `[name]`。   |
-
-请求失败会自动回退到对向镜像（自定义镜像回退到 `BMCLAPI`）。端点与重写规则写在 [`providers.compile.toml`](providers.compile.toml) 里——见 [docs/mirror_toml.md](docs/mirror_toml.md) 和 [docs/mirror_uri.md](docs/mirror_uri.md)。
-
-## 加载器
-
-| 加载器                  | 方式                     | 说明                            |
-|-------------------------|--------------------------|---------------------------------|
-| `ModLoader::Forge`      | A（1.13+）/ B（1.12.2-） | 官方安装器 + Java，或手动解包。 |
-| `ModLoader::Neoforge`   | A                        | 官方安装器 + Java。             |
-| `ModLoader::Fabric`     | B                        | 不需要 Java。                   |
-| `ModLoader::Quilt`      | B                        | 不需要 Java。                   |
-| `ModLoader::Liteloader` | B                        | 1.12.2 及更早。                 |
-
-方式 A 需要本地 Java 运行时（`JAVA_HOME` 或 `PATH` 上的 `java`）。
+| 特性 | 默认 | 作用 |
+|---|---|---|
+| `tokio` | ✅ | async API，reqwest 传输 |
+| `http2` | ❌ | 启用 HTTP/2（对 Minecraft 资源 CDN 实测更慢） |
+| `minimal` | ❌ | 去掉加载器与资源模块，只留版本清单 + 清单核心 |
 
 ## 错误
 
-每个可能失败的调用都返回 `Result<T, MdtError>`，你可以精确匹配到底哪里出了问题：
+一切返回 `Result<T, MdtError>`；枚举是 `#[non_exhaustive]`，记得留通配分支。出清单时可能
+遇到的是 `NetworkError`、`ChecksumMismatch`、`InvalidManifest`、`VersionNotFound`、
+`LoaderInstallFailed`、`Io`。
 
-```rust
-let vanilla = client.root_dir().join("versions").join("1.20.1");
-match client.install_modloader(&vanilla, ModLoader::Forge, "47.2.0", true).await {
-    Ok(v)   => println!("installed {} via {}", v.id, v.method),
-    Err(e)  => match e {
-        mdt::MdtError::JavaNotFound          => eprintln!("install Java first"),
-        mdt::MdtError::ChecksumMismatch{..}  => eprintln!("corrupt download"),
-        other                                => eprintln!("{other}"),
-    },
-}
-```
+## 许可
 
-## 宏
-
-几个常用场景的一行快捷方式：
-
-```rust
-use mdt::{version_dir, download_task};
-
-let dir  = version_dir!(client, "1.16.5", Fabric, "0.20.0");  // <root>/versions/1.16.5+Fabric0.20.0
-let task = download_task!("https://…/lib.jar", "libraries/lib.jar", "abc123", 42);
-```
-
-### `full_install!`
-
-`full_install!` 一行装完——先装原版（如果磁盘上还没有），再装加载器，所以你不必单独调用 `install_vanilla`：
-
-```rust
-use mdt::{MdtClient, Mirror, ModLoader, full_install};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = MdtClient::builder().mirror(Mirror::BMCLAPI).root_dir("./.minecraft").build()?;
-
-    // 原版 + 加载器，写时复制（默认）：原版不动，加载器装进自己的目录。
-    full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11").await?;
-
-    // 传 `false` 则原地安装加载器，改动原版目录。
-    full_install!(client, "1.20.1", ModLoader::Quilt, "0.24.0", false).await?;
-
-    Ok(())
-}
-```
-
-底层 `full_install!(client, "1.20.1", loader, "ver")` 展开为
-`client.full_install("1.20.1", loader, "ver", true)`——先装原版，再调用
-[`install_modloader`](#隔离)。如果你已经装过原版，原版这一步会跳过。
-
-## Feature flags
-
-三种传输形态，外加可选的终端扩展：
-
-```toml
-mdt-minecraft = "0.7.0"                                                      # 异步（tokio + reqwest）——默认
-mdt-minecraft = { version = "0.7.0", default-features = false, features = ["blocking"] }  # 同步（ureq），无 tokio/reqwest
-mdt-minecraft = { version = "0.7.0", default-features = false, features = ["tokio", "minimal"] }  # 极简：仅原版下载
-mdt-minecraft = { version = "0.7.0", default-features = false }              # 纯引擎：自行注入 Downloader
-mdt-minecraft = { version = "0.7.0", features = ["tui"] }                    # + TUI
-mdt-minecraft = { version = "0.7.0", features = ["cli"] }                    # + CLI 和 TUI
-```
-
-`blocking` 特性会提供一个同名方法的同步 `BlockingClient`，其运行时依赖树不含 `tokio` 或 `reqwest`。`minimal` 特性只保留原版下载管线（`install_vanilla`、`versions`、`uninstall_modloader`）；未开启任何传输特性时，`build()` 会返回 `MdtError::MissingDownloader`，直到你注入自定义 `Downloader`。
-
-## 面向嵌入式受限环境的极简构建
-
-如果你想要在环境受限的嵌入式开发中使用 MDT，那么只使用最小子集会是你不错的绝佳选择。最小子集仅包含一套极度精简化的核心引擎体验：`asset`、`registry`、`virtual_dir` 与 `dual_loader` 模块被剥离，模组加载器安装（`install_modloader`、`full_install`、`setup_dual_loader`）被禁用，下载管线中的原生库解压被跳过。留下来的是一套必需的核心引擎——版本清单解析、SHA-1 校验、并发任务调度与卸载。
-
-配合 `default-features = false`，极简构建不携带 `tokio`、`reqwest` 或 `ureq`：文件 I/O 完全走 `std`，异步组合由 `futures` 完成，整个核心可以运行在你提供的执行器上。这正是它在嵌入式开发中的潜力所在：
-
-- **自带传输**——为你的平台网络栈（BLE、串口、私有总线、内存存储）实现一次 `Downloader`，MDT 的校验与调度核心就能跑在它之上。
-- **更小的代码面**——模组加载器、资源与双加载器机制完全不参与编译，固件只携带真正用到的代码。
-- **按需反馈与存储**——换成你自己的 `ProgressReporter`（LED、日志槽）与 `RegistryCache`（Flash、RAM），而不是默认的 stderr 输出与文件系统缓存。
-
-注意：`minimal` 仍然以 `std` 为目标（并非 `no_std`），并且它有意把环境特定的部分——传输、存储与上报——留给你自己实现。
-
-## 文档
-
-- [docs.rs/mdt-minecraft](https://docs.rs/mdt-minecraft)
-- [镜像 TOML 格式](docs/mirror_toml.md)
-- [镜像 URI 规范](docs/mirror_uri.md)
-- [Minecraft Wiki《教程:编写启动器》当中的《游戏文件》一节](https://zh.minecraft.wiki/w/Tutorial:%E7%BC%96%E5%86%99%E5%90%AF%E5%8A%A8%E5%99%A8?variant=zh-cn#%E6%B8%B8%E6%88%8F%E6%96%87%E4%BB%B6)
-
-## 更新日志
-
-见 [CHANGELOG.md](CHANGELOG.md) 和 [releases](https://github.com/Lavaver/MDT/releases) 页面。
-
-## 许可证
-
-[MIT](LICENSE)
+MIT，与上游一致。本副本被 vendored 进 Tessera，本地改动见 `VENDORED.md`。
