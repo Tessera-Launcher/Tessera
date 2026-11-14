@@ -1187,7 +1187,8 @@ fn lwjgl3_install(root: &Path) {
             ]
         }),
     );
-    // The client jar has to be a real zip: the launch makes an unsigned copy.
+    // The client jar has to be a real zip: prepare normalizes it (the 1.8.9
+    // install is signed and sealed, which the rewrite agent cannot use).
     {
         use std::io::Write;
         let file = std::fs::File::create(root.join("versions/1.8.9/1.8.9.jar")).unwrap();
@@ -1197,7 +1198,14 @@ fn lwjgl3_install(root: &Path) {
             zip::write::SimpleFileOptions::default(),
         )
         .unwrap();
-        zip.write_all(b"Manifest-Version: 1.0\n").unwrap();
+        zip.write_all(b"Manifest-Version: 1.0\nSealed: true\n")
+            .unwrap();
+        zip.start_file(
+            "META-INF/MOJANGCS.SF",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"Signature-Version: 1.0\n").unwrap();
         zip.finish().unwrap();
     }
     for path in [
@@ -1243,11 +1251,31 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
             .any(|arg| arg.starts_with("-Djava.library.path=")),
         "{args:?}"
     );
-    // MDT installs the client jar unsigned, so no derived copy is needed.
+    // The install normalizes the client jar, so no derived copy is needed.
     assert!(
         args.iter().any(|arg| arg.ends_with("1.8.9.jar")),
         "{args:?}"
     );
+    // A signed jar handed to the agent would make the JVM refuse the rewritten
+    // classes, so prepare strips the signature blocks and the Sealed attribute.
+    let mut client =
+        zip::ZipArchive::new(std::fs::File::open(root.join("versions/1.8.9/1.8.9.jar")).unwrap())
+            .unwrap();
+    let names: Vec<String> = (0..client.len())
+        .map(|index| client.by_index(index).unwrap().name().unwrap().to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|name| name.ends_with(".SF")),
+        "signature blocks are gone: {names:?}"
+    );
+    let mut manifest = String::new();
+    use std::io::Read;
+    client
+        .by_name("META-INF/MANIFEST.MF")
+        .unwrap()
+        .read_to_string(&mut manifest)
+        .unwrap();
+    assert!(!manifest.to_ascii_lowercase().contains("sealed:"));
 }
 
 #[test]
