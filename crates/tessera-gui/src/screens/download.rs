@@ -379,64 +379,19 @@ impl Launcher {
         )
     }
 
+    /// The install pane: aria2's per-file lines live in the log above, so this
+    /// only carries the outcome — elapsed time, total size, average speed.
     fn download_progress(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
         let download = &self.state.download;
-        let fraction = download.fraction() as f32;
         let mut body = div()
-            .id("install-progress")
+            .id("install-result")
             .v_flex()
             .gap(px(space::MD))
             .p(px(space::LG))
             .max_h(px(layout::PROGRESS_MAX))
             .overflow_y_scroll();
 
-        body = body
-            .child(
-                div()
-                    .text_size(px(font::BODY))
-                    .text_color(rgb(colors.text_primary))
-                    .child(format!(
-                        "{}%   {} / {} 个文件",
-                        download.percent(),
-                        download.done,
-                        download.total
-                    )),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .h(px(layout::PROGRESS_HEIGHT))
-                    .rounded(px(radius::SM))
-                    .bg(rgb(colors.raised))
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded(px(radius::SM))
-                            .bg(rgb(colors.fill_primary))
-                            .w(relative(fraction.max(0.001))),
-                    ),
-            );
-
-        if download.speed > 0.0 {
-            let mut line = format!(
-                "{:.1} MiB/s · 剩余 {:.1} MiB",
-                download.speed / 1_048_576.0,
-                download.remaining_bytes as f64 / 1_048_576.0
-            );
-            if download.batch_total_bytes > 0 {
-                line.push_str(&format!(
-                    " · 本批 {:.1} MiB",
-                    download.batch_total_bytes as f64 / 1_048_576.0
-                ));
-            }
-            body = body.child(
-                div()
-                    .text_size(px(font::CAPTION))
-                    .text_color(rgb(colors.text_secondary))
-                    .child(line),
-            );
-        }
         if let Some(error) = &download.error {
             body = body.child(
                 div()
@@ -464,16 +419,23 @@ impl Launcher {
                     .child(summary.text()),
             );
         }
+        if download.summary.is_none() && download.error.is_none() {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(colors.text_secondary))
+                    .child("下载中，进度见上方日志"),
+            );
+        }
 
-        let title = "安装";
         div()
             .v_flex()
             .flex_1()
             .min_h(px(0.0))
             .gap(px(space::MD))
-            .child(screen_title(colors, title))
+            .child(screen_title(colors, "安装"))
             .child(self.activity_log(colors))
-            .child(panel_fit(colors, "进度", body))
+            .child(panel_fit(colors, "结果", body))
             .child(footer_bar(colors, &self.state.status).child(button(
                 "返回",
                 cx,

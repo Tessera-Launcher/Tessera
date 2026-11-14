@@ -16,7 +16,7 @@
 //! foreground pump applies it on the main thread.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,9 +25,6 @@ use futures::StreamExt;
 use tessera_core::app::TaskKind;
 
 use super::*;
-
-/// How often an install bridge wakes to let the speed readout decay.
-const INSTALL_TICK: Duration = Duration::from_millis(500);
 
 /// One unit of work for the UI thread.
 type Job = Box<dyn FnOnce(&mut Launcher, &mut Context<Launcher>) + Send>;
@@ -149,23 +146,11 @@ fn bridge<T: Send + 'static>(
             return;
         }
         let first = if kind == TaskKind::Install {
-            match rx.recv_timeout(INSTALL_TICK) {
+            // Nothing to poll: the install pane has no progress readout, so a
+            // quiet pipe just means aria2 is still writing files.
+            match rx.recv() {
                 Ok(event) => event,
-                Err(RecvTimeoutError::Timeout) => {
-                    // Nothing arrived, but the speed readout still ages.
-                    let sent = wake.unbounded_send(Box::new(
-                        |this: &mut Launcher, cx: &mut Context<Launcher>| {
-                            if this.state.tick() {
-                                cx.notify();
-                            }
-                        },
-                    ));
-                    if sent.is_err() {
-                        return;
-                    }
-                    continue;
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(_) => break,
             }
         } else {
             match rx.recv() {

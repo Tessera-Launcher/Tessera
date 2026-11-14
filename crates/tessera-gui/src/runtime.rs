@@ -144,6 +144,7 @@ impl Launcher {
                 Effect::Install { version, loader } => {
                     let rx = install::spawn_install(
                         self.state.root.clone(),
+                        self.state.dependencies.clone(),
                         self.state.source,
                         ASSET_CONCURRENCY,
                         version,

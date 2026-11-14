@@ -160,6 +160,114 @@ pub fn installed(deps: &Path) -> Option<PathBuf> {
     binary(deps).filter(|path| path.is_file())
 }
 
+/// The aria2 arguments one install run uses.
+///
+/// `-j` is the knob for thousands of small files; `-x`/`-s` only split files
+/// above `--min-split-size`, so they stay at 1 (`-x8` was measured to leave
+/// truncated files behind when the CDN answers 421). `--stop-with-process`
+/// keeps the child from outliving the launcher.
+pub fn run_args(list: &Path, launcher_pid: u32) -> Vec<String> {
+    vec![
+        "-i".to_string(),
+        list.display().to_string(),
+        "-j64".to_string(),
+        "-x1".to_string(),
+        "-s1".to_string(),
+        "--no-conf=true".to_string(),
+        "--enable-color=false".to_string(),
+        "--show-console-readout=false".to_string(),
+        "--summary-interval=0".to_string(),
+        "--console-log-level=notice".to_string(),
+        "--auto-file-renaming=false".to_string(),
+        "--allow-overwrite=true".to_string(),
+        "--file-allocation=none".to_string(),
+        format!("--stop-with-process={launcher_pid}"),
+    ]
+}
+
+/// What aria2 said about one file, as a path relative to the game directory.
+///
+/// aria2's notice level prints one line per finished (or abandoned) file and
+/// nothing per file while it is in flight, so this is the only per-file signal
+/// without its JSON-RPC interface.
+#[must_use]
+pub fn file_from_line(line: &str, root: &Path) -> Option<String> {
+    let rest = line
+        .split_once("Download complete: ")
+        .or_else(|| line.split_once("not complete: "))?
+        .1
+        .trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let path = Path::new(rest);
+    Some(
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string(),
+    )
+}
+
+/// Run one download list, reporting each file as it lands.
+///
+/// The child's stdout and stderr are merged line by line; `on_file` is called
+/// with the relative path of every file aria2 finished. Returns aria2's exit
+/// code. Verification is not done here: the list carries no checksum, so the
+/// caller runs `DownloadPlan::verify` once, afterwards.
+pub fn run_list(
+    binary: &Path,
+    list: &Path,
+    root: &Path,
+    launcher_pid: u32,
+    mut on_file: impl FnMut(String),
+) -> std::io::Result<i32> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(binary)
+        .args(run_args(list, launcher_pid))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Both pipes feed the same filter; stderr is drained on its own thread so a
+    // chatty error cannot fill the pipe and stall the child.
+    let stderr = child.stderr.take();
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    let drain = stderr.map(|stderr| {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(|line| line.ok()) {
+                let _ = sender.send(line);
+            }
+        })
+    });
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+            if let Some(file) = file_from_line(&line, root) {
+                on_file(file);
+            }
+            while let Ok(line) = receiver.try_recv() {
+                if let Some(file) = file_from_line(&line, root) {
+                    on_file(file);
+                }
+            }
+        }
+    }
+    let status = child.wait()?;
+    drop(sender);
+    for line in receiver.iter() {
+        if let Some(file) = file_from_line(&line, root) {
+            on_file(file);
+        }
+    }
+    if let Some(drain) = drain {
+        let _ = drain.join();
+    }
+    Ok(status.code().unwrap_or(-1))
+}
+
 /// What the worker reports.
 #[derive(Debug)]
 pub enum Event {
@@ -480,5 +588,48 @@ mod tests {
             shorten("https://github.com/abcfy2/aria2-static-build/releases/download/1.37.0/aria2-x86_64-linux-musl_static.zip"),
             "github.com/…/aria2-x86_64-linux-musl_static.zip"
         );
+    }
+
+    #[test]
+    fn only_csv_lines_are_mirrored_to_the_log() {
+        let root = std::path::Path::new("/game");
+        assert_eq!(
+            file_from_line(
+                "11/14 18:06:49 [NOTICE] Download complete: /game/libraries/a/b.jar",
+                root
+            )
+            .as_deref(),
+            Some("libraries/a/b.jar")
+        );
+        assert_eq!(
+            file_from_line(
+                "11/14 18:06:49 [NOTICE] Download GID#abc not complete: /game/assets/objects/3d/x",
+                root
+            )
+            .as_deref(),
+            Some("assets/objects/3d/x")
+        );
+        // Everything else aria2 prints stays out of the pane.
+        for noise in [
+            "11/14 18:06:49 [NOTICE] Downloading 5223 item(s)",
+            "11/14 18:06:49 [NOTICE] CUID#7 - Redirecting to https://example/x",
+            "Exception: [AbstractCommand.cc:351] errorCode=1 URI=https://example/x",
+            "Download Results:",
+            "",
+        ] {
+            assert_eq!(file_from_line(noise, root), None, "{noise}");
+        }
+    }
+
+    #[test]
+    fn the_run_never_splits_a_file_and_dies_with_the_launcher() {
+        let args = run_args(std::path::Path::new("/game/versions/26.3/26.3.txt"), 4242);
+        assert!(args.contains(&"-i".to_string()));
+        assert!(args.contains(&"/game/versions/26.3/26.3.txt".to_string()));
+        // `-x8` left truncated files behind when the CDN answered 421.
+        assert!(args.contains(&"-x1".to_string()));
+        assert!(args.contains(&"--stop-with-process=4242".to_string()));
+        // No checksum flag: verification is `DownloadPlan::verify`, once.
+        assert!(!args.iter().any(|arg| arg.contains("checksum")));
     }
 }
