@@ -29,8 +29,8 @@ use tessera_core::launch;
 use tessera_core::login::{self, LoginEvent};
 use tessera_core::version::VersionKind;
 use tessera_core::{
-    accounts, aot, audio, cleanup, discover, instance, java, logfile, music, paths::Paths, session,
-    version_tree::RowKind,
+    accounts, aot, aria2, audio, cleanup, discover, instance, java, logfile, music, paths::Paths,
+    session, version_tree::RowKind,
 };
 
 use crate::design_tokens::{color, font, layout, radius, space, stroke, weight};
@@ -94,6 +94,8 @@ struct Launcher {
     offline_sub: Option<Subscription>,
     proxy_input: Option<Entity<InputState>>,
     proxy_sub: Option<Subscription>,
+    aria2_proxy_input: Option<Entity<InputState>>,
+    aria2_proxy_sub: Option<Subscription>,
     /// The audio worker's command side. Its reports live in [`Tasks`], and the
     /// worker is started on the first sound: a launcher that never plays
     /// anything must not open an audio device.
@@ -154,6 +156,7 @@ impl Launcher {
             accounts::list(&data.accounts()),
         );
         state.set_runtimes(data.runtimes());
+        state.set_dependencies(data.dependencies());
         state.launch_options.fastmenu_agent =
             Some(data.root().join("缓存").join("fastmenu-agent.jar"));
         let settings_path = tessera_core::settings::Settings::path(data.root());
@@ -230,6 +233,8 @@ impl Launcher {
             offline_sub: None,
             proxy_input: None,
             proxy_sub: None,
+            aria2_proxy_input: None,
+            aria2_proxy_sub: None,
             music_audio: None,
             music_progress: None,
             music_progress_sub: None,

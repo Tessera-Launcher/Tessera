@@ -12,8 +12,10 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = theme::colors(cx);
-        // GitHub is the only source, so the proxy field is always useful.
+        // GitHub is the only source, so each card carries its own proxy field:
+        // the two downloads do not always sit behind the same proxy.
         let proxy = self.ensure_proxy(window, cx);
+        let aria2_proxy = self.ensure_aria2_proxy(window, cx);
         let show_loading = self.loading_visible(crate::LoadingKey::Java);
 
         let java = &self.state.java;
@@ -152,6 +154,128 @@ impl Launcher {
                 )),
         );
 
+        // One card per dependency; each carries the button that acts on it.
+        let aria2 = &self.state.aria2;
+        let aria2_installed = aria2.installed.clone();
+        let aria2_build = aria2.build;
+        let aria2_busy = aria2.downloading;
+        let aria2_progress = aria2.progress_text();
+        let aria2_fraction = if aria2.progress.1 > 0 {
+            aria2.progress.0 as f32 / aria2.progress.1 as f32
+        } else {
+            0.0
+        };
+        let aria2_message = aria2.message.clone();
+
+        let mut aria2_card = div().v_flex().gap(px(space::SM)).p(px(space::LG));
+        let mut aria2_summary = div()
+            .h_flex()
+            .items_center()
+            .gap(px(space::MD))
+            .child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_primary))
+                    .child("aria2c"),
+            )
+            .children(
+                aria2_installed
+                    .is_some()
+                    .then(|| chip(colors, "已装", colors.status_success)),
+            );
+        if let Some(version) = &aria2_installed {
+            aria2_summary = aria2_summary.child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(version.clone()),
+            );
+        }
+        aria2_card = aria2_card.child(aria2_summary);
+        aria2_card = aria2_card.child(
+            div()
+                .text_size(px(font::CAPTION))
+                .text_color(rgb(colors.text_secondary))
+                .child(match aria2_build {
+                    Some(build) => format!(
+                        "{} · {} · {}",
+                        aria2::VERSION,
+                        build.target.label(),
+                        discover::human_size(build.size)
+                    ),
+                    None => format!("{} · 当前平台没有固定构建", aria2::VERSION),
+                }),
+        );
+        if !aria2_progress.is_empty() {
+            aria2_card = aria2_card
+                .child(
+                    div()
+                        .text_size(px(font::CAPTION))
+                        .text_color(rgb(colors.text_primary))
+                        .child(aria2_progress),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(layout::PROGRESS_HEIGHT))
+                        .rounded(px(radius::SM))
+                        .bg(rgb(colors.raised))
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded(px(radius::SM))
+                                .bg(rgb(colors.fill_primary))
+                                .w(relative(aria2_fraction.max(0.001))),
+                        ),
+                );
+        }
+        if let Some(message) = aria2_message {
+            aria2_card = aria2_card.child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(message),
+            );
+        }
+        aria2_card = aria2_card.child(
+            div()
+                .v_flex()
+                .gap(px(space::XS))
+                .child(
+                    div()
+                        .text_size(px(font::CAPTION))
+                        .text_color(rgb(colors.text_secondary))
+                        .child("GitHub Proxy（留空直连）"),
+                )
+                .child(
+                    Input::new(&aria2_proxy)
+                        .appearance(true)
+                        .text_size(px(font::BODY)),
+                ),
+        );
+        aria2_card = aria2_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(space::MD))
+                .child(div().flex_1())
+                .children(aria2_busy.then(|| chip(colors, "下载中", colors.status_warning)))
+                .child(primary_button_when(
+                    if aria2_installed.is_some() {
+                        "重装"
+                    } else {
+                        "下载"
+                    },
+                    aria2_build.is_some() && !aria2_busy,
+                    cx,
+                    |this, cx| {
+                        this.state.start_aria2_install();
+                        this.refresh(cx);
+                    },
+                )),
+        );
+
         let status = self.state.status.clone();
         div()
             .v_flex()
@@ -160,14 +284,55 @@ impl Launcher {
             .gap(px(space::MD))
             .child(screen_title(colors, "依赖"))
             .child(
-                div().h_flex().w_full().gap(px(space::MD)).child(
-                    div()
-                        .w(px(layout::DETAILS))
-                        .child(panel_fit(colors, "Java", card)),
-                ),
+                div()
+                    .h_flex()
+                    .w_full()
+                    .gap(px(space::MD))
+                    .child(
+                        div()
+                            .w(px(layout::DETAILS))
+                            .child(panel_fit(colors, "Java", card)),
+                    )
+                    .child(
+                        div()
+                            .w(px(layout::DETAILS))
+                            .child(panel_fit(colors, "aria2", aria2_card)),
+                    ),
             )
             .child(div().flex_1())
             .child(footer_bar(colors, &status))
+    }
+
+    /// The aria2 card's own GitHub proxy field, created once.
+    fn ensure_aria2_proxy(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(state) = &self.aria2_proxy_input {
+            return state.clone();
+        }
+        let state = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("GitHub Proxy，例如 gh-proxy.com（可留空）")
+        });
+        self.aria2_proxy_sub = Some(cx.subscribe(
+            &state,
+            |this: &mut Launcher, state, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = state.read(cx).value().to_string();
+                    this.state.aria2.proxy = text.clone();
+                    this.state.settings.aria2_proxy = text;
+                    if let Err(error) =
+                        tessera_core::settings::save(&this.settings_path, &this.state.settings)
+                    {
+                        this.state.log(format!("配置写入失败：{error}"));
+                    }
+                    this.refresh(cx);
+                }
+            },
+        ));
+        self.aria2_proxy_input = Some(state.clone());
+        state
     }
 
     /// The GitHub proxy field on the dependency page, created once.

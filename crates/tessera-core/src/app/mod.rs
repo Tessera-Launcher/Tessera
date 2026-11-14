@@ -66,6 +66,11 @@ pub enum Effect {
         runtime: crate::java::Runtime,
         urls: Vec<String>,
     },
+    /// Download the pinned aria2 binary for this platform.
+    InstallAria2 {
+        build: crate::aria2::Build,
+        proxy: String,
+    },
     /// Reclaim shared libraries/assets no remaining version references.
     Sweep(Vec<String>),
     /// Prepare and start one version, and wait for it, on a worker thread.
@@ -144,6 +149,8 @@ pub enum TaskKind {
     JavaList,
     /// One runtime download.
     JavaInstall,
+    /// The aria2 binary download.
+    Aria2Install,
     /// Reclaiming unreferenced files after an uninstall.
     Sweep,
     /// AOT cache training started from the version list.
@@ -168,6 +175,7 @@ impl TaskKind {
             TaskKind::Session => "令牌刷新",
             TaskKind::JavaList => "依赖列表",
             TaskKind::JavaInstall => "依赖下载",
+            TaskKind::Aria2Install => "aria2 下载",
             TaskKind::Sweep => "清理",
             TaskKind::Aot => "AOT 训练",
             TaskKind::Game => "游戏进程",
@@ -256,12 +264,14 @@ impl Account {
 }
 
 mod account_manager;
+mod aria2;
 mod download;
 mod java;
 mod login;
 mod music;
 
 pub use self::account_manager::AccountsUi;
+pub use self::aria2::Aria2Ui;
 pub use self::download::{DownloadStage, DownloadUi, InstallSummary, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
@@ -316,6 +326,10 @@ pub struct App {
     pub settings: crate::settings::Settings,
     /// The Java picker's state.
     pub java: JavaUi,
+    /// `data/依赖`: helper programs the launcher downloaded for itself.
+    pub dependencies: PathBuf,
+    /// The aria2 card on the dependency page.
+    pub aria2: Aria2Ui,
     /// The music page's state.
     pub music: MusicUi,
     /// The AOT training run started from the main page. One at a time: the
@@ -350,11 +364,13 @@ impl App {
         let accounts_dir = accounts_dir.into();
         // `<data>/凭据/账户` → `<data>/运行时`.
         let runtimes = crate::paths::runtime_dir_beside(&accounts_dir);
+        let dependencies = crate::paths::dependencies_dir_beside(&accounts_dir);
         let mut app = App {
             status: format!("扫描 {}", root.display()),
             root,
             accounts_dir,
             runtimes,
+            dependencies,
             all_versions: versions,
             versions: Vec::new(),
             accounts,
@@ -375,6 +391,7 @@ impl App {
             launch_options: launch::Options::default(),
             settings: crate::settings::Settings::default(),
             java: JavaUi::default(),
+            aria2: Aria2Ui::default(),
             music: MusicUi::default(),
             aot: AotProgress::default(),
             installed_java: Vec::new(),
@@ -928,6 +945,11 @@ impl App {
                 self.status = format!("{label}：后台任务意外结束");
             }
             TaskKind::JavaInstall | TaskKind::JavaList => {
+                self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::Aria2Install => {
+                // The card would otherwise keep its button disabled forever.
+                self.aria2.downloading = false;
                 self.status = format!("{label}：后台任务意外结束");
             }
             TaskKind::Game => {

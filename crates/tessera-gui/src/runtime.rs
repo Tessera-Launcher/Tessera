@@ -167,6 +167,11 @@ impl Launcher {
                     self.tasks
                         .watch(TaskKind::JavaList, rx, deliver_java, java_done);
                 }
+                Effect::InstallAria2 { build, proxy } => {
+                    let rx = aria2::spawn_install(self.state.dependencies.clone(), build, proxy);
+                    self.tasks
+                        .watch(TaskKind::Aria2Install, rx, deliver_aria2, aria2_done);
+                }
                 Effect::InstallJava { runtime, urls } => {
                     let rx = java::spawn_install(self.state.runtimes.clone(), runtime, urls);
                     self.tasks
@@ -362,6 +367,13 @@ fn java_done(event: &java::Event) -> bool {
     )
 }
 
+fn aria2_done(event: &aria2::Event) -> bool {
+    matches!(
+        event,
+        aria2::Event::Installed { .. } | aria2::Event::Failed(_)
+    )
+}
+
 fn sweep_done(_: &cleanup::Sweep) -> bool {
     true
 }
@@ -403,6 +415,10 @@ fn deliver_install(launcher: &mut Launcher, event: InstallEvent) {
 
 fn deliver_java(launcher: &mut Launcher, event: java::Event) {
     launcher.state.handle_java_event(event);
+}
+
+fn deliver_aria2(launcher: &mut Launcher, event: aria2::Event) {
+    launcher.state.handle_aria2_event(event);
 }
 
 fn deliver_sweep(launcher: &mut Launcher, sweep: cleanup::Sweep) {

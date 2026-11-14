@@ -8,6 +8,7 @@ pub mod accounts;
 pub mod aot;
 pub mod app;
 pub mod app_ids;
+pub mod aria2;
 pub mod audio;
 pub mod cleanup;
 pub mod discover;
