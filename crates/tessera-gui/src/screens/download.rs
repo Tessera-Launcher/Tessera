@@ -161,9 +161,6 @@ impl Launcher {
                                 .min_h(px(layout::ROW_HEIGHT))
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(rgb(colors.hover)))
-                                .min_h(px(layout::ROW_HEIGHT))
-                                .cursor_pointer()
-                                .hover(move |style| style.bg(rgb(colors.hover)))
                                 .on_click(cx.listener(
                                     move |this: &mut Launcher, _event, _window, cx| {
                                         this.state.download.picked = index;
