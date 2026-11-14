@@ -448,4 +448,31 @@ impl ManifestUrls {
         }
         rewrite_url(url, rules.maven.iter().copied()).unwrap_or_else(|| url.to_string())
     }
+
+    /// Map a mirrored Maven URL back to the repositories it may have come from.
+    ///
+    /// The inverse of [`Self::apply_maven_mirror`], used for metadata the mirror may not carry
+    /// (e.g. `.sha1` sidecars). Several source repositories can share one mirror base
+    /// (`libraries.minecraft.net` and `maven.fabricmc.net` both land in `/bmclapi`), so every
+    /// matching rule is returned and the caller can try them in order. An untouched URL yields an
+    /// empty list, never a false hit.
+    #[must_use]
+    pub fn revert_maven_mirror(&self, url: &str, mirror: &Mirror) -> Vec<String> {
+        let Some(rules) = provider_rewrites(mirror.provider_name()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (from, to) in rules.maven.iter() {
+            let matches = url
+                .strip_prefix(to)
+                .is_some_and(|rest| rest.starts_with('/') || rest.is_empty());
+            if let Some(rest) = url.strip_prefix(to).filter(|_| matches) {
+                let candidate = format!("{from}{rest}");
+                if !out.contains(&candidate) {
+                    out.push(candidate);
+                }
+            }
+        }
+        out
+    }
 }

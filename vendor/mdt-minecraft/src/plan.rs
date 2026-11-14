@@ -26,6 +26,26 @@ pub struct PlanEntry {
     pub size: u64,
     /// Lowercase hex SHA-1 the download must match, when the metadata has one.
     pub sha1: Option<String>,
+    /// Upstream URLs to try when [`Self::url`] fails.
+    ///
+    /// An EDU mirror carries only part of Maven, and a volunteer mirror can lose
+    /// an object; aria2 falls through the URI list in order, so the mirror is used
+    /// first and the original repository stays as the safety net.
+    pub fallbacks: Vec<String>,
+}
+
+impl PlanEntry {
+    /// An entry with no fallback URIs.
+    #[must_use]
+    pub fn new(url: impl Into<String>, path: impl Into<PathBuf>, size: u64) -> Self {
+        PlanEntry {
+            url: url.into(),
+            path: path.into(),
+            size,
+            sha1: None,
+            fallbacks: Vec::new(),
+        }
+    }
 }
 
 /// Everything one version needs.
@@ -80,7 +100,8 @@ impl DownloadPlan {
 
     /// The `aria2c --input-file` body.
     ///
-    /// Every entry is `url`, `dir=`, `out=` and — when known — `checksum=`.
+    /// Every entry is one or more URLs (the mirror first, then its fallbacks),
+    /// `dir=`, `out=` and — when known — `checksum=`.
     /// `dir` is absolute because aria2 resolves a relative one against the
     /// process working directory, not against this file.
     #[must_use]
@@ -94,6 +115,10 @@ impl DownloadPlan {
                 .map_or_else(|| root.to_path_buf(), |parent| root.join(parent));
             out.push_str(&entry.url);
             out.push('\n');
+            for fallback in &entry.fallbacks {
+                out.push_str(fallback);
+                out.push('\n');
+            }
             out.push_str(&format!("  dir={}\n", dir.display()));
             if let Some(name) = entry.path.file_name() {
                 out.push_str(&format!("  out={}\n", name.to_string_lossy()));
@@ -174,6 +199,7 @@ pub fn entries_from_libraries(profile: &serde_json::Value) -> Vec<PlanEntry> {
                 continue;
             };
             entries.push(PlanEntry {
+                fallbacks: Vec::new(),
                 url: url.to_string(),
                 path: Path::new("libraries").join(path),
                 size: artifact
@@ -213,6 +239,7 @@ pub fn entries_from_libraries(profile: &serde_json::Value) -> Vec<PlanEntry> {
                 .and_then(serde_json::Value::as_str)
                 .filter(|sha1| is_sha1(sha1))
                 .map(str::to_ascii_lowercase),
+            fallbacks: Vec::new(),
         });
     }
     entries
@@ -230,8 +257,12 @@ pub fn apply_mirror_to_entries(
     mirror: &crate::mirror::Mirror,
 ) {
     for entry in entries {
-        let maven = urls.apply_maven_mirror(&entry.url, mirror);
+        let original = entry.url.clone();
+        let maven = urls.apply_maven_mirror(&original, mirror);
         entry.url = urls.apply_mirror(&maven, mirror);
+        if entry.url != original && !entry.fallbacks.contains(&original) {
+            entry.fallbacks.insert(0, original);
+        }
     }
 }
 
@@ -249,17 +280,35 @@ pub async fn fill_missing_hashes(
     downloader: &dyn crate::customize::Downloader,
     reporter: &dyn crate::customize::ProgressReporter,
     entries: &mut [PlanEntry],
+    urls: &crate::urls::ManifestUrls,
+    mirror: &crate::mirror::Mirror,
 ) {
+    // A mirror does not always carry the `.sha1` sidecar even when it carries the
+    // jar (SJTU/ZJU's BMCLAPI subtree is one). The upstream Maven still has it, and
+    // the digest is provider-independent, so the fallback keeps the line verifiable
+    // without moving the download back off the mirror.
+    let fallback = |url: &str| -> Vec<String> {
+        urls.revert_maven_mirror(url, mirror)
+            .into_iter()
+            .map(|upstream| format!("{upstream}.sha1"))
+            .collect()
+    };
+
     for entry in entries.iter_mut().filter(|entry| entry.sha1.is_none()) {
-        let url = format!("{}.sha1", entry.url);
-        let Ok(text) = downloader.fetch(&url).await else {
-            continue;
-        };
-        let hash = text.trim().to_ascii_lowercase();
-        if is_sha1(&hash) {
-            entry.sha1 = Some(hash);
-        } else {
-            reporter.status(&format!("{} 的 .sha1 内容不可用", entry.url));
+        let mut found = None;
+        for url in std::iter::once(format!("{}.sha1", entry.url)).chain(fallback(&entry.url)) {
+            let Ok(text) = downloader.fetch(&url).await else {
+                continue;
+            };
+            let hash = text.trim().to_ascii_lowercase();
+            if is_sha1(&hash) {
+                found = Some(hash);
+                break;
+            }
+        }
+        match found {
+            Some(hash) => entry.sha1 = Some(hash),
+            None => reporter.status(&format!("{} 的 .sha1 内容不可用", entry.url)),
         }
     }
 }
@@ -280,6 +329,7 @@ mod tests {
             path: PathBuf::from(path),
             size: 10,
             sha1: sha1.map(str::to_string),
+            fallbacks: Vec::new(),
         }
     }
 
@@ -385,24 +435,28 @@ mod tests {
         // The three hosts a plan actually points at, plus a Fabric maven artifact.
         let mut entries = vec![
             PlanEntry {
+                fallbacks: Vec::new(),
                 url: "https://piston-data.mojang.com/v1/objects/aa/client.jar".into(),
                 path: "versions/1.20.1/client.jar".into(),
                 size: 0,
                 sha1: None,
             },
             PlanEntry {
+                fallbacks: Vec::new(),
                 url: "https://libraries.minecraft.net/com/example/a/1.0/a-1.0.jar".into(),
                 path: "libraries/com/example/a/1.0/a-1.0.jar".into(),
                 size: 0,
                 sha1: None,
             },
             PlanEntry {
+                fallbacks: Vec::new(),
                 url: "https://resources.download.minecraft.net/3d/3de85c".into(),
                 path: "assets/objects/3d/3de85c".into(),
                 size: 0,
                 sha1: None,
             },
             PlanEntry {
+                fallbacks: Vec::new(),
                 url: "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.20.1/f.jar".into(),
                 path: "libraries/net/fabricmc/f/0.20.1/f.jar".into(),
                 size: 0,
@@ -427,6 +481,16 @@ mod tests {
             entries[3].url,
             "https://bmclapi2.bangbang93.com/maven/net/fabricmc/fabric-loader/0.20.1/f.jar"
         );
+
+        // The original URL stays as the fallback, so a mirror that lacks this
+        // object still resolves: aria2 walks the URI list in order.
+        assert_eq!(
+            entries[2].fallbacks,
+            vec!["https://resources.download.minecraft.net/3d/3de85c".to_string()]
+        );
+        let list = DownloadPlan::new("t", entries.clone()).to_aria2(Path::new("/root"));
+        assert!(list.contains("https://bmclapi2.bangbang93.com/assets/3d/3de85c\n"));
+        assert!(list.contains("https://resources.download.minecraft.net/3d/3de85c\n"));
 
         // `mojang` has no rules: nothing may change.
         let mut untouched = entries.clone();
