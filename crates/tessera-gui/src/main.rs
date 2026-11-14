@@ -14,7 +14,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::component::{Icon, IconName, Sizable as _, TitleBar, TITLE_BAR_HEIGHT};
+use gpui_kit::component::{TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, gui_key, open_browser};
@@ -245,9 +245,10 @@ impl Launcher {
 fn titlebar_button(
     id: &'static str,
     area: WindowControlArea,
-    icon: IconName,
+    glyph: &'static str,
     color: u32,
     hover_background: u32,
+    hover_color: u32,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -257,9 +258,12 @@ fn titlebar_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(move |style| style.bg(rgb(hover_background)))
+        .text_size(px(16.0))
+        .line_height(relative(1.0))
+        .text_color(rgb(color))
+        .hover(move |style| style.bg(rgb(hover_background)).text_color(rgb(hover_color)))
         .window_control_area(area)
-        .child(Icon::new(icon).small().text_color(rgb(color)))
+        .child(glyph)
 }
 
 impl Render for Launcher {
@@ -334,16 +338,18 @@ impl Render for Launcher {
                     .child(titlebar_button(
                         "titlebar-minimize",
                         WindowControlArea::Min,
-                        IconName::WindowMinimize,
-                        colors.text_primary,
+                        "−",
+                        colors.text_secondary,
                         colors.hover,
+                        colors.text_primary,
                     ))
                     .child(titlebar_button(
                         "titlebar-close",
                         WindowControlArea::Close,
-                        IconName::WindowClose,
+                        "×",
                         colors.status_danger,
-                        colors.hover,
+                        colors.fill_danger,
+                        colors.text_on_fill,
                     )),
             )
             .child(
