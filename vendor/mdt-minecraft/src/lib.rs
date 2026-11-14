@@ -117,6 +117,7 @@ pub mod manifest;
 pub mod mc_version;
 pub mod mirror;
 pub mod modloader;
+pub mod plan;
 #[cfg(not(feature = "minimal"))]
 pub mod registry;
 pub mod urls;
@@ -157,6 +158,7 @@ pub use manifest::{
 pub use mc_version::McVersion;
 pub use mirror::Mirror;
 pub use modloader::ModLoader;
+pub use plan::{DownloadPlan, PlanEntry};
 pub use urls::{reload_runtime_providers, runtime_providers_error, ManifestUrls};
 #[cfg(not(feature = "minimal"))]
 pub use virtual_dir::{mount_all, mount_all_with_reporter, VirtualDir};

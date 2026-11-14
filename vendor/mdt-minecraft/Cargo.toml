@@ -56,6 +56,9 @@ crossterm = { version = "0.29.0", optional = true }
 ratatui = { version = "0.30.2", optional = true }
 
 [dev-dependencies]
+# The library takes TLS from whoever enables it (feature unification); the
+# crate's own tests talk to https mirrors, so they have to ask for it here.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 serde_json = "1.0.154"
 tempfile = "3"
 wiremock = "0.6"

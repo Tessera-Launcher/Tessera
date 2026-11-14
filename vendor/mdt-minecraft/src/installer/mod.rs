@@ -90,6 +90,10 @@ pub struct InstallRequest {
     pub target_dir: Option<PathBuf>,
     /// Progress/status reporter for this install.
     pub reporter: std::sync::Arc<dyn ProgressReporter>,
+    /// Write the profile and stop: no library or jar is downloaded. Used by
+    /// [`crate::MdtClient::plan_loader`], which only needs the metadata to build
+    /// the download list.
+    pub plan_only: bool,
 }
 
 #[cfg(not(feature = "minimal"))]

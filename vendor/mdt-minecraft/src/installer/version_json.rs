@@ -404,48 +404,54 @@ pub async fn install_from_profile(
     // The profile's libraries are independent files. Running them one after
     // another paid one checksum + one artifact round trip each; a bounded
     // parallel batch overlaps those small transfers.
-    let downloads = futures::stream::iter(libs.iter().map(|lib| {
-        let by = by.clone();
-        let reg_dir = reg_dir.clone();
-        async move {
-            let name = lib.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-                MdtError::InvalidManifest("loader profile library is missing `name`".to_string())
-            })?;
-            let base = lib
-                .get("url")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    MdtError::InvalidManifest("loader profile library is missing `url`".to_string())
+    if !req.plan_only {
+        let downloads = futures::stream::iter(libs.iter().map(|lib| {
+            let by = by.clone();
+            let reg_dir = reg_dir.clone();
+            async move {
+                let name = lib.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    MdtError::InvalidManifest(
+                        "loader profile library is missing `name`".to_string(),
+                    )
                 })?;
-            // SSRF guard: the base URL comes from a *remote* profile, so it must not be able to
-            // point the downloader at `file:`, `data:`, a host-less location, or an internal
-            // address such as the cloud metadata service at 169.254.169.254.
-            if !is_safe_manifest_url(base) {
-                return Err(MdtError::InvalidManifest(format!(
-                    "loader profile library {name:?} has an unsafe url: {base:?}"
-                )));
+                let base = lib
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        MdtError::InvalidManifest(
+                            "loader profile library is missing `url`".to_string(),
+                        )
+                    })?;
+                // SSRF guard: the base URL comes from a *remote* profile, so it must not be able to
+                // point the downloader at `file:`, `data:`, a host-less location, or an internal
+                // address such as the cloud metadata service at 169.254.169.254.
+                if !is_safe_manifest_url(base) {
+                    return Err(MdtError::InvalidManifest(format!(
+                        "loader profile library {name:?} has an unsafe url: {base:?}"
+                    )));
+                }
+                download_library(
+                    downloader,
+                    name,
+                    base,
+                    &req.root_dir,
+                    &req.mirror,
+                    urls,
+                    req.reporter.as_ref(),
+                    Some(&by),
+                    Some(&reg_dir),
+                )
+                .await
             }
-            download_library(
-                downloader,
-                name,
-                base,
-                &req.root_dir,
-                &req.mirror,
-                urls,
-                req.reporter.as_ref(),
-                Some(&by),
-                Some(&reg_dir),
-            )
+        }));
+        for result in downloads
+            .buffer_unordered(PROFILE_LIBRARY_CONCURRENCY)
+            .collect::<Vec<_>>()
             .await
+        {
+            result?;
         }
-    }));
-    for result in downloads
-        .buffer_unordered(PROFILE_LIBRARY_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await
-    {
-        result?;
     }
 
     let profile = apply_mirror_to_json(profile, &req.mirror, urls);
@@ -525,6 +531,7 @@ mod tests {
             mirror: Mirror::Mojang,
             target_dir: None,
             reporter: std::sync::Arc::new(StderrReporter::default()),
+            plan_only: false,
         };
         let urls = ManifestUrls::try_new(&Mirror::Mojang).unwrap();
         let http = test_client();

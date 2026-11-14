@@ -29,6 +29,81 @@ pub const MARKER: &str = "mdtLwjgl3";
 
 const REPO: &str = "https://repo1.maven.org/maven2/org/lwjgl";
 
+/// The same rewrite as [`swap_lwjgl2_for_3`], but it plans instead of downloading.
+///
+/// The LWJGL 2 entries are removed from the profile and the 3.4.3 set is added;
+/// the returned entries carry the published SHA-1 read from each artifact's
+/// `.sha1` sidecar (metadata only — no jar is transferred here).
+pub(crate) async fn plan_swap(
+    downloader: &dyn Downloader,
+    profile: &mut Value,
+) -> Result<Vec<crate::plan::PlanEntry>, MdtError> {
+    let id = profile
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !applies_to(&id) {
+        return Ok(Vec::new());
+    }
+    let Some(classifier) = natives_classifier() else {
+        return Err(MdtError::LoaderInstallFailed(format!(
+            "LWJGL {VERSION} has no natives for {} {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )));
+    };
+    let Some(libraries) = profile.get_mut("libraries").and_then(Value::as_array_mut) else {
+        return Ok(Vec::new());
+    };
+
+    libraries.retain(|library| {
+        !library
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.starts_with("org.lwjgl.lwjgl:"))
+    });
+
+    let mut wanted: Vec<(String, String, String)> = Vec::new();
+    for module in MODULES {
+        let file = format!("{module}-{VERSION}.jar");
+        wanted.push((
+            format!("org.lwjgl:{module}:{VERSION}"),
+            format!("org/lwjgl/{module}/{VERSION}/{file}"),
+            format!("{REPO}/{module}/{VERSION}/{file}"),
+        ));
+    }
+    for module in MODULES {
+        let file = format!("{module}-{VERSION}-{classifier}.jar");
+        wanted.push((
+            format!("org.lwjgl:{module}:{VERSION}:{classifier}"),
+            format!("org/lwjgl/{module}/{VERSION}/{file}"),
+            format!("{REPO}/{module}/{VERSION}/{file}"),
+        ));
+    }
+
+    let mut entries = Vec::new();
+    for (name, path, url) in wanted {
+        let published = fetch_sha1(downloader, &format!("{url}.sha1")).await?;
+        entries.push(crate::plan::PlanEntry {
+            url: url.clone(),
+            path: Path::new("libraries").join(&path),
+            size: 0,
+            sha1: Some(published.to_ascii_lowercase()),
+        });
+        libraries.push(serde_json::json!({
+            "name": name,
+            "downloads": {"artifact": {"url": url, "path": path}},
+        }));
+    }
+
+    let object = profile
+        .as_object_mut()
+        .expect("a version profile is a JSON object");
+    object.insert(MARKER.to_string(), Value::String(VERSION.to_string()));
+    Ok(entries)
+}
+
 /// Modules 1.8.9 needs (stb, sdl, … are not used by it).
 const MODULES: [&str; 4] = ["lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-openal"];
 

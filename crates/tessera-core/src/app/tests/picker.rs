@@ -474,7 +474,7 @@ fn finishing_reports_elapsed_time_and_average_download_speed() {
 }
 
 #[test]
-fn a_cached_install_shows_time_without_a_fake_speed() {
+fn a_metadata_only_install_shows_time_without_a_fake_speed() {
     let summary = InstallSummary {
         elapsed: std::time::Duration::from_millis(2500),
         bytes: 0,
@@ -482,7 +482,7 @@ fn a_cached_install_shows_time_without_a_fake_speed() {
     assert_eq!(summary.average_bytes_per_sec(), 0);
     let text = summary.text();
     assert!(text.contains("用时 2.5 秒"), "{text}");
-    assert!(text.contains("没有下载"), "{text}");
+    assert!(text.contains("下载清单已生成"), "{text}");
     assert!(!text.contains("平均"), "{text}");
 }
 

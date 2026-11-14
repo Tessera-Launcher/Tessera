@@ -270,6 +270,180 @@ impl MdtClient {
         })
     }
 
+    /// Resolve a vanilla version and write its download list — nothing is transferred.
+    ///
+    /// The metadata is still fetched (the version manifest, the LWJGL 3 `.sha1`
+    /// sidecars, the asset index); the game files themselves are only *listed*, in
+    /// the format `aria2c --input-file` reads, at
+    /// `versions/<id>/<id>.txt`.
+    ///
+    /// # Errors
+    ///
+    /// Same sources as the install path: [`MdtError::VersionNotFound`],
+    /// [`MdtError::NetworkError`], [`MdtError::JsonParseError`].
+    pub async fn plan_vanilla(&self, version: &str) -> Result<crate::plan::DownloadPlan, MdtError> {
+        self.reporter.status(&format!("读取 {version} 的版本清单…"));
+        let (mut text, mut version_json) =
+            manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, version).await?;
+        let urls = ManifestUrls::try_new(&self.mirror)?;
+        let mut entries = Vec::new();
+
+        // 1.1.8.9 installs on LWJGL 3: the liveries are swapped in the profile and
+        //    the 3.4.3 jars are planned instead of the LWJGL 2 ones.
+        {
+            let mut profile: serde_json::Value = serde_json::from_str(&text)?;
+            let planned = crate::lwjgl3::plan_swap(self.downloader.as_ref(), &mut profile).await?;
+            if !planned.is_empty() {
+                text = serde_json::to_string_pretty(&profile)?;
+                version_json = serde_json::from_str(&text)?;
+                entries.extend(planned);
+            }
+        }
+
+        // The version JSON is metadata: the launcher reads it back to build a
+        // command line, so it is written even though nothing else is.
+        let vdir = self.root.join("versions").join(&version_json.id);
+        crate::io::create_dir_all(&vdir).await?;
+        crate::io::write(vdir.join(format!("{}.json", version_json.id)), &text).await?;
+
+        // 2. Client jar, libraries and natives.
+        for task in downloader::build_tasks_from_version_json(&version_json, &self.root) {
+            let Ok(path) = task.dest_path.strip_prefix(&self.root) else {
+                continue;
+            };
+            entries.push(crate::plan::PlanEntry {
+                url: task.url,
+                path: path.to_path_buf(),
+                size: task.size,
+                sha1: Some(task.sha1),
+            });
+        }
+
+        // 3. Assets: the index is metadata, the objects are entries.
+        if let Some(asset_index) = &version_json.asset_index {
+            entries.extend(
+                AssetRegistry::plan_objects(
+                    &self.root,
+                    asset_index,
+                    self.downloader.as_ref(),
+                    &self.mirror,
+                    &urls,
+                    self.reporter.as_ref(),
+                )
+                .await?,
+            );
+        }
+
+        let plan = crate::plan::DownloadPlan::new(version_json.id.clone(), entries);
+        let path = plan.write(&self.root).await?;
+        self.reporter.status(&format!(
+            "{} 的下载清单：{} 个文件（{} 个带哈希）→ {}",
+            plan.id,
+            plan.entries.len(),
+            plan.hashed(),
+            path.display()
+        ));
+        Ok(plan)
+    }
+
+    /// Resolve a vanilla version plus a loader profile and write one download list.
+    ///
+    /// The loader profile and the vanilla version JSON are metadata and are
+    /// fetched (and written) here; no jar, library or asset is transferred. The
+    /// list lands at `versions/<id>/<id>.txt`, next to the profile it belongs to.
+    ///
+    /// # Errors
+    ///
+    /// [`MdtError::LoaderInstallFailed`] when the loader does not support the
+    /// version, plus the metadata errors of [`Self::plan_vanilla`].
+    pub async fn plan_loader(
+        &self,
+        mc_version: &str,
+        loader: ModLoader,
+        loader_version: &str,
+    ) -> Result<crate::plan::DownloadPlan, MdtError> {
+        self.reporter
+            .status(&format!("读取 {mc_version} 的版本清单…"));
+        let (vanilla_text, vanilla) =
+            manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, mc_version)
+                .await?;
+        let vanilla_value: serde_json::Value =
+            serde_json::from_str(&vanilla_text).map_err(MdtError::JsonParseError)?;
+        let urls = ManifestUrls::try_new(&self.mirror)?;
+
+        let id = installer::installer_version_id(mc_version, loader, loader_version);
+        let req = InstallRequest {
+            mc_version: mc_version.to_string(),
+            loader,
+            loader_version: loader_version.to_string(),
+            root_dir: self.root.clone(),
+            mirror: self.mirror.clone(),
+            target_dir: None,
+            reporter: self.reporter.clone(),
+            plan_only: true,
+        };
+        let installed = installer::install_modloader(self.downloader.as_ref(), req).await?;
+        let profile_text = crate::io::read_to_string(&installed.version_json).await?;
+        let profile: serde_json::Value =
+            serde_json::from_str(&profile_text).map_err(MdtError::JsonParseError)?;
+
+        // Self-contained profile: the vanilla fields folded in, `inheritsFrom`
+        // dropped, exactly like a real install writes it.
+        let merged = installer::merge_vanilla_profile(
+            &vanilla_value,
+            &profile,
+            &id,
+            &loader.display_name().to_lowercase(),
+            loader_version,
+        );
+        crate::io::write(
+            &installed.version_json,
+            serde_json::to_string_pretty(&merged).map_err(MdtError::JsonParseError)?,
+        )
+        .await?;
+
+        let mut entries = Vec::new();
+        // Vanilla files, placed under the loader's own directory.
+        for task in downloader::build_tasks_from_version_json_into(&vanilla, &self.root, &id) {
+            let Ok(path) = task.dest_path.strip_prefix(&self.root) else {
+                continue;
+            };
+            entries.push(crate::plan::PlanEntry {
+                url: task.url,
+                path: path.to_path_buf(),
+                size: task.size,
+                sha1: Some(task.sha1),
+            });
+        }
+        // The loader's own libraries, straight from its profile.
+        entries.extend(crate::plan::entries_from_libraries(&profile));
+        // Assets are shared with the vanilla install.
+        if let Some(asset_index) = &vanilla.asset_index {
+            entries.extend(
+                AssetRegistry::plan_objects(
+                    &self.root,
+                    asset_index,
+                    self.downloader.as_ref(),
+                    &self.mirror,
+                    &urls,
+                    self.reporter.as_ref(),
+                )
+                .await?,
+            );
+        }
+
+        let plan = crate::plan::DownloadPlan::new(id, entries);
+        let path = plan.write(&self.root).await?;
+        self.reporter.status(&format!(
+            "{} 的下载清单：{} 个文件（{} 个带哈希）→ {}",
+            plan.id,
+            plan.entries.len(),
+            plan.hashed(),
+            path.display()
+        ));
+        Ok(plan)
+    }
+
     #[cfg(not(feature = "minimal"))]
     /// Install a mod loader, given an existing vanilla version directory.
     ///
@@ -349,6 +523,7 @@ impl MdtClient {
             mirror: self.mirror.clone(),
             target_dir,
             reporter: self.reporter.clone(),
+            plan_only: false,
         };
         let result = installer::install_modloader(self.downloader.as_ref(), req).await;
 
@@ -848,5 +1023,70 @@ mod tests {
     fn minimal_client_builds_without_advanced_modules() {
         let client = MdtClient::builder().build().unwrap();
         assert_eq!(client.concurrency(), 3);
+    }
+
+    #[tokio::test]
+    #[ignore = "network: fetches the version manifest and the asset index"]
+    async fn plan_vanilla_writes_an_aria2_list_and_downloads_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let client = MdtClient::builder()
+            .root_dir(root.path())
+            .mirror(Mirror::Mojang)
+            .build()
+            .unwrap();
+        let plan = client.plan_vanilla("1.20.1").await.unwrap();
+        assert_eq!(plan.id, "1.20.1");
+        // jar + libraries + natives + the 1.20.1 asset index (thousands).
+        assert!(plan.entries.len() > 1000, "{}", plan.entries.len());
+        assert!(plan.hashed() > 1000, "{}", plan.hashed());
+        let list = plan.path(root.path());
+        assert!(list.is_file(), "{}", list.display());
+        let text = std::fs::read_to_string(&list).unwrap();
+        assert!(text.contains("  dir="));
+        assert!(text.contains("  checksum=sha-1="));
+        // Only metadata landed on disk: no jar, no library, no asset object.
+        let version_dir = root.path().join("versions/1.20.1");
+        assert!(version_dir.join("1.20.1.json").is_file());
+        assert!(!version_dir.join("1.20.1.jar").exists());
+        assert!(!root.path().join("libraries").join("com").exists());
+        // The index is metadata too (its id is a number, e.g. `5` for 1.20.1):
+        // it is written so the launcher can read it back.
+        let indexes = std::fs::read_dir(root.path().join("assets/indexes")).unwrap();
+        assert_eq!(indexes.count(), 1);
+        // No asset object was transferred.
+        assert!(!root.path().join("assets/objects").exists());
+    }
+
+    #[tokio::test]
+    #[ignore = "network: fetches the Fabric profile and the Mojang manifests"]
+    async fn plan_loader_writes_one_list_and_a_profile_but_no_library() {
+        let root = tempfile::tempdir().unwrap();
+        let client = MdtClient::builder()
+            .root_dir(root.path())
+            .mirror(Mirror::Mojang)
+            .build()
+            .unwrap();
+        let plan = client
+            .plan_loader("1.20.1", crate::ModLoader::Fabric, "0.15.11")
+            .await
+            .unwrap();
+        assert!(plan.id.contains("fabric"), "{}", plan.id);
+        assert!(plan.entries.len() > 1000, "{}", plan.entries.len());
+        // The loader's own jars are in the list, with the maven path.
+        assert!(plan
+            .entries
+            .iter()
+            .any(|entry| entry.path.to_string_lossy().contains("fabric-loader")));
+        // Metadata on disk, nothing else.
+        let profile = root
+            .path()
+            .join("versions")
+            .join(&plan.id)
+            .join(format!("{}.json", plan.id));
+        assert!(profile.is_file(), "{}", profile.display());
+        assert!(plan.path(root.path()).is_file());
+        assert!(!root.path().join("libraries").join("net").exists());
+        let text = std::fs::read_to_string(plan.path(root.path())).unwrap();
+        assert!(text.contains("checksum=sha-1="));
     }
 }
