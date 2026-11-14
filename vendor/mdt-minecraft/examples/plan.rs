@@ -3,6 +3,7 @@
 //! ```sh
 //! cargo run --example plan -- <root> <mc-version> [loader-version]
 //! cargo run --example plan -- /tmp/mdt 26.3 0.20.1
+//! MDT_MIRROR=bmclapi cargo run --example plan -- /tmp/mdt 26.3 0.20.1
 //! ```
 //!
 //! Prints the list path and a few numbers; the file itself is the aria2
@@ -21,11 +22,13 @@ async fn main() -> ExitCode {
     };
     let loader_version = args.next();
 
-    let client = match MdtClient::builder()
-        .mirror(Mirror::Mojang)
-        .root_dir(&root)
-        .build()
-    {
+    let mirror = match std::env::var("MDT_MIRROR").as_deref() {
+        Ok("bmclapi") => Mirror::BMCLAPI,
+        Ok("mojang") | Err(_) => Mirror::Mojang,
+        Ok(other) => Mirror::Custom(other.to_owned()),
+    };
+
+    let client = match MdtClient::builder().mirror(mirror).root_dir(&root).build() {
         Ok(client) => client,
         Err(error) => {
             eprintln!("client: {error}");

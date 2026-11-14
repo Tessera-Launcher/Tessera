@@ -218,6 +218,23 @@ pub fn entries_from_libraries(profile: &serde_json::Value) -> Vec<PlanEntry> {
     entries
 }
 
+/// Point every entry at the selected mirror.
+///
+/// The version JSON and the loader profile carry Mojang/Fabric URLs. The list
+/// is what aria2 reads, so the rewriting has to happen here: a mirror that only
+/// rewrites metadata would leave every artifact on the original host, which is
+/// exactly the thing a mirror is chosen for.
+pub fn apply_mirror_to_entries(
+    entries: &mut [PlanEntry],
+    urls: &crate::urls::ManifestUrls,
+    mirror: &crate::mirror::Mirror,
+) {
+    for entry in entries {
+        let maven = urls.apply_maven_mirror(&entry.url, mirror);
+        entry.url = urls.apply_mirror(&maven, mirror);
+    }
+}
+
 /// Fill in the hashes a loader profile did not carry.
 ///
 /// Fabric's profile names its own artifacts with `{name, url}` and no digest, so
@@ -361,5 +378,60 @@ mod tests {
             "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.15.11/fabric-loader-0.15.11.jar"
         );
         assert!(entries[1].sha1.is_none(), "no hash in the profile");
+    }
+
+    #[test]
+    fn mirror_rewrites_every_entry_not_just_metadata() {
+        // The three hosts a plan actually points at, plus a Fabric maven artifact.
+        let mut entries = vec![
+            PlanEntry {
+                url: "https://piston-data.mojang.com/v1/objects/aa/client.jar".into(),
+                path: "versions/1.20.1/client.jar".into(),
+                size: 0,
+                sha1: None,
+            },
+            PlanEntry {
+                url: "https://libraries.minecraft.net/com/example/a/1.0/a-1.0.jar".into(),
+                path: "libraries/com/example/a/1.0/a-1.0.jar".into(),
+                size: 0,
+                sha1: None,
+            },
+            PlanEntry {
+                url: "https://resources.download.minecraft.net/3d/3de85c".into(),
+                path: "assets/objects/3d/3de85c".into(),
+                size: 0,
+                sha1: None,
+            },
+            PlanEntry {
+                url: "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.20.1/f.jar".into(),
+                path: "libraries/net/fabricmc/f/0.20.1/f.jar".into(),
+                size: 0,
+                sha1: None,
+            },
+        ];
+        let urls = crate::urls::ManifestUrls::try_new(&crate::mirror::Mirror::BMCLAPI).unwrap();
+        apply_mirror_to_entries(&mut entries, &urls, &crate::mirror::Mirror::BMCLAPI);
+        assert_eq!(
+            entries[0].url,
+            "https://bmclapi2.bangbang93.com/v1/objects/aa/client.jar"
+        );
+        assert_eq!(
+            entries[1].url,
+            "https://bmclapi2.bangbang93.com/maven/com/example/a/1.0/a-1.0.jar"
+        );
+        assert_eq!(
+            entries[2].url,
+            "https://bmclapi2.bangbang93.com/assets/3d/3de85c"
+        );
+        assert_eq!(
+            entries[3].url,
+            "https://bmclapi2.bangbang93.com/maven/net/fabricmc/fabric-loader/0.20.1/f.jar"
+        );
+
+        // `mojang` has no rules: nothing may change.
+        let mut untouched = entries.clone();
+        let mojang = crate::urls::ManifestUrls::try_new(&crate::mirror::Mirror::Mojang).unwrap();
+        apply_mirror_to_entries(&mut untouched, &mojang, &crate::mirror::Mirror::Mojang);
+        assert_eq!(untouched, entries);
     }
 }
