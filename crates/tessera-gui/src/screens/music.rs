@@ -110,9 +110,6 @@ impl Launcher {
                         .min_h(px(layout::ROW_HEIGHT))
                         .cursor_pointer()
                         .hover(move |style| style.bg(rgb(colors.hover)))
-                        .min_h(px(layout::ROW_HEIGHT))
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(rgb(colors.hover)))
                         .on_click(cx.listener(
                             move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                                 this.state.music.focus = MusicFocus::Tracks;
