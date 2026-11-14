@@ -24,6 +24,17 @@ https://piston-data.mojang.com/v1/objects/e877…/client.jar
   checksum=sha-1=e877b6a07acd633fb3bb475002175cec036e7b87
 ```
 
+一个条目可以写多个 URL，aria2 按顺序尝试；镜像改写时会把上游留作回落（`edu`
+就是这个模式，教育网镜像只覆盖 Maven 的一部分）：
+
+```text
+https://mirror.sjtu.edu.cn/bmclapi/com/google/code/gson/…/gson-2.11.0.jar
+https://libraries.minecraft.net/com/google/code/gson/…/gson-2.11.0.jar
+  dir=/game/libraries/com/google/code/gson/…
+  out=gson-2.11.0.jar
+  checksum=sha-1=…
+```
+
 写清单的同时会把每个条目的目录建好——aria2 不会创建 `dir=`，缺一个目录整条就失败。
 
 ## 特性
@@ -31,8 +42,9 @@ https://piston-data.mojang.com/v1/objects/e877…/client.jar
 - 全版本原版 Minecraft（manifest 里的任意版本）+ Fabric 加载器。
 - 每个版本一份清单，逐文件带 SHA-1，按目标路径去重。
 - 同时写版本 JSON：启动器要读它拼命令行；Fabric profile 会与 vanilla 合并，目录自包含。
-- 镜像：`Mirror::BMCLAPI`、`Mirror::Mojang`、`Mirror::Custom("<name>")`，端点由
-  `providers.compile.toml` 编译进静态表。
+- 镜像：`Mirror::BMCLAPI`、`Mirror::Mojang`、`Mirror::Custom("edu")`，端点由
+  `providers.compile.toml` 编译进静态表。被改写的条目会把原始 URL 留作回落，
+  aria2 先试镜像、失败再走上游。
 - `minimal` 特性：只保留版本清单解析与清单核心。
 
 MDT **不**下载游戏文件、不启动游戏、不处理登录，也没有 CLI / TUI，唯一的二进制是示例。

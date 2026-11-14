@@ -25,6 +25,17 @@ https://piston-data.mojang.com/v1/objects/e877…/client.jar
   checksum=sha-1=e877b6a07acd633fb3bb475002175cec036e7b87
 ```
 
+An entry may name several URLs; aria2 walks them in order. Mirrored entries use
+that to keep the upstream repository as a fallback (`edu` is such a provider:
+
+```text
+https://mirror.sjtu.edu.cn/bmclapi/com/google/code/gson/…/gson-2.11.0.jar
+https://libraries.minecraft.net/com/google/code/gson/…/gson-2.11.0.jar
+  dir=/game/libraries/com/google/code/gson/…
+  out=gson-2.11.0.jar
+  checksum=sha-1=…
+```
+
 Every destination directory is created while the list is written, because aria2
 does not create `dir=` and one missing directory fails the whole entry.
 
@@ -34,8 +45,9 @@ does not create `dir=` and one missing directory fails the whole entry.
 - One list per version, per-file SHA-1 included, deduplicated by destination.
 - The version JSON is written too: the launcher reads it back to build a command
   line, and Fabric's profile is merged so the directory stands on its own.
-- Mirrors: `Mirror::BMCLAPI`, `Mirror::Mojang`, `Mirror::Custom("<name>")`, with
-  provider tables compiled in from `providers.compile.toml`.
+- Mirrors: `Mirror::BMCLAPI`, `Mirror::Mojang`, `Mirror::Custom("edu")`, with
+  provider tables compiled in from `providers.compile.toml`. A mirrored entry keeps
+  its original URL as a fallback: aria2 tries the mirror, then the upstream.
 - `minimal` feature: version-manifest parsing and the plan core only.
 
 MDT does **not** download game files, launch the game, or authenticate. It has no

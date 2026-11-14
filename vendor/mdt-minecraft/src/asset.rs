@@ -66,6 +66,7 @@ pub async fn plan_objects(
         .filter_map(|task| {
             let path = task.dest_path.strip_prefix(root).ok()?.to_path_buf();
             Some(crate::plan::PlanEntry {
+                fallbacks: Vec::new(),
                 url: task.url,
                 path,
                 size: task.size,

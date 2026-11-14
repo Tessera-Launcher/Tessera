@@ -194,6 +194,7 @@ impl MdtClient {
                 path: path.to_path_buf(),
                 size: task.size,
                 sha1: Some(task.sha1),
+                fallbacks: Vec::new(),
             });
         }
 
@@ -291,6 +292,7 @@ impl MdtClient {
                 path: path.to_path_buf(),
                 size: task.size,
                 sha1: Some(task.sha1),
+                fallbacks: Vec::new(),
             });
         }
         // The loader's own libraries, straight from its profile.
@@ -315,6 +317,8 @@ impl MdtClient {
             self.downloader.as_ref(),
             self.reporter.as_ref(),
             &mut entries,
+            &urls,
+            &self.mirror,
         )
         .await;
         let plan = crate::plan::DownloadPlan::new(id, entries);
