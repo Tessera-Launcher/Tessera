@@ -1,30 +1,45 @@
 # MDT — Minecraft Download Toolkit
 
-Download and install Minecraft versions and Fabric from Rust.
+Resolve Minecraft versions and Fabric into an **aria2 download list**.
 
 [![Crates.io](https://img.shields.io/crates/v/mdt-minecraft.svg?style=flat-square)](https://crates.io/crates/mdt-minecraft)
-[![docs.rs](https://docs.rs/mdt-minecraft/badge.svg)](https://docs.rs/mdt-minecraft)
+[![docs.rs](https://docs.rs/mdt-minecraft/badge.svg?style=flat-square)](https://docs.rs/mdt-minecraft)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 **语言 / Language:** [English](README.md) · [简体中文](README.zh_CN.md)
 
-MDT is a small library that fills a `.minecraft` folder for you — vanilla versions, mod
-loaders, libraries, assets. It's the plumbing a launcher sits on top of: no UI, no progress
-bars, no prompts. You call a function, you get a `Result`.
+MDT parses the metadata a launcher needs — the version manifest, a version JSON,
+the asset index, a Fabric profile — writes the profile back to
+`versions/<id>/<id>.json`, and emits one file per version:
 
-We've handled a lot of the behind-the-scenes work for you, hiding many of the implementation details that you would otherwise have to painstakingly parse from the Minecraft Wiki. All you need to do is call the default API to start playing, or customize your own implementation to tailor your experience before the game begins.
+```
+versions/26.3-fabric-0.20.1/26.3-fabric-0.20.1.txt
+```
+
+That file is an `aria2c --input-file` list: a URL, then its indented options.
+
+```text
+https://piston-data.mojang.com/v1/objects/e877…/client.jar
+  dir=/game/versions/26.3-fabric-0.20.1
+  out=26.3-fabric-0.20.1.jar
+  checksum=sha-1=e877b6a07acd633fb3bb475002175cec036e7b87
+```
+
+Every destination directory is created while the list is written, because aria2
+does not create `dir=` and one missing directory fails the whole entry.
 
 ## Features
 
-- Vanilla Minecraft, plus the Fabric mod loader.
-- Isolated installs — each loader lands in its own `versions/<mc>+<Loader><ver>` folder, so a
-  broken loader never touches your vanilla game.
-- Uninstall — revert a loader back to pure vanilla with a SHA-1 manifest comparison.
-- SHA-1 verified downloads with automatic mirror fallback when a source is slow or blocked.
-- Custom mirrors via a `providers.compile.toml` you can edit (compiled in at build time).
-- Minimal builds — the `minimal` feature strips the mod-loader and asset modules, leaving a
-  compact vanilla-only core for resource-constrained environments.
-- No terminal dependencies in the core; `cli` and `tui` are opt-in features.
+- Vanilla Minecraft (any version in the manifest) and the Fabric loader.
+- One list per version, per-file SHA-1 included, deduplicated by destination.
+- The version JSON is written too: the launcher reads it back to build a command
+  line, and Fabric's profile is merged so the directory stands on its own.
+- Mirrors: `Mirror::BMCLAPI`, `Mirror::Mojang`, `Mirror::Custom("<name>")`, with
+  provider tables compiled in from `providers.compile.toml`.
+- `minimal` feature: version-manifest parsing and the plan core only.
+
+MDT does **not** download game files, launch the game, or authenticate. It has no
+CLI and no TUI; the only binary here is an example.
 
 ## Install
 
@@ -36,177 +51,76 @@ mdt-minecraft = "0.7.0"
 ## Quick start
 
 ```rust
-use mdt::{MdtClient, Mirror, ModLoader, full_install};
+use mdt::{MdtClient, Mirror, ModLoader};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = MdtClient::builder()
-        .mirror(Mirror::BMCLAPI)
+        .mirror(Mirror::Mojang)
         .root_dir("./.minecraft")
         .build()?;
 
-    // Installs vanilla 1.20.1 (if it isn't there yet), then Fabric — all in one line.
-    full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11").await?;
+    // Vanilla: versions/1.20.1/1.20.1.{json,txt}
+    let plan = client.plan_vanilla("1.20.1").await?;
 
+    // Fabric: one list for the whole stack, including the loader's own libraries.
+    let plan = client.plan_loader("1.20.1", ModLoader::Fabric, "0.15.11").await?;
+
+    println!(
+        "{} files, {} hashed, {:.1} MiB -> {}",
+        plan.entries.len(),
+        plan.hashed(),
+        plan.total_bytes() as f64 / (1024.0 * 1024.0),
+        plan.path(client.root_dir()).display()
+    );
     Ok(())
 }
 ```
 
-`install_modloader` takes a vanilla version directory (not a version string) and a copy-on-write
-flag, so you can pick between an isolated copy and an in-place install:
+Fabric's loader version is whatever the caller passes; resolve it with
+`manifest::fetch_fabric_manifest(...)` and take the **first** entry to follow the
+newest build (the meta list is ordered newest-first, betas included).
 
-```rust
-let vanilla = client.root_dir().join("versions").join("1.20.1");
+## Handing the list to aria2
 
-// Copy the vanilla dir into versions/1.20.1+Fabric0.15.11 and install there.
-client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", true).await?;
-
-// Install directly inside versions/1.20.1 (mutates it).
-client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", false).await?;
-
-// Revert a loader back to vanilla.
-client.uninstall_modloader(&vanilla, ModLoader::Fabric).await?;
+```sh
+aria2c -i versions/<id>/<id>.txt \
+  -j64 -x1 -s1 \
+  --no-conf=true --enable-color=false \
+  --show-console-readout=false --summary-interval=0 \
+  --console-log-level=notice \
+  --auto-file-renaming=false --allow-overwrite=true \
+  --stop-with-process=<launcher pid>
 ```
 
-## Isolation
+Notes from using it:
 
-Each loader install goes into its own directory, separate from the vanilla version:
-
-```
-.minecraft/
-└── versions/
-    ├── 1.20.1/                  # vanilla — never touched by a loader install
-    └── 1.20.1+Fabric0.15.11/    # isolated Fabric install
-```
-
-
-You don't have to enforce this yourself — the library does it.
-
-## Mirrors
-
-| Variant                  | What it is                                                                       |
-|--------------------------|----------------------------------------------------------------------------------|
-| `Mirror::BMCLAPI`        | Community mirror (default). Proxies Mojang and Fabric.                           |
-| `Mirror::Mojang`         | Official servers.                                                                |
-| `Mirror::Custom("name")` | Your own provider, declared as `[name]` in `providers.compile.toml`.                     |
-
-Failed requests fall back to the opposite mirror automatically (custom mirrors fall back to
-`BMCLAPI`). Endpoints and rewrite rules live in [`providers.compile.toml`](providers.compile.toml) — see
-[docs/mirror_toml.md](docs/mirror_toml.md) and [docs/mirror_uri.md](docs/mirror_uri.md).
-
-## Loaders
-
-| Loader              | Method | Notes           |
-|---------------------|--------|-----------------|
-| `ModLoader::Fabric` | B      | No Java needed. |
-
-## Errors
-
-Every fallible call returns `Result<T, MdtError>`, so you can match on exactly what went wrong:
-
-```rust
-let vanilla = client.root_dir().join("versions").join("1.20.1");
-match client.install_modloader(&vanilla, ModLoader::Fabric, "0.15.11", true).await {
-    Ok(v)   => println!("installed {} via {}", v.id, v.method),
-    Err(e)  => match e {
-        mdt::MdtError::ChecksumMismatch{..}  => eprintln!("corrupt download"),
-        other                                => eprintln!("{other}"),
-    },
-}
-```
-
-## Macros
-
-A few one-liners for common things:
-
-```rust
-use mdt::{version_dir, download_task};
-
-let dir  = version_dir!(client, "1.16.5", Fabric, "0.20.0");  // <root>/versions/1.16.5+Fabric0.20.0
-let task = download_task!("https://…/lib.jar", "libraries/lib.jar", "abc123", 42);
-```
-
-### `full_install!`
-
-`full_install!` is the whole install in one line — it installs the vanilla version (if it isn't
-already on disk), then the loader, so you don't have to call `install_vanilla` separately:
-
-```rust
-use mdt::{MdtClient, Mirror, ModLoader, full_install};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = MdtClient::builder().mirror(Mirror::BMCLAPI).root_dir("./.minecraft").build()?;
-
-    // Vanilla + loader, copy-on-write (default): vanilla stays untouched, the loader lands in
-    // its own directory.
-    full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11").await?;
-
-    // Pass `false` to install the loader in place, mutating the vanilla directory.
-    full_install!(client, "1.20.1", ModLoader::Fabric, "0.15.11", false).await?;
-
-    Ok(())
-}
-```
-
-Under the hood `full_install!(client, "1.20.1", loader, "ver")` expands to
-`client.full_install("1.20.1", loader, "ver", true)` — which installs vanilla first, then calls
-[`install_modloader`](#isolation). If you already installed vanilla, the vanilla step is skipped.
+- `-j` is the knob for thousands of small files; `-x`/`-s` only matter for files
+  above `--min-split-size` (20 MiB default), so keep them at 1.
+- aria2 verifies each `checksum=sha-1=` while it writes, but **leaves the file on
+  disk when the checksum fails** (exit code 32) and exits 13 when the target
+  already exists. Treat a non-zero exit as "re-check these paths", not as "the
+  file is there".
+- `--stop-with-process` keeps an aria2 child from outliving the launcher.
+- `--save-session=<file>` writes the failures back out, so a second run only
+  retries what is missing.
 
 ## Feature flags
 
-Three transport forms, plus optional terminal extras:
+| Feature | Default | Effect |
+|---|---|---|
+| `tokio` | ✅ | async API with a reqwest transport |
+| `http2` | ❌ | enable HTTP/2 (measured slower for Minecraft's asset CDN) |
+| `minimal` | ❌ | no loader and no asset module: version manifest + plan core |
 
-```toml
-mdt-minecraft = "0.7.0"                                                      # async (tokio + reqwest) — the default
-mdt-minecraft = { version = "0.7.0", default-features = false, features = ["blocking"] }  # sync (ureq), no tokio/reqwest
-mdt-minecraft = { version = "0.7.0", default-features = false, features = ["tokio", "minimal"] }  # minimal: vanilla downloads only
-mdt-minecraft = { version = "0.7.0", default-features = false }              # bare engine: inject your own Downloader
-mdt-minecraft = { version = "0.7.0", features = ["tui"] }                    # + TUI
-mdt-minecraft = { version = "0.7.0", features = ["cli"] }                    # + CLI and TUI
-```
+## Errors
 
-The `blocking` feature adds a synchronous `BlockingClient` with the same methods, and its runtime
-dependency tree contains no `tokio` or `reqwest`. The `minimal` feature keeps only the
-vanilla-download pipeline (`install_vanilla`, `versions`, `uninstall_modloader`); with no transport
-feature enabled, `build()` returns `MdtError::MissingDownloader` until you inject a custom
-`Downloader`.
-
-## Minimal builds for embedded environments
-
-If you want to use MDT in a resource-constrained embedded environment, the `minimal` subset is an
-excellent choice. It contains only an extremely streamlined core-engine experience: the `asset`,
-`registry`, `virtual_dir`, and `dual_loader` modules are stripped, mod-loader installation
-(`install_modloader`, `full_install`, `setup_dual_loader`) is disabled, and native extraction in
-the download pipeline is skipped. What remains is the essential engine — version-manifest parsing,
-SHA-1 verification, concurrent task scheduling, and uninstall.
-
-Paired with `default-features = false`, a minimal build carries no `tokio`, `reqwest`, or `ureq`:
-file I/O goes through `std`, async composition through `futures`, and the whole core can run on an
-executor you supply. That is where the potential for embedded development comes from:
-
-- **Bring your own transport** — implement `Downloader` once for your platform's network stack
-  (BLE, serial, a private bus, an in-memory store), and MDT's verification and scheduling core runs
-  on top of it.
-- **Smaller code surface** — the mod-loader, asset, and dual-loader machinery is not compiled at
-  all, so your firmware only carries the code it actually uses.
-- **Tailored feedback and storage** — swap in your own `ProgressReporter` (an LED, a log sink) and
-  `RegistryCache` (flash, RAM) instead of the default stderr output and filesystem cache.
-
-Note that `minimal` still targets `std` (it is not `no_std`), and it deliberately leaves the
-environment-specific pieces — transport, storage, and reporting — to you.
-
-## Docs
-
-- [docs.rs/mdt-minecraft](https://docs.rs/mdt-minecraft)
-- [Mirror TOML format](docs/mirror_toml.md)
-- [Mirror URI spec](docs/mirror_uri.md)
-- [The “Game Files” section in the “Tutorial: Writing a Launcher” page on the Minecraft Wiki](https://zh.minecraft.wiki/w/Tutorial:%E7%BC%96%E5%86%99%E5%90%AF%E5%8A%A8%E5%99%A8?variant=zh-cn#%E6%B8%B8%E6%88%8F%E6%96%87%E4%BB%B6)
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) and the [releases](https://github.com/Lavaver/MDT/releases) page.
+Everything returns `Result<T, MdtError>`; the enum is `#[non_exhaustive]`, so keep
+a wildcard arm. The variants a plan can produce are `NetworkError`,
+`ChecksumMismatch`, `InvalidManifest`, `VersionNotFound`, `LoaderInstallFailed`
+and `Io`.
 
 ## License
 
-[MIT](LICENSE)
+MIT, same as upstream. This copy is vendored into Tessera; see `VENDORED.md` for
+the local changes.

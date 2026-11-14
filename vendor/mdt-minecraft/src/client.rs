@@ -309,6 +309,12 @@ impl MdtClient {
             );
         }
 
+        crate::plan::fill_missing_hashes(
+            self.downloader.as_ref(),
+            self.reporter.as_ref(),
+            &mut entries,
+        )
+        .await;
         let plan = crate::plan::DownloadPlan::new(id, entries);
         let path = plan.write(&self.root).await?;
         self.reporter.status(&format!(
