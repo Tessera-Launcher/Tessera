@@ -141,14 +141,6 @@ pub enum MdtError {
     #[error("unknown mirror provider: {0}")]
     UnknownProvider(String),
 
-    /// Uninstalling a mod loader failed (e.g. post-restore verification).
-    #[error("uninstall failed: {0}")]
-    UninstallFailed(String),
-
-    /// Some downloads failed after exhausting retries; the remaining queue still completed.
-    #[error("partial download failure: {0:?}")]
-    PartialDownloadFailed(Vec<FailedDownload>),
-
     /// A `providers.runtime.toml` file could not be read or parsed.
     #[error("invalid runtime provider config at {path}: {reason}")]
     InvalidProviderConfig {
@@ -229,99 +221,5 @@ pub(crate) fn io_error(e: std::io::Error, context: impl Into<String>) -> MdtErro
         MdtError::DiskFull(format!("disk space exhausted {context}"))
     } else {
         MdtError::IoError(e).context(context)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_wraps_with_human_readable_message() {
-        let wrapped = MdtError::JavaNotFound.context("installing Forge 1.20.1");
-        assert_eq!(
-            wrapped.to_string(),
-            "installing Forge 1.20.1: Java runtime not found: install Java 8+ or 17+ and retry"
-        );
-    }
-
-    #[test]
-    fn checksum_mismatch_displays_path_and_hashes() {
-        let err = MdtError::ChecksumMismatch {
-            path: "libraries/x.jar".to_string(),
-            expected: "abc".to_string(),
-            actual: "def".to_string(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "checksum mismatch for libraries/x.jar: expected abc, got def"
-        );
-    }
-
-    #[test]
-    fn partial_download_failed_lists_urls_and_reasons() {
-        let err = MdtError::PartialDownloadFailed(vec![
-            FailedDownload::new(
-                "https://a/x.jar",
-                "network error: HTTP status 404 Not Found",
-            ),
-            FailedDownload::new("https://b/y.jar", "disk space exhausted during download"),
-        ]);
-        let s = err.to_string();
-        assert!(s.contains("partial download failure"), "{s}");
-        assert!(
-            s.contains("https://a/x.jar") && s.contains("https://b/y.jar"),
-            "{s}"
-        );
-        assert!(
-            s.contains("404") && s.contains("disk space exhausted"),
-            "{s}"
-        );
-    }
-
-    #[test]
-    fn partial_download_failed_never_leaks_credentials() {
-        // Negative test: neither Display nor Debug may expose the userinfo of a failed URL.
-        let url = "https://alice:hunter2@mirror.example/a.jar";
-        let err = MdtError::PartialDownloadFailed(vec![FailedDownload::new(
-            url,
-            format!("network error while fetching {url}"),
-        )]);
-
-        for rendered in [err.to_string(), format!("{err:?}")] {
-            assert!(!rendered.contains("hunter2"), "leaked password: {rendered}");
-            assert!(!rendered.contains("alice"), "leaked user: {rendered}");
-            assert!(rendered.contains("mirror.example/a.jar"), "{rendered}");
-        }
-
-        // The raw URL is still reachable for a retry.
-        match &err {
-            MdtError::PartialDownloadFailed(failures) => {
-                assert_eq!(failures[0].url, url);
-                assert!(failures[0].reason.contains("fetching"));
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
-    }
-
-    #[cfg(any(feature = "tokio", feature = "blocking", not(feature = "minimal")))]
-    #[test]
-    fn is_disk_full_detects_platform_codes() {
-        let code39 = std::io::Error::from_raw_os_error(39);
-        let code112 = std::io::Error::from_raw_os_error(112);
-        let code28 = std::io::Error::from_raw_os_error(28);
-
-        #[cfg(windows)]
-        {
-            assert!(is_disk_full(&code39));
-            assert!(is_disk_full(&code112));
-            assert!(!is_disk_full(&code28));
-        }
-        #[cfg(unix)]
-        {
-            assert!(is_disk_full(&code28));
-            assert!(!is_disk_full(&code39));
-            assert!(!is_disk_full(&code112));
-        }
     }
 }

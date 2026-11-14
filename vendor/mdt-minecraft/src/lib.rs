@@ -1,12 +1,14 @@
 //! # Minecraft Download Toolkit
 //!
-//! [![Crates.io](https://img.shields.io/crates/v/mdt-minecraft.svg)](https://crates.io/crates/mdt-minecraft)
-//! [![Documentation](https://docs.rs/mdt-minecraft/badge.svg)](https://docs.rs/mdt-minecraft)
-//! [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+//! Resolve Minecraft versions and mod loaders into **download lists**.
 //!
-//! Download and install Minecraft versions and mod loaders into a clean `.minecraft` folder.
-//! It's the plumbing a launcher sits on top of — no UI, no prompts, just typed functions that
-//! return `Result`. Build a launcher in three lines:
+//! MDT does not download game files. It fetches the metadata (version manifest,
+//! asset index, loader profile — all small JSON files), writes the profile the
+//! launcher reads back, and emits one list per version at
+//! `versions/<id>/<id>.txt`, in the format `aria2c --input-file` understands:
+//! a URL followed by its indented `dir=`, `out=` and `checksum=sha-1=` options.
+//! Directory creation is part of writing the list, because aria2 does not create
+//! them and a missing `dir=` fails the whole entry.
 //!
 //! ```ignore
 //! use mdt::{MdtClient, Mirror, ModLoader};
@@ -14,86 +16,48 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let client = MdtClient::builder()
-//!         .mirror(Mirror::BMCLAPI)
+//!         .mirror(Mirror::Mojang)
 //!         .root_dir("./.minecraft")
 //!         .build()?;
 //!
-//!     client.install_vanilla("1.20.1").await?;
-//!
-//!     let vanilla_dir = client.root_dir().join("versions").join("1.20.1");
-//!     client.install_modloader(&vanilla_dir, ModLoader::Fabric, "0.15.11", true).await?;
-//!
+//!     // Vanilla: writes versions/1.20.1/1.20.1.json and …/1.20.1.txt
+//!     let plan = client.plan_vanilla("1.20.1").await?;
+//!     // Fabric: one list for the whole stack, with the loader's maven libraries.
+//!     let plan = client.plan_loader("1.20.1", ModLoader::Fabric, "0.15.11").await?;
+//!     println!("{} files -> {}", plan.entries.len(), plan.path(client.root_dir()).display());
 //!     Ok(())
 //! }
 //! ```
 //!
-//! # Isolation guarantee
+//! # What still touches the network
 //!
-//! Every loader install lands in `versions/<mc_version>+<Loader><loader_version>` (for example
-//! `versions/1.16.5-fabric-0.20.0`). The vanilla `versions/<mc_version>` folder is never touched,
-//! so a broken loader can't wreck your vanilla game.
+//! Only metadata: the version manifest, the version JSON, the asset index (and
+//! its cache), the loader profile, and the `<artifact>.jar.sha1` sidecars the
+//! LWJGL 3 swap needs. Those are small and few; everything measured in megabytes
+//! is planned, not fetched.
+//!
+//! # Handing the list to aria2
+//!
+//! `aria2c -i versions/<id>/<id>.txt -j64 -x1 -s1 --auto-file-renaming=false
+//! --allow-overwrite=true --stop-with-process=<pid>`. Every line carries its own
+//! SHA-1, so aria2 verifies what it wrote; a failed checksum still leaves the
+//! bytes on disk, so a caller that cares should re-check and re-plan.
 //!
 //! # Errors
 //!
-//! Anything that can fail returns a [`Result<T, MdtError>`][std::result::Result], so you can
-//! match on the exact problem (network, checksum, missing Java, ...) instead of a boxed blob.
-//! [`MdtError`] is `#[non_exhaustive]`, so keep a wildcard `_` arm.
+//! Anything that can fail returns a [`Result<T, MdtError>`][std::result::Result],
+//! so you can match on the exact problem (network, checksum, bad manifest…)
+//! instead of a boxed blob. [`MdtError`] is `#[non_exhaustive]`, so keep a
+//! wildcard `_` arm.
 //!
-//! # Mirrors and custom providers
+//! # Mirrors
 //!
-//! Pick a source with [`Mirror`]: [`Mirror::BMCLAPI`] (the default — a community mirror that
-//! proxies Mojang and Fabric), [`Mirror::Mojang`] (official), or
-//! [`Mirror::Custom`] (your own). Endpoints and rewrite rules live in `providers.compile.toml` and
-//! get compiled into static tables by the `mdt_macros::providers!` macro, so nothing is parsed at
-//! runtime — unless you also ship a `providers.runtime.toml` (or point `MDT_RUNTIME_PROVIDERS` at
-//! one) to override custom mirrors without recompiling.
+//! Pick a source with [`Mirror`]: [`Mirror::BMCLAPI`], [`Mirror::Mojang`] or
+//! [`Mirror::Custom`]. Endpoints and rewrite rules live in
+//! `providers.compile.toml` and are compiled into static tables by the
+//! `mdt_macros::providers!` macro, so nothing is parsed at runtime unless you
+//! ship `providers.runtime.toml` (or set `MDT_RUNTIME_PROVIDERS`).
 //!
-//! To add a custom mirror, drop a `[name]` section in `providers.compile.toml`, rebuild, and pick
-//! it at runtime:
-//!
-//! ```ignore
-//! use mdt::{MdtClient, Mirror};
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let client = MdtClient::builder()
-//!         .mirror(Mirror::Custom("my_mirror".into()))
-//!         .root_dir("./.minecraft")
-//!         .build()?;
-//!
-//!     Ok(())
-//! }
-//! ```
-//!
-//! [`Mirror::provider_name`] returns the active provider's key, and failed requests fall back
-//! automatically via [`Mirror::other`] (a custom mirror falls back to `BMCLAPI`). The format is
-//! spelled out in [the TOML spec](https://github.com/Lavaver/MDT/blob/main/docs/mirror_toml.md)
-//! and [the endpoint URI spec](https://github.com/Lavaver/MDT/blob/main/docs/mirror_uri.md).
-//!
-//! # Macros
-//!
-//! [`version_dir!`], [`download_task!`], and [`full_install!`] are one-line shortcuts for isolated
-//! paths, download tasks, and loader installs.
-//!
-//! # Async vs blocking
-//!
-//! The default API is `async` (Tokio). Enable the `blocking` feature to get a synchronous
-//! `BlockingClient` with the same method names, driven by `futures::executor::block_on` with
-//! **no Tokio runtime** — the core pipeline swaps `tokio::fs` → `std::fs` and
-//! `tokio::time` → `std::thread` at compile time (see the internal `io` module).
-//!
-//! Choose your branch:
-//!
-//! * **Async** — A popular choice among general developers. It provides a comprehensive and powerful asynchronous download and installation engine, and the API is simple and easy to use; just `.await`. (At least for a full Minecraft launcher)
-//! * **Blocking** — If you just want to write ordinary synchronous code, are using a command-line interface (CLI), or simply want to avoid Tokio’s *"抖M式" design* (BTW, I won't stop you, lol), then go with this one. Inject a synchronous
-//!   `Downloader` (e.g. `reqwest::blocking`) and call `BlockingClient` from a `std::thread`:
-//!
-//! ```toml
-//! mdt-minecraft = { version = "0.7", features = ["blocking"] }
-//! ```
-
-#[cfg(all(feature = "blocking", feature = "minimal"))]
-compile_error!("Synchronous, blocking usage is not allowed in the minimal subset. Please make sure you have disabled the `blocking` feature, and enable `tokio` feature.");
 
 mod client;
 mod customize;
@@ -101,16 +65,12 @@ mod error;
 #[cfg(feature = "tokio")]
 mod http;
 mod io;
-pub mod jar;
 mod lwjgl3;
-mod macros;
 mod safe_path;
 mod security;
 
 #[cfg(not(feature = "minimal"))]
 pub mod asset;
-#[cfg(all(feature = "blocking", not(feature = "minimal")))]
-pub mod blocking;
 pub mod downloader;
 pub mod installer;
 pub mod manifest;
@@ -121,20 +81,7 @@ pub mod plan;
 #[cfg(not(feature = "minimal"))]
 pub mod registry;
 pub mod urls;
-#[cfg(not(feature = "minimal"))]
-pub mod virtual_dir;
-
-#[cfg(feature = "cli")]
-pub mod cli;
-
-#[cfg(feature = "tui")]
-pub mod tui;
-
-#[cfg(not(feature = "minimal"))]
-pub use asset::AssetRegistry;
-#[cfg(all(feature = "blocking", not(feature = "minimal")))]
-pub use blocking::{BlockingClient, BlockingClientBuilder};
-pub use client::{MdtClient, MdtClientBuilder, VanillaInstall};
+pub use client::{MdtClient, MdtClientBuilder};
 #[cfg(feature = "tokio")]
 pub use customize::HttpDownloader;
 #[cfg(feature = "blocking")]
@@ -143,10 +90,7 @@ pub use customize::{
     format_bytes, format_duration, redact_credentials, Downloader, FsRegistryCache, NoopReporter,
     ProgressReporter, RegistryCache, StderrReporter,
 };
-pub use downloader::{
-    AssetIndex, AssetIndexInfo, AssetObject, DownloadBatch, DownloadTask, VersionJson,
-    VirtualAssets,
-};
+pub use downloader::{AssetIndex, AssetIndexInfo, AssetObject, DownloadTask, VersionJson};
 pub use error::{FailedDownload, MdtError};
 #[cfg(not(feature = "minimal"))]
 pub use installer::{InstallMethod, InstallRequest, InstalledVersion};
@@ -161,7 +105,6 @@ pub use modloader::ModLoader;
 pub use plan::{DownloadPlan, PlanEntry};
 pub use urls::{reload_runtime_providers, runtime_providers_error, ManifestUrls};
 #[cfg(not(feature = "minimal"))]
-pub use virtual_dir::{mount_all, mount_all_with_reporter, VirtualDir};
 
 /// Helpers shared by unit tests. Test-only, so they never reach a user's build.
 ///

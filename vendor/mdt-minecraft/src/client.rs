@@ -4,23 +4,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(not(feature = "minimal"))]
-use crate::asset::AssetRegistry;
-#[cfg(not(feature = "minimal"))]
-use crate::customize::debug_line;
 #[cfg(feature = "tokio")]
 use crate::customize::HttpDownloader;
 #[cfg(all(feature = "blocking", not(feature = "tokio")))]
 use crate::customize::UreqDownloader;
 use crate::customize::{Downloader, ProgressReporter, StderrReporter};
-use crate::downloader::{self, VersionJson, VirtualAssets};
+use crate::downloader::{self};
 #[cfg(not(feature = "minimal"))]
 use crate::error::MdtError;
 #[cfg(feature = "tokio")]
 use crate::http;
 use crate::installer;
 #[cfg(not(feature = "minimal"))]
-use crate::installer::{InstallRequest, InstalledVersion};
+use crate::installer::InstallRequest;
 #[cfg(not(feature = "minimal"))]
 use crate::manifest::{self, VersionEntry};
 use crate::mirror::Mirror;
@@ -46,25 +42,12 @@ const DEFAULT_CONCURRENCY: usize = 3;
 ///         .root_dir("./.minecraft")
 ///         .build()?;
 ///
-///     client.install_vanilla("1.20.1").await?;
-///
-///     let vanilla_dir = client.root_dir().join("versions").join("1.20.1");
-///     client.install_modloader(&vanilla_dir, ModLoader::Fabric, "0.15.11", true).await?;
+///     let plan = client.plan_vanilla("1.20.1").await?;
+///     println!("{} files", plan.entries.len());
 ///
 ///     Ok(())
 /// }
 /// ```
-/// The result of [`MdtClient::install_vanilla_with_assets`].
-#[derive(Debug, Clone)]
-#[must_use]
-pub struct VanillaInstall {
-    /// The installed version's parsed metadata.
-    pub version: VersionJson,
-    /// Legacy asset layout, present only for `legacy` / `pre-1.6` indexes.
-    pub virtual_assets: Option<VirtualAssets>,
-}
-
-#[derive(Clone)]
 pub struct MdtClient {
     #[cfg(feature = "tokio")]
     http: reqwest::Client,
@@ -165,111 +148,6 @@ impl MdtClient {
         Ok(manifest.versions)
     }
 
-    /// Download and install a vanilla Minecraft version.
-    ///
-    /// Returns the parsed [`VersionJson`]. Downloads the client JAR, libraries (rules and natives
-    /// extraction included), and asset index, and writes the version JSON to
-    /// `versions/<id>/<id>.json` so launchers and loader installers can read it back.
-    ///
-    /// # Errors
-    ///
-    /// * [`MdtError::VersionNotFound`] if `version` isn't in the manifest.
-    /// * [`MdtError::NetworkError`] / [`MdtError::ChecksumMismatch`] on download failures.
-    pub async fn install_vanilla(&self, version: &str) -> Result<VersionJson, MdtError> {
-        Ok(self.install_vanilla_with_assets(version).await?.version)
-    }
-
-    /// Install a vanilla version and report the legacy asset layout to point the game at.
-    ///
-    /// Identical to [`Self::install_vanilla`], except that the result also carries
-    /// [`VirtualAssets`] when the version's asset index needs it (`legacy` for 1.6.1–1.7.2,
-    /// `pre-1.6` for alpha–1.5.2). Every other version returns `None` and is launched straight
-    /// from `assets/indexes/<id>.json` plus `assets/objects`.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::install_vanilla`].
-    pub async fn install_vanilla_with_assets(
-        &self,
-        version: &str,
-    ) -> Result<VanillaInstall, MdtError> {
-        self.reporter
-            .status(&format!("Updating {} index", self.mirror.label()));
-        self.reporter.status(&format!("读取 {version} 的版本清单…"));
-        let (mut text, mut version_json) =
-            manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, version).await?;
-        let urls = ManifestUrls::try_new(&self.mirror)?;
-
-        // Versions that run on LWJGL 3 install with it: the LWJGL 2 entries are
-        // dropped from the profile and the 3.4.3 jars are downloaded instead, so
-        // the launcher never has to special-case the library list.
-        {
-            let mut profile: serde_json::Value = serde_json::from_str(&text)?;
-            if crate::lwjgl3::swap_lwjgl2_for_3(
-                self.downloader.as_ref(),
-                &self.root,
-                &mut profile,
-                self.reporter.as_ref(),
-            )
-            .await?
-            {
-                text = serde_json::to_string_pretty(&profile)?;
-                version_json = serde_json::from_str(&text)?;
-            }
-        }
-
-        // Save the vanilla version JSON.
-        let vdir = self.root.join("versions").join(&version_json.id);
-        crate::io::create_dir_all(&vdir).await?;
-        crate::io::write(vdir.join(format!("{}.json", version_json.id)), &text).await?;
-
-        // Client JAR + libraries (+ asset index). Vanilla stays untouched.
-        let tasks = downloader::build_tasks_from_version_json(&version_json, &self.root);
-        self.reporter.status(&format!(
-            "下载 {version} 的游戏文件：jar / 依赖库 / natives，共 {} 个",
-            tasks.len()
-        ));
-        downloader::execute_downloads(
-            self.downloader.as_ref(),
-            tasks,
-            self.concurrency,
-            &self.mirror,
-            &urls,
-            self.reporter.as_ref(),
-        )
-        .await?;
-
-        // Assets: fetch the index (via the global index cache), then sync the global registry
-        // cache into `assets/objects`.
-        #[cfg(not(feature = "minimal"))]
-        let virtual_assets = if let Some(asset_index) = &version_json.asset_index {
-            self.reporter.status(&format!(
-                "同步 {version} 的游戏资源文件（索引 {}）…",
-                asset_index.id
-            ));
-            AssetRegistry::fetch_and_sync(
-                &self.root,
-                asset_index,
-                &version_json.id,
-                self.downloader.as_ref(),
-                self.asset_concurrency,
-                &self.mirror,
-                &urls,
-                self.reporter.as_ref(),
-            )
-            .await?
-        } else {
-            None
-        };
-        #[cfg(feature = "minimal")]
-        let virtual_assets = None;
-
-        Ok(VanillaInstall {
-            version: version_json,
-            virtual_assets,
-        })
-    }
-
     /// Resolve a vanilla version and write its download list — nothing is transferred.
     ///
     /// The metadata is still fetched (the version manifest, the LWJGL 3 `.sha1`
@@ -322,7 +200,7 @@ impl MdtClient {
         // 3. Assets: the index is metadata, the objects are entries.
         if let Some(asset_index) = &version_json.asset_index {
             entries.extend(
-                AssetRegistry::plan_objects(
+                crate::asset::plan_objects(
                     &self.root,
                     asset_index,
                     self.downloader.as_ref(),
@@ -380,7 +258,6 @@ impl MdtClient {
             mirror: self.mirror.clone(),
             target_dir: None,
             reporter: self.reporter.clone(),
-            plan_only: true,
         };
         let installed = installer::install_modloader(self.downloader.as_ref(), req).await?;
         let profile_text = crate::io::read_to_string(&installed.version_json).await?;
@@ -420,7 +297,7 @@ impl MdtClient {
         // Assets are shared with the vanilla install.
         if let Some(asset_index) = &vanilla.asset_index {
             entries.extend(
-                AssetRegistry::plan_objects(
+                crate::asset::plan_objects(
                     &self.root,
                     asset_index,
                     self.downloader.as_ref(),
@@ -442,332 +319,6 @@ impl MdtClient {
             path.display()
         ));
         Ok(plan)
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Install a mod loader, given an existing vanilla version directory.
-    ///
-    /// The Minecraft version is read from `<vanilla_dir>/<vanilla_dir-name>.json`'s `id` field,
-    /// which is authoritative for compatibility checks.
-    ///
-    /// When `isolate` is `true`, the loader gets its own
-    /// `versions/<mc_version>-<loader>-<loader_version>` directory and vanilla is left untouched.
-    /// Nothing is copied into it: the generated profile keeps `inheritsFrom: <mc_version>`, so the
-    /// client JAR, natives and assets stay in the one vanilla install that every loader built on
-    /// that version shares. (Cloning the vanilla directory here used to leave a second full copy of
-    /// it — including the client JAR — inside every loader directory.) When `false`, the loader is
-    /// installed directly inside `vanilla_dir`, mutating it.
-    ///
-    /// # Errors
-    ///
-    /// * [`MdtError::InvalidManifest`] if `vanilla_dir` has no readable version JSON.
-    /// * [`MdtError::LoaderInstallFailed`] if the loader doesn't support the version.
-    pub async fn install_modloader(
-        &self,
-        vanilla_dir: &Path,
-        loader: ModLoader,
-        loader_version: &str,
-        isolate: bool,
-    ) -> Result<InstalledVersion, MdtError> {
-        let mc_version = installer::read_vanilla_version_id(vanilla_dir).await?;
-        debug_line(
-            self.reporter.as_ref(),
-            &format!("install_modloader: resolved mc_version={mc_version}"),
-        );
-        let target = (!isolate).then(|| vanilla_dir.to_path_buf());
-        self.install_modloader_inner(&mc_version, loader, loader_version, target)
-            .await
-    }
-
-    /// The install itself, once the Minecraft version is known.
-    ///
-    /// `target_dir` is `None` for an isolated install (`versions/<loader id>`) and `Some(vanilla_dir)`
-    /// for an in-place one. Split out so [`Self::install_loader`] can install without a vanilla
-    /// version directory on disk at all.
-    #[cfg(not(feature = "minimal"))]
-    async fn install_modloader_inner(
-        &self,
-        mc_version: &str,
-        loader: ModLoader,
-        loader_version: &str,
-        target_dir: Option<PathBuf>,
-    ) -> Result<InstalledVersion, MdtError> {
-        let mc_version = mc_version.to_string();
-        if !loader.compatible_with(&mc_version) {
-            return Err(MdtError::LoaderInstallFailed(format!(
-                "{} is not compatible with Minecraft {}",
-                loader.display_name(),
-                mc_version
-            )));
-        }
-
-        // An isolated install writes to `versions/<id>` (resolved by `target_version_dir`), and
-        // that directory starts empty on purpose: the profile inherits from the vanilla version,
-        // so duplicating the vanilla files here would only double the client JAR and the natives.
-        // An in-place install writes into `vanilla_dir` instead.
-        let isolated_dir = target_dir.is_none().then(|| {
-            installer::version_dir(
-                &self.root,
-                &installer::installer_version_id(&mc_version, loader, loader_version),
-            )
-        });
-        // Whether this call is the one that brings the directory into existence: only then is it
-        // safe to clean up after a failure.
-        let created_here = isolated_dir.as_ref().is_some_and(|dir| !dir.exists());
-
-        let req = InstallRequest {
-            mc_version,
-            loader,
-            loader_version: loader_version.to_string(),
-            root_dir: self.root.clone(),
-            mirror: self.mirror.clone(),
-            target_dir,
-            reporter: self.reporter.clone(),
-            plan_only: false,
-        };
-        let result = installer::install_modloader(self.downloader.as_ref(), req).await;
-
-        // A failed install can leave a half-written profile in a directory this call created.
-        // Drop it, so the launcher does not list a phantom version with no JSON. A directory that
-        // was already there is left alone: it may be a working install being repaired.
-        if let (true, Some(isolated_dir)) = (created_here, &isolated_dir) {
-            if result.is_err() {
-                debug_line(
-                    self.reporter.as_ref(),
-                    &format!(
-                        "install_modloader: removing failed install {}",
-                        isolated_dir.display()
-                    ),
-                );
-                let _ = crate::io::remove_dir_all(isolated_dir).await;
-            }
-        }
-        result
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Install a mod loader as a **self-contained** version directory.
-    ///
-    /// This is the install a launcher wants when it should not keep a second
-    /// vanilla version around: `versions/<mc>-<loader>-<version>/` ends up holding
-    /// the client jar, the natives and a profile that carries the vanilla fields
-    /// itself (no `inheritsFrom`), so nothing outside that directory is needed to
-    /// launch it — except the globally shared `libraries/` and `assets/`.
-    ///
-    /// The vanilla version directory is not created: the generated profile
-    /// carries the vanilla fields itself, so only the shared `libraries/` and
-    /// `assets/` are needed beside it.
-    ///
-    /// # Errors
-    ///
-    /// * [`MdtError::VersionNotFound`] if the Minecraft version isn't in the manifest.
-    /// * [`MdtError::LoaderInstallFailed`] if the loader doesn't support the version.
-    pub async fn install_loader(
-        &self,
-        mc_version: &str,
-        loader: ModLoader,
-        loader_version: &str,
-    ) -> Result<InstalledVersion, MdtError> {
-        self.reporter
-            .status(&format!("读取 {mc_version} 的版本清单…"));
-        let (vanilla_text, vanilla) =
-            manifest::fetch_version_json(self.downloader.as_ref(), &self.mirror, mc_version)
-                .await?;
-        let vanilla_value: serde_json::Value =
-            serde_json::from_str(&vanilla_text).map_err(|error| {
-                MdtError::JsonParseError(error)
-                    .context(format!("parsing version JSON for {mc_version}"))
-            })?;
-        let id = installer::installer_version_id(mc_version, loader, loader_version);
-        let vdir = installer::version_dir(&self.root, &id);
-        let created = !vdir.exists();
-        crate::io::create_dir_all(&vdir).await?;
-
-        let result = self
-            .install_loader_into(
-                mc_version,
-                loader,
-                loader_version,
-                &id,
-                &vanilla,
-                &vanilla_value,
-            )
-            .await;
-        if result.is_err() && created {
-            // Only a directory this call brought into existence may be removed.
-            let _ = crate::io::remove_dir_all(&vdir).await;
-        }
-        result
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    async fn install_loader_into(
-        &self,
-        mc_version: &str,
-        loader: ModLoader,
-        loader_version: &str,
-        id: &str,
-        vanilla: &crate::downloader::VersionJson,
-        vanilla_value: &serde_json::Value,
-    ) -> Result<InstalledVersion, MdtError> {
-        let urls = ManifestUrls::try_new(&self.mirror)?;
-
-        // 1. The files the loader profile needs from the vanilla version, written
-        //    into the loader's own directory (`<id>.jar`, `<id>-natives`).
-        let tasks = downloader::build_tasks_from_version_json_into(vanilla, &self.root, id);
-        self.reporter.status(&format!(
-            "下载 {mc_version} 的游戏文件：jar / 依赖库 / natives，共 {} 个",
-            tasks.len()
-        ));
-        downloader::execute_downloads(
-            self.downloader.as_ref(),
-            tasks,
-            self.concurrency,
-            &self.mirror,
-            &urls,
-            self.reporter.as_ref(),
-        )
-        .await?;
-
-        if let Some(asset_index) = &vanilla.asset_index {
-            self.reporter.status(&format!(
-                "同步 {mc_version} 的游戏资源文件（索引 {}）…",
-                asset_index.id
-            ));
-            AssetRegistry::fetch_and_sync(
-                &self.root,
-                asset_index,
-                id,
-                self.downloader.as_ref(),
-                self.asset_concurrency,
-                &self.mirror,
-                &urls,
-                self.reporter.as_ref(),
-            )
-            .await?;
-        }
-
-        // 3. The loader profile itself, written into `versions/<id>`.
-        let installed = self
-            .install_modloader_inner(mc_version, loader, loader_version, None)
-            .await;
-
-        let installed = installed?;
-
-        // 3. Fold the vanilla fields into the profile and drop `inheritsFrom`, so
-        //    the directory stands on its own.
-        let json_path = installer::version_dir(&self.root, id).join(format!("{id}.json"));
-        let text = crate::io::read_to_string(&json_path).await?;
-        let profile: serde_json::Value =
-            serde_json::from_str(&text).map_err(MdtError::JsonParseError)?;
-        let merged = installer::merge_vanilla_profile(
-            vanilla_value,
-            &profile,
-            id,
-            &loader.display_name().to_lowercase(),
-            loader_version,
-        );
-        crate::io::write(
-            &json_path,
-            serde_json::to_string_pretty(&merged).map_err(MdtError::JsonParseError)?,
-        )
-        .await?;
-
-        Ok(InstalledVersion {
-            id: id.to_string(),
-            ..installed
-        })
-    }
-
-    #[cfg(not(feature = "minimal"))]
-    /// Install a complete stack — vanilla and then a mod loader — in one call.
-    ///
-    /// If the vanilla version isn't on disk yet it is downloaded first; otherwise the existing
-    /// install is reused. Then the loader is installed with the same isolation behavior as
-    /// [`MdtClient::install_modloader`]: a separate `versions/<id>` that inherits from the vanilla
-    /// profile, with nothing copied into it. This is what the
-    /// [`full_install!`](crate::full_install) macro expands to.
-    ///
-    /// Returns the loader [`InstalledVersion`].
-    pub async fn full_install(
-        &self,
-        version: &str,
-        loader: ModLoader,
-        loader_version: &str,
-        isolate: bool,
-    ) -> Result<InstalledVersion, MdtError> {
-        debug_line(
-            self.reporter.as_ref(),
-            &format!("full_install: ensuring vanilla {version}"),
-        );
-        let vanilla_dir = self.root.join("versions").join(version);
-        let vanilla_dir = if vanilla_dir.join(format!("{version}.json")).exists() {
-            debug_line(
-                self.reporter.as_ref(),
-                &format!("full_install: vanilla {version} already present, skipping"),
-            );
-            vanilla_dir
-        } else {
-            debug_line(
-                self.reporter.as_ref(),
-                &format!("full_install: installing vanilla {version}"),
-            );
-            let installed = self.install_vanilla(version).await?;
-            debug_line(
-                self.reporter.as_ref(),
-                &format!("full_install: vanilla {version} installed"),
-            );
-            // Point at the id the manifest actually reported (matches `version` in the common case).
-            self.root.join("versions").join(&installed.id)
-        };
-        debug_line(
-            self.reporter.as_ref(),
-            &format!(
-                "full_install: installing loader {} {} (isolate={isolate})",
-                loader.display_name(),
-                loader_version
-            ),
-        );
-        let result = self
-            .install_modloader(&vanilla_dir, loader, loader_version, isolate)
-            .await;
-        debug_line(
-            self.reporter.as_ref(),
-            "full_install: loader install finished",
-        );
-        result
-    }
-
-    /// Revert a mod loader back to pure vanilla, using a SHA-1 manifest comparison.
-    ///
-    /// The base Minecraft version is read from `vanilla_dir`, its official manifest is fetched and
-    /// pre-loaded into memory, and every file is compared against it. Modified files are restored,
-    /// missing files are re-downloaded, and files the loader added are removed (the `mods/`
-    /// directory is preserved). Finally the vanilla JSON is rewritten and the whole directory is
-    /// re-verified.
-    ///
-    /// Safe to re-run: against an already-vanilla directory it is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// * [`MdtError::InvalidManifest`] if `vanilla_dir` has no readable version JSON.
-    /// * [`MdtError::VersionNotFound`] if the base version isn't in the manifest.
-    /// * [`MdtError::UninstallFailed`] if a file fails post-restore verification.
-    pub async fn uninstall_modloader(
-        &self,
-        vanilla_dir: &Path,
-        loader: ModLoader,
-    ) -> Result<(), MdtError> {
-        installer::uninstall_modloader(
-            self.downloader.as_ref(),
-            &self.root,
-            vanilla_dir,
-            loader,
-            &self.mirror,
-            self.concurrency,
-            self.reporter.as_ref(),
-        )
-        .await
     }
 }
 
@@ -793,7 +344,7 @@ impl MdtClientBuilder {
             mirror: Mirror::default(),
             root: PathBuf::from("."),
             concurrency: DEFAULT_CONCURRENCY,
-            asset_concurrency: crate::downloader::ASSET_CONCURRENCY,
+            asset_concurrency: 64,
             http1_only: true,
             reporter: None,
             downloader: None,
@@ -996,7 +547,7 @@ mod tests {
         // The thousands of small asset objects need their own knob: `concurrency` stays
         // deliberately low for the client JAR and libraries.
         let client = MdtClient::builder().build().unwrap();
-        assert_eq!(client.asset_concurrency(), crate::asset::ASSET_CONCURRENCY);
+        assert_eq!(client.asset_concurrency(), 64);
 
         let client = MdtClient::builder().asset_concurrency(64).build().unwrap();
         assert_eq!(client.asset_concurrency(), 64);
@@ -1025,6 +576,24 @@ mod tests {
         assert_eq!(client.concurrency(), 3);
     }
 
+    /// Every regular file under `dir` (recursive).
+    fn files_under(dir: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    files_under(&path)
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+
     #[tokio::test]
     #[ignore = "network: fetches the version manifest and the asset index"]
     async fn plan_vanilla_writes_an_aria2_list_and_downloads_nothing() {
@@ -1044,17 +613,19 @@ mod tests {
         let text = std::fs::read_to_string(&list).unwrap();
         assert!(text.contains("  dir="));
         assert!(text.contains("  checksum=sha-1="));
-        // Only metadata landed on disk: no jar, no library, no asset object.
+        // Only metadata landed on disk: the directories exist (aria2 needs
+        // them), but no jar, library or asset object was fetched.
         let version_dir = root.path().join("versions/1.20.1");
         assert!(version_dir.join("1.20.1.json").is_file());
         assert!(!version_dir.join("1.20.1.jar").exists());
-        assert!(!root.path().join("libraries").join("com").exists());
+        assert!(root.path().join("libraries").is_dir(), "dirs are created");
+        assert_eq!(files_under(&root.path().join("libraries")), 0);
         // The index is metadata too (its id is a number, e.g. `5` for 1.20.1):
         // it is written so the launcher can read it back.
         let indexes = std::fs::read_dir(root.path().join("assets/indexes")).unwrap();
         assert_eq!(indexes.count(), 1);
-        // No asset object was transferred.
-        assert!(!root.path().join("assets/objects").exists());
+        // The object directories exist; none of them holds a file.
+        assert_eq!(files_under(&root.path().join("assets/objects")), 0);
     }
 
     #[tokio::test]
@@ -1085,7 +656,7 @@ mod tests {
             .join(format!("{}.json", plan.id));
         assert!(profile.is_file(), "{}", profile.display());
         assert!(plan.path(root.path()).is_file());
-        assert!(!root.path().join("libraries").join("net").exists());
+        assert_eq!(files_under(&root.path().join("libraries")), 0);
         let text = std::fs::read_to_string(plan.path(root.path())).unwrap();
         assert!(text.contains("checksum=sha-1="));
     }
