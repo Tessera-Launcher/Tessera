@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 
 use super::agents::{ensure_asset, LEGACY_AGENT, LWJGL3_AGENT};
 use super::aot_cache::aot_cache;
-use super::java::{find_java, java_kind, required_java, JavaKind, LEGACY_MAIN};
+use super::java::{find_java, launch_path, required_java, LaunchPath, LEGACY_MAIN};
 use super::manifest::{client_jar, features, merge_chain, resolve_argument, substitute};
 use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
 use super::{Command, Credentials, Launch, Options};
@@ -53,13 +53,13 @@ pub(super) fn prepare_inner(
     } else {
         None
     };
-    let kind = java_kind(merged.loader, Some(&merged.main_class));
+    let route = launch_path(merged.loader, Some(&merged.main_class));
     let (java, java_major) = if let Some(selection) = &aot {
         (selection.java.clone(), selection.java_major)
     } else if let Some(override_java) = java_override {
         override_java
     } else {
-        find_java(&runtimes, required, kind)?
+        find_java(&runtimes, required)?
     };
     // A loader profile has no jar of its own (it inherits from the vanilla
     // version, whose client jar it borrows), so the lookup walks the parent
@@ -117,7 +117,7 @@ pub(super) fn prepare_inner(
     // references in the game's own class files. Both work without a custom
     // class loader or a patched module, which is what keeps the classes
     // eligible for an AOT cache.
-    let legacy_agent = (kind == JavaKind::Legacy)
+    let legacy_agent = (route == LaunchPath::Legacy)
         .then(|| version_dir.join(format!("{version_dir_name}.legacy-agent.jar")));
     if let Some(agent) = &legacy_agent {
         // Only when the bytes differ: the AOT cache validates every class path
@@ -241,10 +241,10 @@ pub(super) fn prepare_inner(
     // only ever hands plain byte buffers to the socket. The executable is used
     // as the file because it is guaranteed to exist.
     //
-    // Loader profiles are not covered: their metadata pins Java 8, where this
-    // netty works, so they never reach the broken path. `loader` rather than
-    // "has a parent": a self-contained Forge install has no parent either.
-    if !merged.loader && is_1_8(&merged.id) {
+    // Loader profiles used to be exempt because their metadata pinned Java 8,
+    // where this netty works. Every profile runs on 28 now, so a loader on
+    // 1.8.x reaches the broken path too and gets the same treatment.
+    if is_1_8(&merged.id) {
         if let Ok(exe) = std::env::current_exe() {
             args.push(format!("-Dio.netty.native.workdir={}", exe.display()));
         }

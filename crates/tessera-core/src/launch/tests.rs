@@ -26,18 +26,6 @@ fn offline_credentials_are_stable_and_legacy() {
     assert_ne!(a.uuid, Credentials::offline("Alex").uuid);
 }
 
-#[test]
-fn java_acceptability_pins_java8_profiles_and_rolls_forward_newer_ones() {
-    // 1.8.9 asks for 8: only 8 will do.
-    assert!(java_is_acceptable(8, 8));
-    assert!(!java_is_acceptable(8, 17));
-    assert!(!java_is_acceptable(8, 25));
-    // 1.21 asks for 21: anything newer is fine, older is not.
-    assert!(java_is_acceptable(21, 21));
-    assert!(java_is_acceptable(21, 25));
-    assert!(!java_is_acceptable(21, 17));
-}
-
 /// A managed runtime at `<root>/运行时/<version>/bin/java`, as the picker
 /// leaves it. Returns the runtimes directory.
 fn managed_runtime(root: &Path, major: u32) -> PathBuf {
@@ -179,72 +167,64 @@ fn only_managed_runtimes_are_considered() {
     let tmp = tempfile::tempdir().unwrap();
     let runtimes = tmp.path().join("运行时");
     // Nothing installed: the error says what to do, not "install Java on PATH".
-    let error = find_java(&runtimes, 21, JavaKind::Loader).unwrap_err();
+    let error = find_java(&runtimes, 21).unwrap_err();
     assert!(error.to_string().contains("依赖页"), "{error}");
     assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
 
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 21);
 
-    // Exact wins, 8 stays pinned, and a 17 profile takes the smallest newer one.
-    assert_eq!(find_java(&runtimes, 21, JavaKind::Loader).unwrap().1, 21);
-    assert_eq!(find_java(&runtimes, 8, JavaKind::Loader).unwrap().1, 8);
-    assert_eq!(find_java(&runtimes, 17, JavaKind::Loader).unwrap().1, 21);
-    // A 25 profile has nothing to run on, and the message lists what exists.
-    let error = find_java(&runtimes, 25, JavaKind::Loader).unwrap_err();
-    assert!(error.to_string().contains("Java 25"), "{error}");
-    assert!(error.to_string().contains("Java 8"), "{error}");
+    // Other majors on disk are not a substitute, and the message lists them.
+    let error = find_java(&runtimes, 21).unwrap_err();
     assert!(error.to_string().contains("Java 21"), "{error}");
+    assert!(error.to_string().contains("Java 8"), "{error}");
+
+    managed_runtime(tmp.path(), 28);
+    assert_eq!(find_java(&runtimes, 8).unwrap().1, 28);
+    assert_eq!(find_java(&runtimes, 21).unwrap().1, 28);
 }
 
 #[test]
-fn vanilla_locks_java_28_and_loaders_keep_their_pin() {
+fn every_profile_runs_on_java_28() {
     let tmp = tempfile::tempdir().unwrap();
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 17);
     managed_runtime(tmp.path(), 28);
     let runtimes = tmp.path().join("运行时");
 
-    // Vanilla: 28 and only 28, even for a 1.8.9 profile that pins 8. That is
-    // the only runtime the launch shims have been tested on.
-    assert_eq!(find_java(&runtimes, 8, JavaKind::Vanilla).unwrap().1, 28);
-    assert_eq!(find_java(&runtimes, 17, JavaKind::Vanilla).unwrap().1, 28);
-    assert_eq!(find_java(&runtimes, 26, JavaKind::Vanilla).unwrap().1, 28);
+    // Whatever the profile asks for, 28 is what starts it: it is the only
+    // runtime the launch shims have been tested on.
+    assert_eq!(find_java(&runtimes, 8).unwrap().1, 28);
+    assert_eq!(find_java(&runtimes, 17).unwrap().1, 28);
+    assert_eq!(find_java(&runtimes, 26).unwrap().1, 28);
     // A newer minimum than 28 cannot be run here, and the message says why.
-    let error = find_java(&runtimes, 30, JavaKind::Vanilla).unwrap_err();
+    let error = find_java(&runtimes, 30).unwrap_err();
     assert!(error.to_string().contains("30"), "{error}");
-
-    // Loaders keep the old rule: exact 8 for a legacy profile, never 28.
-    assert_eq!(find_java(&runtimes, 8, JavaKind::Loader).unwrap().1, 8);
-    assert_eq!(find_java(&runtimes, 17, JavaKind::Loader).unwrap().1, 17);
-    assert_eq!(find_java(&runtimes, 21, JavaKind::Loader).unwrap().1, 28);
 }
 
 #[test]
-fn a_vanilla_launch_without_java_28_asks_for_java_28() {
+fn a_launch_without_java_28_asks_for_java_28() {
     let tmp = tempfile::tempdir().unwrap();
-    let error = find_java(&tmp.path().join("运行时"), 8, JavaKind::Vanilla).unwrap_err();
+    let error = find_java(&tmp.path().join("运行时"), 8).unwrap_err();
     assert!(error.to_string().contains("Java 28"), "{error}");
 
-    // A 21 on disk is not a substitute: vanilla is locked, not "newest".
+    // A 21 on disk is not a substitute: 28 is the only runtime that launches.
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 21);
-    let error = find_java(&tmp.path().join("运行时"), 8, JavaKind::Vanilla).unwrap_err();
+    let error = find_java(&tmp.path().join("运行时"), 8).unwrap_err();
     assert!(error.to_string().contains("Java 28"), "{error}");
 }
 
 #[test]
-fn an_applet_era_version_locks_java_28_too() {
+fn an_applet_era_version_runs_on_java_28_too() {
     let tmp = tempfile::tempdir().unwrap();
     managed_runtime(tmp.path(), 8);
     managed_runtime(tmp.path(), 25);
-    managed_runtime(tmp.path(), 28);
-    let runtimes = tmp.path().join("运行时");
+    let runtimes = managed_runtime(tmp.path(), 28);
 
-    // Up to 1.5.2 the game is an applet, but the launch shims make that a
-    // non-issue, so these versions follow the vanilla rule.
-    assert_eq!(find_java(&runtimes, 8, JavaKind::Legacy).unwrap().1, 28);
-    assert_eq!(find_java(&runtimes, 8, JavaKind::Vanilla).unwrap().1, 28);
+    // Up to 1.5.2 the game is an applet, but the legacy agent makes that a
+    // non-issue, so the Java is the same as everywhere else.
+    assert_eq!(find_java(&runtimes, 8).unwrap().1, 28);
 }
 
 #[test]
@@ -342,8 +322,8 @@ fn a_vanilla_1_8_launch_disables_the_broken_netty_epoll_transport() {
     let anchor = Path::new(arg.trim_start_matches("-Dio.netty.native.workdir="));
     assert!(anchor.is_file(), "{anchor:?}");
 
-    // A loader profile is pinned to the Java 8 its metadata asks for, where
-    // this netty is healthy, so it keeps epoll.
+    // A loader profile runs on 28 as well now, so it hits the same broken
+    // netty and gets the same workaround.
     let fabric = prepare(
         tmp.path(),
         "1.8.9+Fabric0.15.11",
@@ -351,9 +331,9 @@ fn a_vanilla_1_8_launch_disables_the_broken_netty_epoll_transport() {
         &options,
     )
     .unwrap();
-    assert_eq!(fabric.java_major, 8);
+    assert_eq!(fabric.java_major, 28);
     assert!(
-        !fabric
+        fabric
             .command
             .args
             .iter()
@@ -626,7 +606,7 @@ fn a_loader_profile_merges_its_parent_and_wins_the_classpath_order() {
 
     let creds = Credentials::offline("Steve");
     let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 8)),
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
     };
     let launch = prepare(tmp.path(), "1.8.9+Fabric0.15.11", &creds, &options).unwrap();
@@ -717,7 +697,7 @@ fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
     std::fs::write(version_dir.join(format!("{id}.jar")), b"jar").unwrap();
     std::fs::create_dir_all(version_dir.join(format!("{id}-natives"))).unwrap();
 
-    // Both runtimes: the loader rule has to pick the exact pin, not the newest.
+    // Both runtimes: the loader still starts on 28, not on its 21 pin.
     managed_runtime(root, 21);
     let options = Options {
         runtimes: Some(managed_runtime(root, 28)),
@@ -729,8 +709,11 @@ fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
         !root.join("versions/1.20.1").exists(),
         "nothing must have to exist beside the loader directory"
     );
-    assert_eq!(launch.required_major, 21);
-    assert_eq!(launch.java_major, 21, "the loader pin wins over the newest");
+    assert_eq!(
+        launch.required_major, 21,
+        "the pin is still what it asks for"
+    );
+    assert_eq!(launch.java_major, 28, "every profile runs on 28");
     assert_eq!(
         launch.main_class,
         "net.fabricmc.loader.impl.launch.knot.KnotClient"

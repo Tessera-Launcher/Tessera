@@ -161,11 +161,12 @@ fn vanilla_versions_are_labelled_java_28() {
     app.installed_java = vec![28, 25, 17];
     assert_eq!(app.java_for(&legacy), Some(28));
 
-    // A loader install (self-contained, no parent) keeps the pin its JSON declares.
+    // A loader install (self-contained, no parent) follows the same rule: the
+    // pin in its JSON no longer picks the JVM.
     let mut loader = version("1.8.9-forge-11.15.0.1656");
     loader.loader = true;
     loader.java = Some(8);
-    assert_eq!(app.java_for(&loader), Some(8));
+    assert_eq!(app.java_for(&loader), Some(28));
 
     // A trained cache is bound to the JVM that wrote it.
     let mut trained = version("1.12.2");

@@ -31,8 +31,8 @@ mod tests;
 
 pub use aot_cache::aot_status;
 pub use java::{
-    find_java, java_is_acceptable, java_kind, parse_java_major, pick_major, probe_java,
-    required_java, uses_launchwrapper, JavaKind, LAUNCHWRAPPER, LEGACY_MAIN, VANILLA_JAVA,
+    find_java, launch_path, parse_java_major, pick_major, probe_java, required_java,
+    uses_launchwrapper, LaunchPath, LAUNCHWRAPPER, LAUNCH_JAVA, LEGACY_MAIN,
 };
 pub use manifest::{references, References};
 
@@ -149,7 +149,11 @@ pub struct Command {
 #[derive(Debug)]
 pub struct Launch {
     pub command: Command,
+    /// The runtime this launch actually uses (always [`LAUNCH_JAVA`] today, or
+    /// the JVM an AOT cache was trained on).
     pub java_major: u32,
+    /// What the profile's metadata asks for; anything newer than
+    /// [`LAUNCH_JAVA`] is refused, everything else runs on it.
     pub required_major: u32,
     pub classpath_entries: usize,
     pub natives: Option<PathBuf>,

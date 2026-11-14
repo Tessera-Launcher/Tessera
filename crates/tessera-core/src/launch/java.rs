@@ -1,41 +1,27 @@
 //! Java runtime selection and probing.
 //!
 //! The launcher only considers the JREs it downloaded itself; there is no
-//! `JAVA_HOME` or `PATH` fallback. Plain vanilla and LaunchWrapper-era profiles
-//! are locked to Java 28 EA, the only runtime the shims have been tested on,
-//! while a loader profile keeps its own pin.
+//! `JAVA_HOME` or `PATH` fallback. Every profile — plain, LaunchWrapper-era or
+//! with a loader on top — launches on Java 28 EA, the only runtime the shims
+//! have been tested on and the only one that can replay an AOT cache.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// The runtime every unmodded profile launches on.
+/// The runtime every profile launches on.
 ///
 /// Java 28 EA is the only JVM the launch shims (the applet renamer, the
 /// LaunchWrapper entry point, the netty workaround, the ASCII natives mirror)
-/// have been tested against. Running vanilla on any other runtime is untested,
-/// so it is refused instead of being picked silently: an untested JVM is a
-/// guess, and a wrong guess shows up as an opaque crash inside the game.
+/// have been tested against. Loader profiles used to keep the pin in their
+/// metadata (Forge wants exactly 8, Fabric 17, …), which meant every loader was
+/// a second, untested JVM configuration; they now follow everyone else. A
+/// profile that asks for something **newer** than this is refused instead of
+/// being run on a JVM below its own minimum.
 ///
 /// AOT training already forces this same runtime, and a cache only replays on
-/// the JVM that wrote it, so the launch path and the cache path now agree.
-pub const VANILLA_JAVA: u32 = crate::java::FEATURE;
-
-/// Whether a runtime of `major` can run a **loader** profile that asks for
-/// `required`.
-///
-/// A Java 8 pin in a loader profile means exactly 8: Forge and friends use
-/// reflection and LWJGL 2 in ways that break on 17+, and the failures are
-/// opaque (`NoSuchMethodError` half a minute in). Plain and LaunchWrapper-era
-/// profiles instead go through [`pick_major`], which only accepts
-/// [`VANILLA_JAVA`].
-pub fn java_is_acceptable(required: u32, major: u32) -> bool {
-    if required <= 8 {
-        major == 8
-    } else {
-        major >= required
-    }
-}
+/// the JVM that wrote it, so the launch path and the cache path agree.
+pub const LAUNCH_JAVA: u32 = crate::java::FEATURE;
 
 /// The main class LaunchWrapper installs run on.
 pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
@@ -47,32 +33,29 @@ pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
 /// calls the game's own `main`, which works on every JVM.
 pub const LEGACY_MAIN: &str = "tessera.legacy.Main";
 
-/// Which Java rule a profile follows.
+/// How a profile starts, which is all that is left to distinguish: the Java is
+/// the same for every one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JavaKind {
-    /// Plain Minecraft: [`VANILLA_JAVA`], whatever the profile's minimum says.
-    Vanilla,
+pub enum LaunchPath {
+    /// Plain Minecraft and loader profiles: the game's own `main` class.
+    Plain,
     /// Minecraft that boots through LaunchWrapper with no loader on top, i.e.
-    /// up to 1.5.2. It takes [`VANILLA_JAVA`] like vanilla; a java agent
-    /// replaces the wrapper's entry point and renames the `java.applet`
-    /// references JDK 28 no longer resolves.
+    /// up to 1.5.2. A java agent replaces the wrapper's entry point and renames
+    /// the `java.applet` references JDK 28 no longer resolves.
     Legacy,
-    /// Forge and friends: the profile's pin, exactly.
-    Loader,
 }
 
-/// Which rule this profile follows.
+/// Which path this profile takes.
 ///
 /// A loader profile is recognised by its own [`crate::profile::LOADER_MARKER`]
 /// (self-contained install) or by `inheritsFrom` (an older one), never by its
-/// `mainClass`: legacy Forge and vanilla 1.5.2 both boot through LaunchWrapper.
-pub fn java_kind(is_loader: bool, main_class: Option<&str>) -> JavaKind {
-    if is_loader {
-        JavaKind::Loader
-    } else if uses_launchwrapper(main_class) {
-        JavaKind::Legacy
+/// `mainClass`: legacy Forge and vanilla 1.5.2 both boot through LaunchWrapper,
+/// and only the bare one gets the agent.
+pub fn launch_path(is_loader: bool, main_class: Option<&str>) -> LaunchPath {
+    if !is_loader && uses_launchwrapper(main_class) {
+        LaunchPath::Legacy
     } else {
-        JavaKind::Vanilla
+        LaunchPath::Plain
     }
 }
 
@@ -80,91 +63,55 @@ pub fn java_kind(is_loader: bool, main_class: Option<&str>) -> JavaKind {
 ///
 /// [`find_java`] and the version list both go through this, so the "Java 28" on
 /// a row is the version that will actually start.
-pub fn pick_major(installed: &[u32], required: u32, kind: JavaKind) -> Option<u32> {
-    match kind {
-        // Locked, not preferred: a profile that needs a runtime newer than the
-        // one the shims were tested on cannot be run correctly here at all, so
-        // this fails rather than falling back to 28.
-        JavaKind::Vanilla | JavaKind::Legacy => {
-            if required > VANILLA_JAVA {
-                return None;
-            }
-            installed
-                .iter()
-                .copied()
-                .find(|major| *major == VANILLA_JAVA)
-        }
-        JavaKind::Loader => installed
-            .iter()
-            .copied()
-            .find(|major| *major == required)
-            .or_else(|| {
-                installed
-                    .iter()
-                    .copied()
-                    .filter(|major| java_is_acceptable(required, *major))
-                    .min()
-            }),
+pub fn pick_major(installed: &[u32], required: u32) -> Option<u32> {
+    // Locked, not preferred: a profile that needs a runtime newer than the one
+    // the shims were tested on cannot be run correctly here at all, so this
+    // fails rather than running it below its own minimum.
+    if required > LAUNCH_JAVA {
+        return None;
     }
+    installed
+        .iter()
+        .copied()
+        .find(|major| *major == LAUNCH_JAVA)
 }
 
 /// Whether this profile boots through LaunchWrapper.
 ///
-/// It only says how the game starts. The Java choice still depends on whether a
-/// loader is present: a bare LaunchWrapper profile gets the legacy agent and
-/// [`VANILLA_JAVA`], while a loader profile keeps its own pin.
+/// It only says how the game starts: a bare LaunchWrapper profile gets the
+/// legacy agent, while a loader profile that happens to use the same entry
+/// point (old Forge) does not.
 pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
     main_class == Some(LAUNCHWRAPPER)
 }
 
-/// Find the Java a profile needs among the runtimes this launcher manages.
+/// Find the Java every profile launches on among the runtimes this launcher
+/// manages.
 ///
 /// Only `data/运行时` is consulted: there is no `JAVA_HOME`, no `PATH`, no
 /// `--java`. Whatever the game runs on was downloaded here on purpose, so the
 /// version on disk is a fact the launcher owns and can explain.
 ///
-/// Vanilla and loader profiles want opposite things from a JVM, so they get
-/// separate rules:
-///
-/// * Vanilla takes [`VANILLA_JAVA`] (28 EA) and nothing else. That is the one
-///   runtime the shims have been tested on, and it is also the one that can
-///   replay an AOT cache. A profile asking for a newer minimum is refused.
-/// * A legacy (LaunchWrapper, no loader) profile also takes [`VANILLA_JAVA`]:
-///   the legacy agent replaces LaunchWrapper's entry point and supplies the
-///   `java.applet` classes that JDK 28 removed.
-/// * A loader profile pins the range: Forge's launch wrapper only works on the
-///   Java it was written for, so an exact match wins and the smallest acceptable
-///   runtime stands in for a version that is not installed.
+/// One rule for every profile: [`LAUNCH_JAVA`] (28 EA) or nothing. That is the
+/// one runtime the shims have been tested on and the one that can replay an AOT
+/// cache; a profile asking for a newer minimum is refused. `required` only
+/// decides which explanation the user gets.
 ///
 /// The result is probed once so a half-unpacked runtime fails with a message
 /// instead of a confusing game crash.
-pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(PathBuf, u32)> {
+pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32)> {
     let installed = crate::java::installed(runtimes);
     if installed.is_empty() {
-        return Err(Error::missing(match kind {
-            JavaKind::Vanilla => format!(
-                "还没有下载 Java：原版统一跑 Java {} EA（去依赖页装一个，{}）",
-                VANILLA_JAVA,
-                runtimes.display()
-            ),
-            // Before 1.6 the game is an applet, so it needs the shims, and the
-            // shims only know Java 28.
-            JavaKind::Legacy => format!(
-                "还没有下载 Java：1.5.2 及更早的版本要 Java {} EA（去依赖页装一个，{}）",
-                VANILLA_JAVA,
-                runtimes.display()
-            ),
-            JavaKind::Loader => format!(
-                "还没有下载 Java：本启动器只提供 Java {} EA（去依赖页装一个，{}）",
-                VANILLA_JAVA,
-                runtimes.display()
-            ),
-        }));
+        return Err(Error::missing(format!(
+            "还没有下载 Java：所有版本统一跑 Java {} EA（去依赖页装一个，{}）",
+            LAUNCH_JAVA,
+            runtimes.display()
+        )));
     }
 
     let majors: Vec<u32> = installed.iter().map(|(major, _)| *major).collect();
-    let pick = pick_major(&majors, required, kind)
-        .and_then(|major| installed.iter().find(|(m, _)| *m == major));
+    let pick =
+        pick_major(&majors, required).and_then(|major| installed.iter().find(|(m, _)| *m == major));
 
     let Some((major, path)) = pick else {
         let seen = installed
@@ -173,27 +120,14 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
             .collect::<Vec<_>>()
             .join("、");
         return Err(Error::missing(
-            if kind == JavaKind::Vanilla || kind == JavaKind::Legacy {
-                // Distinguish "too new" from "28 not installed": the first is
-                // a version this launcher cannot run, the second is a download.
-                if required > VANILLA_JAVA {
-                    format!(
-                        "这个版本需要 Java {required}，比支持的最高版本 Java {VANILLA_JAVA} 还新（现在只有 {seen}）"
-                    )
-                } else {
-                    format!(
-                        "原版统一跑 Java {VANILLA_JAVA} EA，现在只有 {seen}（去依赖页下载 Java {VANILLA_JAVA} EA）"
-                    )
-                }
-            } else if required <= 8 {
+            // Distinguish "too new" from "28 not installed": the first is a
+            // version this launcher cannot run, the second is a download.
+            if required > LAUNCH_JAVA {
                 format!(
-                    "这个版本需要 Java 8，本启动器只提供 Java {VANILLA_JAVA} EA，现在只有 {seen}（Java 8 要自己放进 {}）",
-                    runtimes.display()
+                    "这个版本需要 Java {required}，比支持的最高版本 Java {LAUNCH_JAVA} 还新（现在只有 {seen}）"
                 )
             } else {
-                format!(
-                    "这个版本需要 Java {required} 或更高，本启动器只提供 Java {VANILLA_JAVA} EA，现在只有 {seen}（去依赖页装一个）"
-                )
+                format!("所有版本统一跑 Java {LAUNCH_JAVA} EA，现在只有 {seen}（去依赖页装一个）")
             },
         ));
     };
@@ -224,7 +158,8 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
 /// | 1.17 | 16 |
 /// | 1.16.5 and older | 8 |
 ///
-/// 16 is not a runtime the picker offers; [`java_is_acceptable`] lets 17 stand in.
+/// Nothing here picks a runtime — every profile runs on [`LAUNCH_JAVA`] — so the
+/// number only decides whether the profile is too new to run at all.
 pub fn required_java(version_id: &str, declared: Option<u32>) -> u32 {
     if let Some(major) = declared.filter(|major| *major > 0) {
         return major;
