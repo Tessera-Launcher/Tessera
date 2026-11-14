@@ -416,21 +416,14 @@ impl App {
 
     /// The Java major this version will launch with, for display.
     ///
-    /// Same rule as [`launch::find_java`]: vanilla and LaunchWrapper-era profiles
-    /// are locked to [`launch::VANILLA_JAVA`] (the runtime the launch shims were
-    /// tested on, which also supplies the removed `java.applet` classes), while
-    /// a loader profile keeps its own pin. An AOT-trained version always runs on
-    /// the JVM recorded next to its cache.
+    /// Same rule as [`launch::find_java`]: every profile — vanilla, legacy or
+    /// with a loader — runs on [`launch::LAUNCH_JAVA`]. An AOT-trained version
+    /// always runs on the JVM recorded next to its cache.
     pub fn java_for(&self, version: &LocalVersion) -> Option<u32> {
         if version.aot {
-            return Some(28);
+            return Some(launch::LAUNCH_JAVA);
         }
-        let kind = launch::java_kind(version.loader, version.main_class.as_deref());
-        if kind == launch::JavaKind::Loader {
-            return version.java;
-        }
-        let required = version.java.unwrap_or(8);
-        launch::pick_major(&self.installed_java, required, kind)
+        launch::pick_major(&self.installed_java, version.java.unwrap_or(8))
     }
 
     pub fn reload(&mut self) {

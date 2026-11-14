@@ -113,9 +113,8 @@ impl Launcher {
             {
                 let selected = index == self.state.selected;
                 let broken = !version.has_jar && version.inherits.is_none();
-                // What the launch will actually use, not the profile's pin: a
-                // vanilla version runs on the newest runtime on disk, and a
-                // trained one on the JVM its cache was built with.
+                // What the launch will actually use: Java 28 for every profile,
+                // or the JVM a trained cache recorded.
                 let java = self
                     .state
                     .java_for(version)

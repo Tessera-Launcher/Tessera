@@ -117,8 +117,8 @@ pub(super) struct Merged {
     pub(super) java_version: u32,
     pub(super) version_type: String,
     pub(super) parents: Vec<String>,
-    /// A mod-loader profile, self-contained or inheriting: it gets the loader
-    /// Java pin and is refused by AOT training.
+    /// A mod-loader profile, self-contained or inheriting: it launches on the
+    /// same runtime as everything else, but is refused by AOT training.
     pub(super) loader: bool,
     /// The version installed with LWJGL 3 instead of LWJGL 2 (the launcher's
     /// shim agent supplies the LWJGL 2 API), or `None`.
