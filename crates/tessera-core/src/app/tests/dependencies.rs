@@ -77,6 +77,30 @@ fn progress_then_installed_records_the_version() {
 }
 
 #[test]
+fn the_update_button_lights_up_only_for_an_older_binary() {
+    let mut app = app();
+    app.open_java();
+
+    // Nothing installed: a download, not an update.
+    assert!(!app.aria2.update_available());
+
+    app.handle_aria2_event(crate::aria2::Event::Installed {
+        version: crate::aria2::VERSION.to_string(),
+        path: std::path::PathBuf::from("/data/依赖/aria2/aria2c"),
+    });
+    assert!(!app.aria2.update_available(), "the pinned build is current");
+
+    app.handle_aria2_event(crate::aria2::Event::Installed {
+        version: "1.36.0".to_string(),
+        path: std::path::PathBuf::from("/data/依赖/aria2/aria2c"),
+    });
+    assert!(
+        app.aria2.update_available(),
+        "an older binary can be updated"
+    );
+}
+
+#[test]
 fn a_failed_download_re_enables_the_button_and_says_why() {
     let mut app = app();
     app.open_java();

@@ -56,6 +56,13 @@ impl Aria2Ui {
             crate::discover::human_size(speed as u64)
         )
     }
+
+    /// Whether the installed binary is behind the pinned build.
+    pub fn update_available(&self) -> bool {
+        self.installed
+            .as_deref()
+            .is_some_and(crate::aria2::needs_update)
+    }
 }
 
 impl App {

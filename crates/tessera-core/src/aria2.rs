@@ -483,6 +483,26 @@ pub fn parse_version(output: &str) -> Option<String> {
     Some(version.to_string())
 }
 
+/// Whether `installed` predates the pinned [`VERSION`].
+///
+/// Versions are dotted numbers (`1.37.0`). Anything unreadable counts as
+/// current: a hand-built binary is usable, just not something to nag about.
+pub fn needs_update(installed: &str) -> bool {
+    match (parse_triple(installed), parse_triple(VERSION)) {
+        (Some(installed), Some(offered)) => installed < offered,
+        _ => false,
+    }
+}
+
+/// `1.37.0` → `(1, 37, 0)`; missing fields are zero, junk is `None`.
+fn parse_triple(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().map_or(Some(0), |part| part.parse().ok())?;
+    let patch = parts.next().map_or(Some(0), |part| part.parse().ok())?;
+    parts.next().is_none().then_some((major, minor, patch))
+}
+
 /// Keep log lines readable: the host and the file name, not the whole URL.
 fn shorten(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
@@ -566,6 +586,19 @@ mod tests {
         let text = "aria2 version 1.37.0\nCopyright (C) 2006, 2019 Tatsuhiro Tsujikawa\n";
         assert_eq!(parse_version(text).as_deref(), Some("1.37.0"));
         assert_eq!(parse_version("wat\n"), None);
+    }
+
+    #[test]
+    fn only_an_older_installed_version_needs_an_update() {
+        assert!(needs_update("1.36.0"));
+        assert!(needs_update("1.36"));
+        assert!(!needs_update("1.37"));
+        assert!(!needs_update(VERSION));
+        assert!(!needs_update("1.37.1"));
+        assert!(!needs_update("1.38.0"));
+        // Unreadable versions are left alone rather than nagged about.
+        assert!(!needs_update("system"));
+        assert!(!needs_update("1.37.0.1"));
     }
 
     #[test]
