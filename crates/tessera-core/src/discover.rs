@@ -206,7 +206,11 @@ mod tests {
             r#"{"id":"1.20.1+Fabric0.15.11","inheritsFrom":"1.20.1",
                 "javaVersion":{"majorVersion":17},"mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient"}"#,
         );
-        std::fs::write(root.join("versions/1.8.9/1.8.9.jar"), b"jar").unwrap();
+        std::fs::write(
+            root.join("versions/1.8.9/1.8.9.jar"),
+            b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+        )
+        .unwrap();
 
         let versions = scan(root);
         assert_eq!(versions.len(), 2);
@@ -237,7 +241,7 @@ mod tests {
         );
         std::fs::write(
             root.join("versions/1.20.1-forge-47.2.0/1.20.1-forge-47.2.0.jar"),
-            b"jar",
+            b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
         )
         .unwrap();
 

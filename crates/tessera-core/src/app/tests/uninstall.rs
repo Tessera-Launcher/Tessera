@@ -323,7 +323,11 @@ fn a_spawned_game_is_watched_with_its_version_directory() {
         "1.20.1",
         r#"{"id":"1.20.1","mainClass":"net.minecraft.client.main.Main","javaVersion":{"majorVersion":17},"libraries":[]}"#,
     );
-    std::fs::write(root.join("versions/1.20.1/1.20.1.jar"), b"jar").unwrap();
+    std::fs::write(
+        root.join("versions/1.20.1/1.20.1.jar"),
+        b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    )
+    .unwrap();
 
     // A runtime that exits as soon as it is started, so the test never waits.
     let runtimes = tmp.path().join("运行时");

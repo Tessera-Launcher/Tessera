@@ -165,7 +165,11 @@ fn install_with_library(root: &Path, id: &str, relative: &str) {
     );
     let file = root.join("libraries").join(relative);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(&file, b"jar").unwrap();
+    std::fs::write(
+        &file,
+        b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    )
+    .unwrap();
 }
 
 /// A real [`std::process::ExitStatus`] for the code a shell reports.
