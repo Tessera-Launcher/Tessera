@@ -333,16 +333,30 @@ pub(crate) fn checkbox(
         )
 }
 
-/// Shared button geometry; variants only choose semantic colors.
+/// Shared button geometry; the variants only choose semantic colors.
+///
+/// A disabled button keeps its slot and its label but drops the cursor, the
+/// hover style and the click handler, and falls back to the raised surface —
+/// so "greyed out, nothing to do" keeps the shape of "available".
 fn action_button(
     label: &str,
-    background: u32,
-    foreground: u32,
-    hover: u32,
+    kind: ButtonKind,
+    enabled: bool,
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
-    div()
+    let colors = theme::colors(cx);
+    let (background, foreground, hover) = match (kind, enabled) {
+        (_, false) => (colors.raised, colors.text_secondary, colors.raised),
+        (ButtonKind::Primary, true) => (
+            colors.fill_primary,
+            colors.text_on_fill,
+            colors.fill_primary_hover,
+        ),
+        (ButtonKind::Neutral, true) => (colors.raised, colors.text_primary, colors.hover),
+        (ButtonKind::Danger, true) => (colors.raised, colors.status_danger, colors.hover),
+    };
+    let mut button = div()
         .id(label.to_string())
         .h_flex()
         .items_center()
@@ -356,15 +370,25 @@ fn action_button(
         .bg(rgb(background))
         .text_size(px(font::BODY))
         .text_color(rgb(foreground))
-        .font_weight(FontWeight(weight::SEMIBOLD))
-        .cursor_pointer()
-        .hover(move |style| style.bg(rgb(hover)).border_color(rgb(hover)))
-        .on_click(
-            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                action(this, cx);
-            }),
-        )
-        .child(label.to_string())
+        .font_weight(FontWeight(weight::SEMIBOLD));
+    if enabled {
+        button = button
+            .cursor_pointer()
+            .hover(move |style| style.bg(rgb(hover)).border_color(rgb(hover)))
+            .on_click(
+                cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                    action(this, cx);
+                }),
+            );
+    }
+    button.child(label.to_string())
+}
+
+#[derive(Clone, Copy)]
+enum ButtonKind {
+    Primary,
+    Neutral,
+    Danger,
 }
 
 pub(crate) fn button(
@@ -372,15 +396,7 @@ pub(crate) fn button(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
-    let colors = theme::colors(cx);
-    action_button(
-        label,
-        colors.raised,
-        colors.text_primary,
-        colors.hover,
-        cx,
-        action,
-    )
+    action_button(label, ButtonKind::Neutral, true, cx, action)
 }
 
 pub(crate) fn primary_button(
@@ -388,15 +404,17 @@ pub(crate) fn primary_button(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
-    let colors = theme::colors(cx);
-    action_button(
-        label,
-        colors.fill_primary,
-        colors.text_on_fill,
-        colors.fill_primary_hover,
-        cx,
-        action,
-    )
+    action_button(label, ButtonKind::Primary, true, cx, action)
+}
+
+/// A primary button that greys out instead of disappearing.
+pub(crate) fn primary_button_when(
+    label: &str,
+    enabled: bool,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    action_button(label, ButtonKind::Primary, enabled, cx, action)
 }
 
 pub(crate) fn danger_button(
@@ -404,13 +422,5 @@ pub(crate) fn danger_button(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
-    let colors = theme::colors(cx);
-    action_button(
-        label,
-        colors.raised,
-        colors.status_danger,
-        colors.hover,
-        cx,
-        action,
-    )
+    action_button(label, ButtonKind::Danger, true, cx, action)
 }

@@ -143,19 +143,19 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
     if installed.is_empty() {
         return Err(Error::missing(match kind {
             JavaKind::Vanilla => format!(
-                "还没有下载 Java：原版统一跑 Java {} EA（去 Java 运行时界面装一个，{}）",
+                "还没有下载 Java：原版统一跑 Java {} EA（去依赖页装一个，{}）",
                 VANILLA_JAVA,
                 runtimes.display()
             ),
             // Before 1.6 the game is an applet, so it needs the shims, and the
             // shims only know Java 28.
             JavaKind::Legacy => format!(
-                "还没有下载 Java：1.5.2 及更早的版本要 Java {} EA（去 Java 运行时界面装一个，{}）",
+                "还没有下载 Java：1.5.2 及更早的版本要 Java {} EA（去依赖页装一个，{}）",
                 VANILLA_JAVA,
                 runtimes.display()
             ),
             JavaKind::Loader => format!(
-                "还没有下载 Java：本启动器只提供 Java {} EA（去 Java 运行时界面装一个，{}）",
+                "还没有下载 Java：本启动器只提供 Java {} EA（去依赖页装一个，{}）",
                 VANILLA_JAVA,
                 runtimes.display()
             ),
@@ -182,7 +182,7 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
                     )
                 } else {
                     format!(
-                        "原版统一跑 Java {VANILLA_JAVA} EA，现在只有 {seen}（去 Java 运行时界面下载 Java {VANILLA_JAVA} EA）"
+                        "原版统一跑 Java {VANILLA_JAVA} EA，现在只有 {seen}（去依赖页下载 Java {VANILLA_JAVA} EA）"
                     )
                 }
             } else if required <= 8 {
@@ -192,7 +192,7 @@ pub fn find_java(runtimes: &Path, required: u32, kind: JavaKind) -> Result<(Path
                 )
             } else {
                 format!(
-                    "这个版本需要 Java {required} 或更高，本启动器只提供 Java {VANILLA_JAVA} EA，现在只有 {seen}（去 Java 运行时界面装一个）"
+                    "这个版本需要 Java {required} 或更高，本启动器只提供 Java {VANILLA_JAVA} EA，现在只有 {seen}（去依赖页装一个）"
                 )
             },
         ));

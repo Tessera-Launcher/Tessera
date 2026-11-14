@@ -27,7 +27,7 @@ impl Page {
             Page::Home => "主页",
             Page::Accounts => "账户",
             Page::Download => "下载",
-            Page::Runtimes => "运行时",
+            Page::Runtimes => "依赖",
             Page::Music => "音乐",
         }
     }

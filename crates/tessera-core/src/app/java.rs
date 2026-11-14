@@ -148,7 +148,26 @@ impl App {
             self.request(Effect::FetchJavaList);
             self.status = "Java：正在查询 Adoptium".to_string();
             self.log("打开 Java 下载界面");
+        } else {
+            // A page that already has its list restates what it is showing
+            // instead of leaving the previous screen's status line behind.
+            self.refresh_java_status();
         }
+    }
+
+    /// Restate the page's status line from its current state.
+    ///
+    /// One runtime means there is nothing to pick: it is either here and
+    /// current, here and behind, or not here at all.
+    fn refresh_java_status(&mut self) {
+        let updates = self.java.update_count();
+        self.status = if updates > 0 {
+            format!("Java：{updates} 个可更新（u）")
+        } else if self.java.is_installed(crate::java::FEATURE) {
+            "Java：已是最新".to_string()
+        } else {
+            "Java：可以下载".to_string()
+        };
     }
 
     pub fn close_java(&mut self) {
@@ -244,7 +263,7 @@ impl App {
             self.status = "Java：已经是最新小版本".to_string();
             return;
         }
-        self.log(format!("更新 {} 个 Java 运行时", outdated.len()));
+        self.log(format!("更新 {} 个 Java 依赖", outdated.len()));
         self.java.updating = true;
         self.java.update_queue = outdated.into();
         self.java.update_done = 0;
@@ -266,7 +285,7 @@ impl App {
             self.java.current = None;
             self.java.progress = (0, 0, 0.0);
             self.java.message = Some(if failures == 0 {
-                format!("已更新 {done} 个 Java 运行时")
+                format!("已更新 {done} 个 Java 依赖")
             } else {
                 format!(
                     "已更新 {done} 个，{failures} 个失败：{}",
@@ -329,10 +348,8 @@ impl App {
                 let updates = self.java.update_count();
                 if updates > 0 {
                     self.log(format!("发现 {updates} 个 Java 小版本可更新（u）"));
-                    self.status = format!("Java：{updates} 个可更新（u）");
-                } else {
-                    self.status = "Java：选择版本".to_string();
                 }
+                self.refresh_java_status();
             }
             Event::Log(line) => self.log(line),
             Event::Progress { done, total, speed } => {
