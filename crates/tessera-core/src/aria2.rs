@@ -160,17 +160,27 @@ pub fn installed(deps: &Path) -> Option<PathBuf> {
     binary(deps).filter(|path| path.is_file())
 }
 
+/// How many files aria2 fetches at once.
+///
+/// 16 is deliberately below the 64 the old pooled downloader could sustain: the
+/// asset CDN starts answering 421 (and truncating ranged transfers) when too
+/// many connections arrive from one IP, and a throttled queue is slower than a
+/// polite one. Raise it only after measuring against the source in use.
+pub const CONCURRENCY: usize = 16;
+
 /// The aria2 arguments one install run uses.
 ///
 /// `-j` is the knob for thousands of small files; `-x`/`-s` only split files
 /// above `--min-split-size`, so they stay at 1 (`-x8` was measured to leave
-/// truncated files behind when the CDN answers 421). `--stop-with-process`
-/// keeps the child from outliving the launcher.
+/// truncated files behind when the CDN answers 421). Timeouts are shorter than
+/// aria2's 60 s defaults so one stalled connection cannot hold a slot for a
+/// minute; `--retry-wait` gives a 429/503 a moment before the next attempt.
+/// `--stop-with-process` keeps the child from outliving the launcher.
 pub fn run_args(list: &Path, launcher_pid: u32) -> Vec<String> {
     vec![
         "-i".to_string(),
         list.display().to_string(),
-        "-j64".to_string(),
+        format!("-j{CONCURRENCY}"),
         "-x1".to_string(),
         "-s1".to_string(),
         "--no-conf=true".to_string(),
@@ -181,6 +191,10 @@ pub fn run_args(list: &Path, launcher_pid: u32) -> Vec<String> {
         "--auto-file-renaming=false".to_string(),
         "--allow-overwrite=true".to_string(),
         "--file-allocation=none".to_string(),
+        "--connect-timeout=10".to_string(),
+        "--timeout=30".to_string(),
+        "--max-tries=3".to_string(),
+        "--retry-wait=1".to_string(),
         format!("--stop-with-process={launcher_pid}"),
     ]
 }
@@ -628,6 +642,11 @@ mod tests {
         assert!(args.contains(&"/game/versions/26.3/26.3.txt".to_string()));
         // `-x8` left truncated files behind when the CDN answered 421.
         assert!(args.contains(&"-x1".to_string()));
+        assert!(args.contains(&format!("-j{CONCURRENCY}")));
+        assert!(args.contains(&"--connect-timeout=10".to_string()));
+        assert!(args.contains(&"--timeout=30".to_string()));
+        assert!(args.contains(&"--max-tries=3".to_string()));
+        assert!(args.contains(&"--retry-wait=1".to_string()));
         assert!(args.contains(&"--stop-with-process=4242".to_string()));
         // No checksum flag: verification is `DownloadPlan::verify`, once.
         assert!(!args.iter().any(|arg| arg.contains("checksum")));

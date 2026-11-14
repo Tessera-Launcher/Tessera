@@ -104,32 +104,3 @@ pub use mirror::Mirror;
 pub use modloader::ModLoader;
 pub use plan::{DownloadPlan, Extraction, PlanEntry};
 pub use urls::{reload_runtime_providers, runtime_providers_error, ManifestUrls};
-#[cfg(not(feature = "minimal"))]
-
-/// Helpers shared by unit tests. Test-only, so they never reach a user's build.
-///
-/// Gated on `not(minimal)` because every test that needs a symlink lives in a module the `minimal`
-/// build does not compile.
-#[cfg(all(test, not(feature = "minimal")))]
-pub(crate) mod test_support {
-    use std::path::Path;
-
-    /// Create a file symlink, returning `false` when the OS refuses.
-    ///
-    /// Windows only grants `CreateSymbolicLink` to elevated processes or when Developer Mode is
-    /// on, so tests that need a link must skip themselves instead of failing on an unelevated CI
-    /// runner.
-    pub(crate) fn try_symlink_file(original: &Path, link: &Path) -> bool {
-        #[cfg(unix)]
-        let result = std::os::unix::fs::symlink(original, link);
-        #[cfg(windows)]
-        let result = std::os::windows::fs::symlink_file(original, link);
-        #[cfg(not(any(unix, windows)))]
-        let result: std::io::Result<()> = Err(std::io::Error::other("symlinks unsupported"));
-
-        if let Err(e) = &result {
-            eprintln!("[test] cannot create a symlink ({e}); the symlink test is skipped");
-        }
-        result.is_ok()
-    }
-}

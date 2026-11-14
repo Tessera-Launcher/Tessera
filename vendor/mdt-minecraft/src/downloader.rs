@@ -112,10 +112,6 @@ pub struct DownloadTask {
     pub size: u64,
     /// If set, the downloaded archive is extracted here (used for natives).
     pub extract_to: Option<PathBuf>,
-    /// Friendly file name for progress output, e.g. `client.jar`.
-    pub label: Option<String>,
-    /// Attribution for progress output, e.g. `Minecraft 1.16.5`.
-    pub by: Option<String>,
 }
 
 // ===== 3. rule evaluation =====
@@ -158,11 +154,6 @@ fn evaluate_rules(rules: &Option<Vec<Rule>>) -> bool {
     allowed
 }
 
-/// The file name of a Maven path (`…/foo-1.0.jar` → `foo-1.0.jar`).
-fn maven_file_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
 /// Build download tasks from a parsed version JSON (client JAR, libraries, natives).
 pub fn build_tasks_from_version_json(
     version_json: &VersionJson,
@@ -184,7 +175,6 @@ pub fn build_tasks_from_version_json_into(
     dir_name: &str,
 ) -> Vec<DownloadTask> {
     let mut tasks = Vec::new();
-    let by = format!("Minecraft {}", version_json.id);
     let libraries_dir = root_dir.join("libraries");
 
     // A version JSON is remote input. Every task is admitted only when its SHA-1 is a real digest,
@@ -195,7 +185,6 @@ pub fn build_tasks_from_version_json_into(
                 dest_path: PathBuf,
                 sha1: &str,
                 size: u64,
-                label: Option<String>,
                 extract_to: Option<PathBuf>| {
         if !(sha1.is_empty() || is_sha1_hex(sha1)) || !is_safe_http_url(url) {
             return;
@@ -206,8 +195,6 @@ pub fn build_tasks_from_version_json_into(
             sha1: sha1.to_string(),
             size,
             extract_to,
-            label,
-            by: Some(by.clone()),
         });
     };
 
@@ -223,7 +210,6 @@ pub fn build_tasks_from_version_json_into(
                     .join(format!("{dir_name}.jar")),
                 &client.sha1,
                 client.size,
-                Some("client.jar".to_string()),
                 None,
             );
         }
@@ -251,7 +237,6 @@ pub fn build_tasks_from_version_json_into(
                         dest,
                         &artifact.sha1,
                         artifact.size,
-                        Some(maven_file_name(path).to_string()),
                         None,
                     );
                 }
@@ -269,7 +254,6 @@ pub fn build_tasks_from_version_json_into(
                             dest,
                             &art.sha1,
                             art.size,
-                            Some(maven_file_name(path).to_string()),
                             Some(natives_dir.clone()),
                         );
                     }
@@ -402,10 +386,6 @@ pub fn build_tasks_from_assets(objects: &[AssetObject], objects_dir: &Path) -> V
                 sha1: object.hash.clone(),
                 size: object.size,
                 extract_to: None,
-                // The asset registry fills in a logical name + version when it
-                // wants per-file lines; a bare task only counts in the bar.
-                label: None,
-                by: None,
             }
         })
         .collect()

@@ -74,12 +74,6 @@ pub struct GeneratedVersionJson {
     pub libraries: Vec<GeneratedLibrary>,
 }
 
-impl GeneratedVersionJson {
-    pub fn to_pretty_json(&self) -> Result<String, MdtError> {
-        Ok(serde_json::to_string_pretty(self)?)
-    }
-}
-
 // ===== self-contained profiles =====
 
 /// The field a self-contained loader profile carries so a launcher can tell it
