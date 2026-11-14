@@ -359,77 +359,6 @@ fn enter_starts_the_install_and_switches_to_the_progress_screen() {
 }
 
 #[test]
-fn progress_uses_bytes_when_the_batch_size_is_known() {
-    let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
-
-    // A batch announces its full size with done == 0.
-    app.handle_install_event(InstallEvent::Progress {
-        done: 0,
-        total: 100,
-        remaining_bytes: 1000,
-        total_bytes: 1000,
-    });
-    assert_eq!(app.download.percent(), 0);
-
-    app.handle_install_event(InstallEvent::Progress {
-        done: 50,
-        total: 100,
-        remaining_bytes: 250,
-        total_bytes: 0,
-    });
-    assert_eq!(app.download.percent(), 75, "bytes beat file counts");
-    assert_eq!(app.download.done, 50);
-}
-
-#[test]
-fn progress_falls_back_to_file_counts_without_a_byte_total() {
-    let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
-    app.handle_install_event(InstallEvent::Progress {
-        done: 3,
-        total: 4,
-        remaining_bytes: 0,
-        total_bytes: 0,
-    });
-    assert_eq!(app.download.percent(), 75);
-}
-
-#[test]
-fn speed_is_derived_from_successive_samples_and_decays_when_idle() {
-    let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
-    app.handle_install_event(InstallEvent::Progress {
-        done: 0,
-        total: 10,
-        remaining_bytes: 1_000_000,
-        total_bytes: 1_000_000,
-    });
-    // Pretend a second passed between two samples.
-    let sampled_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    app.download.sample = Some((sampled_at, 1_000_000));
-    app.handle_install_event(InstallEvent::Progress {
-        done: 2,
-        total: 10,
-        remaining_bytes: 500_000,
-        total_bytes: 0,
-    });
-    assert!(
-        (app.download.speed - 500_000.0).abs() < 60_000.0,
-        "speed was {}",
-        app.download.speed
-    );
-
-    // No further samples: the reading must not stay frozen forever.
-    app.download.sample = Some((
-        std::time::Instant::now() - std::time::Duration::from_secs(5),
-        0,
-    ));
-    app.tick();
-    assert_eq!(app.download.speed, 0.0);
-}
-
-#[test]
 fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
     let mut app = downloader();
     app.handle_download_key(Key::Enter, Modifiers::NONE);
@@ -467,14 +396,14 @@ fn finishing_reports_elapsed_time_and_average_download_speed() {
     assert!(summary.average_bytes_per_sec() > 1_500_000, "{summary:?}");
     let text = summary.text();
     assert!(text.contains("用时"), "{text}");
-    assert!(text.contains("下载 8.0 MiB"), "{text}");
+    assert!(text.contains("共 8.0 MiB"), "{text}");
     assert!(text.contains("平均"), "{text}");
     assert!(text.contains("/s"), "{text}");
     assert!(app.status.contains("平均"), "{}", app.status);
 }
 
 #[test]
-fn a_metadata_only_install_shows_time_without_a_fake_speed() {
+fn a_summary_without_bytes_reports_zeros_instead_of_dividing_by_time() {
     let summary = InstallSummary {
         elapsed: std::time::Duration::from_millis(2500),
         bytes: 0,
@@ -482,8 +411,8 @@ fn a_metadata_only_install_shows_time_without_a_fake_speed() {
     assert_eq!(summary.average_bytes_per_sec(), 0);
     let text = summary.text();
     assert!(text.contains("用时 2.5 秒"), "{text}");
-    assert!(text.contains("下载清单已生成"), "{text}");
-    assert!(!text.contains("平均"), "{text}");
+    assert!(text.contains("共 0 B"), "{text}");
+    assert!(text.contains("平均 0 B/s"), "{text}");
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! The download picker: the mirror's version list, search/kind filter, loader
-//! choice, and the install progress screen.
+//! choice, and the install screen.
 //!
 //! The state structs and the `App` handlers that drive them live here; `App` in
 //! the parent module is still the only state machine, and this module never
@@ -89,7 +89,7 @@ pub enum DownloadStage {
 pub struct InstallSummary {
     /// Wall-clock time from the player's confirmation to the finished event.
     pub elapsed: Duration,
-    /// Bytes actually transferred; cached and skipped files are not counted.
+    /// Size of every file in the chosen version, from the list.
     pub bytes: u64,
 }
 
@@ -118,16 +118,9 @@ impl InstallSummary {
 
     /// One line for the result page: time, bytes and average download speed.
     pub fn text(&self) -> String {
-        let time = self.elapsed_label();
-        if self.bytes == 0 {
-            // The install step resolves metadata and writes the aria2 list; the
-            // files themselves are fetched from that list, so nothing crossed the
-            // network here.
-            return format!("用时 {time} · 下载清单已生成");
-        }
         format!(
-            "用时 {} · 下载 {} · 平均 {}/s",
-            time,
+            "用时 {} · 共 {} · 平均 {}/s",
+            self.elapsed_label(),
             crate::discover::human_size(self.bytes),
             crate::discover::human_size(self.average_bytes_per_sec()),
         )
@@ -160,20 +153,11 @@ pub struct DownloadUi {
     pub loaders: Vec<Loader>,
     pub loader_pick: usize,
     pub focus: PickerFocus,
-    /// Files finished / total in the current batch.
-    pub done: usize,
-    pub total: usize,
-    /// Full size of the current batch, from the batch's opening event.
-    pub batch_total_bytes: u64,
-    pub remaining_bytes: u64,
-    /// Smoothed bytes per second.
-    pub speed: f64,
-    pub(crate) sample: Option<(Instant, u64)>,
     pub error: Option<String>,
     pub installed: Option<(String, Option<String>)>,
     /// When the player confirmed the install; `None` outside a running one.
     pub started: Option<Instant>,
-    /// The result shown once the install finishes.
+    /// The result shown once the install finishes (time, size, average speed).
     pub summary: Option<InstallSummary>,
     fetching: bool,
 }
@@ -193,12 +177,6 @@ impl Default for DownloadUi {
             loaders: vec![Loader::None],
             loader_pick: 0,
             focus: PickerFocus::Versions,
-            done: 0,
-            total: 0,
-            batch_total_bytes: 0,
-            remaining_bytes: 0,
-            speed: 0.0,
-            sample: None,
             error: None,
             installed: None,
             started: None,
@@ -209,22 +187,6 @@ impl Default for DownloadUi {
 }
 
 impl DownloadUi {
-    /// `0.0..=1.0` for the progress bar.
-    pub fn fraction(&self) -> f64 {
-        if self.batch_total_bytes > 0 && self.remaining_bytes <= self.batch_total_bytes {
-            let done_bytes = self.batch_total_bytes - self.remaining_bytes;
-            return (done_bytes as f64 / self.batch_total_bytes as f64).clamp(0.0, 1.0);
-        }
-        if self.total > 0 {
-            return (self.done as f64 / self.total as f64).clamp(0.0, 1.0);
-        }
-        0.0
-    }
-
-    pub fn percent(&self) -> u16 {
-        (self.fraction() * 100.0).round() as u16
-    }
-
     pub fn picked_version(&self) -> Option<&RemoteVersion> {
         self.visible.get(self.picked).map(|&index| &self.all[index])
     }
@@ -631,12 +593,6 @@ impl App {
         let loader = self.download.picked_loader();
         self.install_running = true;
         self.download.stage = DownloadStage::Installing;
-        self.download.done = 0;
-        self.download.total = 0;
-        self.download.batch_total_bytes = 0;
-        self.download.remaining_bytes = 0;
-        self.download.speed = 0.0;
-        self.download.sample = None;
         self.download.installed = None;
         self.download.summary = None;
         self.download.started = Some(Instant::now());
@@ -671,36 +627,6 @@ impl App {
                 // BMCLAPI index"), which used to flip the picker into the
                 // progress screen for one frame.
                 self.log(line);
-            }
-            InstallEvent::Progress {
-                done,
-                total,
-                remaining_bytes,
-                total_bytes,
-            } => {
-                let now = Instant::now();
-                if total_bytes > 0 {
-                    self.download.batch_total_bytes = total_bytes;
-                }
-                // Bytes per second, smoothed so the number does not flicker.
-                if let Some((previous_at, previous_remaining)) = self.download.sample {
-                    let seconds = now.duration_since(previous_at).as_secs_f64();
-                    if seconds > 0.01 {
-                        let moved = previous_remaining.saturating_sub(remaining_bytes);
-                        if moved > 0 {
-                            let instant = moved as f64 / seconds;
-                            self.download.speed = if self.download.speed > 0.0 {
-                                self.download.speed * 0.6 + instant * 0.4
-                            } else {
-                                instant
-                            };
-                        }
-                    }
-                }
-                self.download.sample = Some((now, remaining_bytes));
-                self.download.done = done;
-                self.download.total = total;
-                self.download.remaining_bytes = remaining_bytes;
             }
             InstallEvent::Finished {
                 version,
@@ -738,20 +664,5 @@ impl App {
                 self.log(format!("下载失败：{message}"));
             }
         }
-    }
-
-    /// Called on every loop iteration: drop the speed reading when updates stop.
-    ///
-    /// Returns whether anything visible changed, so the main loop can skip a
-    /// redraw for an idle launcher.
-    pub fn tick(&mut self) -> bool {
-        let mut changed = false;
-        if let Some((at, _)) = self.download.sample {
-            if at.elapsed().as_secs_f64() > 2.0 && self.download.speed > 0.0 {
-                self.download.speed = 0.0;
-                changed = true;
-            }
-        }
-        changed
     }
 }

@@ -101,13 +101,6 @@ pub enum InstallEvent {
     Versions(Vec<RemoteVersion>),
     /// A line for the log pane.
     Log(String),
-    /// One batch of downloads: `done` of `total` files, bytes still outstanding.
-    Progress {
-        done: usize,
-        total: usize,
-        remaining_bytes: u64,
-        total_bytes: u64,
-    },
     /// Nothing left to do; the version directory now exists.
     Finished {
         version: String,
@@ -161,6 +154,7 @@ pub fn spawn_versions(
 /// Install `version` (plus `loader`, when not [`Loader::None`]).
 pub fn spawn_install(
     root: PathBuf,
+    deps: PathBuf,
     source: Source,
     asset_concurrency: usize,
     version: String,
@@ -218,20 +212,59 @@ pub fn spawn_install(
                     .await
                     .map_err(|error| describe(&error))?,
             };
+            let files = plan.entries.len();
+            let total_bytes = plan.total_bytes();
+            let list = plan.path(client.root_dir());
             let _ = sender.send(InstallEvent::Log(format!(
-                "下载清单：{} 个文件（{} 个带 sha-1）",
-                plan.entries.len(),
-                plan.hashed()
+                "清单：{files} 个文件 · {}",
+                crate::discover::human_size(total_bytes)
             )));
+
+            // aria2 is what moves the bytes; the plan only says what and where.
+            let Some(binary) = crate::aria2::installed(&deps) else {
+                return Err(Error::missing(
+                    "还没安装 aria2c，请先在依赖页安装 aria2".to_string(),
+                ));
+            };
             let _ = sender.send(InstallEvent::Log(format!(
-                "已写入 {}",
-                plan.path(client.root_dir()).display()
+                "开始下载（{}）…",
+                binary.display()
             )));
+            let root_dir = root.clone();
+            let mut done = 0usize;
+            let log = sender.clone();
+            let exit =
+                crate::aria2::run_list(&binary, &list, &root_dir, std::process::id(), |file| {
+                    done += 1;
+                    let _ = log.send(InstallEvent::Log(file));
+                })
+                .map_err(|error| Error::internal(format!("无法启动 aria2c：{error}")))?;
+            let _ = sender.send(InstallEvent::Log(format!(
+                "aria2 结束（退出码 {exit}），已写入 {done} 个文件"
+            )));
+
+            // One verification, here: the list carries no checksum, so this is the
+            // only place a file is judged.
+            let failed = plan.verify(client.root_dir()).await;
+            if !failed.is_empty() {
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "校验：{} 个文件缺失或哈希不符",
+                    failed.len()
+                )));
+                for entry in failed.iter().take(3) {
+                    let _ = sender.send(InstallEvent::Log(format!("  {}", entry.path.display())));
+                }
+                return Err(Error::network(format!(
+                    "校验未通过：{} 个文件（可重试安装，已完成的会跳过）",
+                    failed.len()
+                )));
+            }
+            let _ = sender.send(InstallEvent::Log(format!("校验通过：{files} 个文件")));
 
             let _ = sender.send(InstallEvent::Finished {
                 version,
                 loader: loader_version.map(|v| format!("{} {v}", loader.label())),
-                bytes: transferred.load(Ordering::Relaxed),
+                bytes: total_bytes,
             });
             Ok(())
         })
@@ -343,25 +376,9 @@ impl ProgressReporter for Reporter {
         self.transferred.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    fn progress(&self, done: usize, total: usize) {
-        self.send(InstallEvent::Progress {
-            done,
-            total,
-            remaining_bytes: 0,
-            total_bytes: 0,
-        });
-    }
+    fn progress(&self, _done: usize, _total: usize) {}
 
-    fn progress_bytes(&self, done: usize, total: usize, remaining_bytes: u64) {
-        self.send(InstallEvent::Progress {
-            done,
-            total,
-            remaining_bytes,
-            // A batch opens with `done == 0`, and that call's "remaining" is the
-            // whole batch size — the only place MDT states it.
-            total_bytes: if done == 0 { remaining_bytes } else { 0 },
-        });
-    }
+    fn progress_bytes(&self, _done: usize, _total: usize, _remaining_bytes: u64) {}
 
     fn summary(
         &self,
@@ -370,18 +387,23 @@ impl ProgressReporter for Reporter {
         elapsed: Duration,
         largest: Option<(&str, u64)>,
     ) {
+        // aria2 owns the transfer now; this only fires for the metadata the
+        // client still fetches itself (indexes, profiles).
+        if downloaded == 0 {
+            return;
+        }
         let per_second = if elapsed.as_secs_f64() > 0.0 {
             total_bytes as f64 / elapsed.as_secs_f64()
         } else {
             0.0
         };
         let largest = largest.map_or_else(String::new, |(name, size)| {
-            format!("，最大 {} ({name})", super::discover::human_size(size))
+            format!("，最大 {} ({name})", crate::discover::human_size(size))
         });
         self.send(InstallEvent::Log(format!(
-            "本批完成：{downloaded} 个文件，{}，{}/s{largest}",
-            super::discover::human_size(total_bytes),
-            super::discover::human_size(per_second as u64),
+            "元数据：{downloaded} 个文件，{}，{}/s{largest}",
+            crate::discover::human_size(total_bytes),
+            crate::discover::human_size(per_second as u64),
         )));
     }
 
@@ -464,60 +486,46 @@ mod tests {
     /// ```sh
     /// cargo test -- --ignored live_install --nocapture
     /// ```
+    /// Needs `aria2c` installed in a real dependency directory and ~600 MB of
+    /// network: `cargo test -- --ignored live_install --nocapture`.
     #[test]
-    #[ignore = "network + ~110 MB"]
-    fn live_install_1_8_9_reports_progress_and_lands_on_disk() {
+    #[ignore = "network + aria2c + ~600 MB"]
+    fn live_install_downloads_runs_and_verifies() {
         let root = std::env::temp_dir().join("tessera-live-install");
         let _ = std::fs::remove_dir_all(&root);
-        // A fresh global registry, otherwise every asset is already cached and the
-        // thousands-of-small-files path is never exercised.
-        let registry = std::env::temp_dir().join("tessera-live-registry");
-        let _ = std::fs::remove_dir_all(&registry);
-        std::env::set_var("MDT_HOME", &registry);
+        let deps = std::env::temp_dir().join("tessera-live-deps");
+        std::fs::create_dir_all(crate::aria2::install_dir(&deps)).ok();
         let receiver = spawn_install(
             root.clone(),
+            deps,
             Source::Mojang,
-            32,
-            "1.8.9".into(),
+            ASSET_CONCURRENCY,
+            "26.3".into(),
             Loader::None,
         );
 
-        let mut progress_events = 0usize;
-        let mut last_event = std::time::Instant::now();
-        let mut max_gap = std::time::Duration::ZERO;
+        let mut files = 0usize;
         let mut finished = false;
-        let started = std::time::Instant::now();
-        while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(300)) {
+        while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(1800)) {
             match event {
-                InstallEvent::Progress { done, total, .. } => {
-                    progress_events += 1;
-                    max_gap = max_gap.max(last_event.elapsed());
-                    last_event = std::time::Instant::now();
-                    if progress_events.is_multiple_of(100) {
-                        eprintln!("progress {done}/{total} at {:?}", started.elapsed());
-                    }
+                InstallEvent::Log(line) => {
+                    files +=
+                        usize::from(line.starts_with("libraries/") || line.starts_with("assets/"));
+                    eprintln!("log: {line}");
                 }
                 InstallEvent::Finished { version, .. } => {
-                    assert_eq!(version, "1.8.9");
+                    assert_eq!(version, "26.3");
                     finished = true;
                     break;
                 }
                 InstallEvent::Failed(message) => panic!("failed: {message}"),
-                InstallEvent::Log(line) => eprintln!("log: {line}"),
                 InstallEvent::Versions(_) => {}
             }
         }
-
         assert!(finished, "no Finished event");
-        assert!(
-            progress_events > 10,
-            "only {progress_events} progress events"
-        );
-        assert!(root.join("versions/1.8.9/1.8.9.json").is_file());
-        assert!(root.join("versions/1.8.9/1.8.9.jar").is_file());
-        assert!(root.join("assets/indexes/1.8.json").is_file());
+        assert!(root.join("versions/26.3/26.3.json").is_file());
+        println!("aria2 reported {files} files");
         std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&registry).ok();
     }
 
     #[test]

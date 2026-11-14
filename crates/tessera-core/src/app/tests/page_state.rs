@@ -24,15 +24,12 @@ fn leaving_and_returning_keeps_the_download_picker_where_it_was() {
 }
 
 #[test]
-fn leaving_and_returning_shows_a_running_install_and_its_progress() {
+fn leaving_and_returning_shows_a_running_install_and_its_log() {
     let mut app = downloader();
     app.start_install();
-    app.handle_install_event(InstallEvent::Progress {
-        done: 3,
-        total: 10,
-        remaining_bytes: 1,
-        total_bytes: 2,
-    });
+    app.handle_install_event(InstallEvent::Log(
+        "libraries/com/example/a-1.0.jar".to_string(),
+    ));
 
     app.show_main();
     app.open_download();
@@ -40,7 +37,10 @@ fn leaving_and_returning_shows_a_running_install_and_its_progress() {
     assert_eq!(app.screen, Screen::Download);
     assert!(app.install_running);
     assert_eq!(app.download.stage, DownloadStage::Installing);
-    assert_eq!(app.download.done, 3);
+    assert!(
+        app.log.iter().any(|line| line.contains("a-1.0.jar")),
+        "the aria2 line survives the screen switch"
+    );
 }
 
 #[test]
