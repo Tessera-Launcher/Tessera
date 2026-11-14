@@ -33,7 +33,6 @@ pub enum Command {
         start: Duration,
     },
     Pause,
-    Resume,
     Stop,
     Seek(Duration),
     Volume(f32),
@@ -220,12 +219,6 @@ fn run(commands: Receiver<Command>, events: Sender<Event>) {
                     current.pause();
                 }
                 playing = false;
-            }
-            Ok(Command::Resume) => {
-                if let Some(current) = &player {
-                    current.play();
-                    playing = true;
-                }
             }
             Ok(Command::Stop) => {
                 if let Some(current) = &player {

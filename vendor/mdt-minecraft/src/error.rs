@@ -78,17 +78,9 @@ pub enum MdtError {
     #[error("JSON parse error: {0}")]
     JsonParseError(#[from] serde_json::Error),
 
-    /// A payload could not be deserialized as XML (Maven metadata).
-    #[error("XML parse error: {0}")]
-    XmlParseError(#[from] quick_xml::de::DeError),
-
     /// A filesystem operation failed.
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
-
-    /// A ZIP archive could not be opened or extracted.
-    #[error("ZIP error: {0}")]
-    ZipError(#[from] zip::result::ZipError),
 
     /// A background `spawn_blocking` task panicked or was cancelled.
     #[cfg(feature = "tokio")]

@@ -37,8 +37,6 @@ pub struct LoginUi {
     pub app_ids_error: Option<String>,
     /// Selected row in [`LoginUi::app_ids`].
     pub app_id_choice: usize,
-    /// First drawn row, so a long list can scroll under the selection.
-    pub app_id_offset: usize,
     /// Typed offline player name, only used by [`LoginStep::OfflineName`].
     pub offline_name: String,
     /// Allow names that are not valid vanilla usernames (Chinese, spaces, …).
@@ -131,7 +129,6 @@ impl App {
     fn reload_app_ids(&mut self) {
         let path = self.app_ids_path();
         self.login.app_id_choice = 0;
-        self.login.app_id_offset = 0;
         match crate::app_ids::load(&path) {
             Ok(ids) => {
                 self.login.app_ids = ids;

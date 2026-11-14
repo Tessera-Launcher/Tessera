@@ -10,7 +10,6 @@ const EDGE = gaussian(0);
 const bell = position => (gaussian(position) - EDGE) / (1 - EDGE);
 
 export const quantize = rgb => rgb.map(c => Math.round(Math.min(1, Math.max(0, c)) * 255) / 255);
-export const toHex = rgb => '#' + rgb.map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
 
 export function rampSteps(resolution) {
   const steps = [];
