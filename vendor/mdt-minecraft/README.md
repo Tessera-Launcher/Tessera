@@ -10,10 +10,11 @@ Resolve Minecraft versions and Fabric into an **aria2 download list**.
 
 MDT parses the metadata a launcher needs — the version manifest, a version JSON,
 the asset index, a Fabric profile — writes the profile back to
-`versions/<id>/<id>.json`, and emits one file per version:
+`versions/<id>/<id>.json`, and emits one list per version, outside the version
+directory (it is scratch input for the downloader):
 
 ```
-versions/26.3-fabric-0.20.1/26.3-fabric-0.20.1.txt
+列表/26.3-fabric-0.20.1.txt
 ```
 
 That file is an `aria2c --input-file` list: a URL, then its indented options.
@@ -24,13 +25,16 @@ https://piston-data.mojang.com/v1/objects/e877…/client.jar
   out=26.3-fabric-0.20.1.jar
 ```
 
-Every destination directory is created while the list is written, because aria2
-does not create `dir=` and one missing directory fails the whole entry.
+The directory is `<root>/列表/` unless the builder overrides it with
+`.list_dir(...)`. Every destination directory is created while the list is
+written, because aria2 does not create `dir=` and one missing directory fails the
+whole entry.
 
 ## Features
 
 - Vanilla Minecraft (any version in the manifest) and the Fabric loader.
-- One list per version, per-file SHA-1 included, deduplicated by destination.
+- One list per version, deduplicated by destination, kept outside the version
+  directory (it is scratch input for the downloader).
 - The version JSON is written too: the launcher reads it back to build a command
   line, and Fabric's profile is merged so the directory stands on its own.
 - Mirrors: `Mirror::BMCLAPI`, `Mirror::Mojang`, `Mirror::Custom("<name>")`, with

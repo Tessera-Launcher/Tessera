@@ -54,6 +54,9 @@ pub struct MdtClient {
     downloader: Arc<dyn Downloader>,
     mirror: Mirror,
     root: PathBuf,
+    /// Where the download lists are written; `root/列表` unless the front-end
+    /// keeps them in its own cache.
+    list_dir: PathBuf,
     concurrency: usize,
     asset_concurrency: usize,
     http1_only: bool,
@@ -193,7 +196,7 @@ impl MdtClient {
                 url: task.url,
                 path: path.to_path_buf(),
                 size: task.size,
-                sha1: Some(task.sha1),
+                sha1: Some(task.sha1).filter(|sha1| !sha1.is_empty()),
             });
         }
 
@@ -214,7 +217,7 @@ impl MdtClient {
 
         crate::plan::apply_mirror_to_entries(&mut entries, &urls, &self.mirror);
         let plan = crate::plan::DownloadPlan::new(version_json.id.clone(), entries);
-        let path = plan.write(&self.root).await?;
+        let path = plan.write(&self.root, &self.list_dir).await?;
         self.reporter.status(&format!(
             "{} 的下载清单：{} 个文件（{} 个带哈希）→ {}",
             plan.id,
@@ -290,7 +293,7 @@ impl MdtClient {
                 url: task.url,
                 path: path.to_path_buf(),
                 size: task.size,
-                sha1: Some(task.sha1),
+                sha1: Some(task.sha1).filter(|sha1| !sha1.is_empty()),
             });
         }
         // The loader's own libraries, straight from its profile.
@@ -320,7 +323,7 @@ impl MdtClient {
         )
         .await;
         let plan = crate::plan::DownloadPlan::new(id, entries);
-        let path = plan.write(&self.root).await?;
+        let path = plan.write(&self.root, &self.list_dir).await?;
         self.reporter.status(&format!(
             "{} 的下载清单：{} 个文件（{} 个带哈希）→ {}",
             plan.id,
@@ -336,6 +339,7 @@ impl MdtClient {
 pub struct MdtClientBuilder {
     mirror: Mirror,
     root: PathBuf,
+    list_dir: Option<PathBuf>,
     concurrency: usize,
     asset_concurrency: usize,
     http1_only: bool,
@@ -353,6 +357,7 @@ impl MdtClientBuilder {
         Self {
             mirror: Mirror::default(),
             root: PathBuf::from("."),
+            list_dir: None,
             concurrency: DEFAULT_CONCURRENCY,
             asset_concurrency: 64,
             http1_only: true,
@@ -375,6 +380,16 @@ impl MdtClientBuilder {
     #[must_use]
     pub fn root_dir(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
+        self
+    }
+
+    /// Write the download lists here instead of `<root>/列表`.
+    ///
+    /// The list is scratch input for the downloader, so a front-end with a cache
+    /// directory can keep it out of the game folder.
+    #[must_use]
+    pub fn list_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.list_dir = Some(dir.into());
         self
     }
 
@@ -484,12 +499,18 @@ impl MdtClientBuilder {
             Ok,
         )?;
 
+        let list_dir = self
+            .list_dir
+            .unwrap_or_else(|| self.root.join(crate::plan::LIST_DIR));
+        std::fs::create_dir_all(&list_dir)?;
+
         Ok(MdtClient {
             #[cfg(feature = "tokio")]
             http,
             downloader,
             mirror: self.mirror,
             root: self.root,
+            list_dir,
             concurrency: self.concurrency,
             asset_concurrency: self.asset_concurrency,
             http1_only: self.http1_only,

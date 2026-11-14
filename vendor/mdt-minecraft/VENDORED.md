@@ -32,8 +32,9 @@ Upstream downloads everything itself. This copy does not:
 
 Added:
 
-- `plan::DownloadPlan` / `PlanEntry` — `versions/<id>/<id>.txt` in the
-  `aria2c --input-file` format (`dir=`, `out=`; one URL per file, no checksum).
+- `plan::DownloadPlan` / `PlanEntry` — `<list_dir>/<id>.txt` (`列表/` by
+  default, `MdtClientBuilder::list_dir` to move it) in the `aria2c --input-file`
+  format (`dir=`, `out=`; one URL per file, no checksum).
 - `DownloadPlan::verify` — the single verification step: missing, empty, wrong
   size or wrong SHA-1. The list stays a download list, not a proof.
 - `DownloadPlan::create_dirs` — called by `write`. aria2 does not create `dir=`,

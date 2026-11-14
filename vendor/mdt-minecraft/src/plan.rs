@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 
 use crate::error::MdtError;
 
+/// Where the lists go when the caller does not pick a directory:
+/// `<root>/列表/<id>.txt`.
+pub const LIST_DIR: &str = "列表";
+
 /// One file to fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanEntry {
@@ -78,12 +82,14 @@ impl DownloadPlan {
         }
     }
 
-    /// `versions/<id>/<id>.txt` — the game directory's own name plus `.txt`.
+    /// `<list_dir>/<id>.txt` — one file per version, named after its id.
+    ///
+    /// The list is scratch, not something the game or a launcher reads back, so
+    /// the caller decides where it goes (`<root>/列表` by default, a cache
+    /// directory when the front-end has one).
     #[must_use]
-    pub fn path(&self, root: &Path) -> PathBuf {
-        root.join("versions")
-            .join(&self.id)
-            .join(format!("{}.txt", self.id))
+    pub fn path(&self, list_dir: &Path) -> PathBuf {
+        list_dir.join(format!("{}.txt", self.id))
     }
 
     /// Total bytes the list covers.
@@ -205,9 +211,11 @@ impl DownloadPlan {
     /// # Errors
     ///
     /// [`MdtError::Io`] when a directory or the file cannot be written.
-    pub async fn write(&self, root: &Path) -> Result<PathBuf, MdtError> {
+    /// `root` is where the files belong (the directories are created under it);
+    /// the list itself is written into the client's list directory.
+    pub async fn write(&self, root: &Path, list_dir: &Path) -> Result<PathBuf, MdtError> {
         self.create_dirs(root).await?;
-        let path = self.path(root);
+        let path = self.path(list_dir);
         if let Some(parent) = path.parent() {
             crate::io::create_dir_all(parent).await?;
         }
@@ -372,16 +380,22 @@ mod tests {
     }
 
     #[test]
-    fn the_list_is_named_after_the_version_directory() {
+    fn the_list_is_named_after_the_version_id() {
         let plan = DownloadPlan::new("1.20.1+fabric0.15.11", Vec::new());
+        // The list is scratch: it goes wherever the caller keeps it, named after
+        // the id — never inside the version directory.
+        assert_eq!(
+            plan.path(Path::new("/game/缓存")),
+            Path::new("/game/缓存/1.20.1+fabric0.15.11.txt")
+        );
         assert_eq!(
             plan.path(Path::new("/game")),
-            Path::new("/game/versions/1.20.1+fabric0.15.11/1.20.1+fabric0.15.11.txt")
+            Path::new("/game/1.20.1+fabric0.15.11.txt")
         );
     }
 
     #[test]
-    fn the_aria2_body_pins_dir_out_and_checksum() {
+    fn the_aria2_body_pins_dir_and_out() {
         let plan = DownloadPlan::new(
             "1.20.1",
             vec![entry(

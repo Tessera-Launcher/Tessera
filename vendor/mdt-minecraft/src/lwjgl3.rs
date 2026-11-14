@@ -91,9 +91,16 @@ pub(crate) async fn plan_swap(
             size: 0,
             sha1: Some(published.to_ascii_lowercase()),
         });
+        // The digest was just fetched; leaving it out made the version JSON
+        // unparseable for the typed `Artifact` (it used to require `sha1`).
         libraries.push(serde_json::json!({
             "name": name,
-            "downloads": {"artifact": {"url": url, "path": path}},
+            "downloads": {"artifact": {
+                "url": url,
+                "path": path,
+                "sha1": published,
+                "size": 0,
+            }},
         }));
     }
 
