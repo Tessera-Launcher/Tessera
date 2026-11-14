@@ -74,8 +74,8 @@ pub(super) fn prepare_inner(
         // other jar would trip the JVM's class-path validation.
         selection.unsigned_jar.clone()
     } else if lwjgl3.is_some() {
-        // MDT stores the client jar unsigned, so the rewrite agent can use it
-        // directly.
+        // Installs normalize the client jar; a jar installed before that step
+        // existed is still signed, so check here too.
         version_dir.join(format!("{version_dir_name}.jar"))
     } else {
         client_jar(&version_dir, version_dir_name, &merged.parents).ok_or_else(|| {
@@ -90,6 +90,14 @@ pub(super) fn prepare_inner(
     // quick play). One map for the classpath rules and the argument rules, so the
     // same rule cannot answer differently in two places.
     let features = features(true);
+
+    // The agent rewrites game classes, and the JVM rejects a rewritten class
+    // from a signed jar; a sealed package would also reject the shim classes.
+    // Installs normalize their jars, but one made before that step existed is
+    // still signed — normalize here too, which is a no-op when it is not.
+    if lwjgl3.is_some() {
+        crate::jar::normalize(&client_jar)?;
+    }
 
     let libraries_dir = root.join("libraries");
     let mut classpath: Vec<PathBuf> = Vec::new();

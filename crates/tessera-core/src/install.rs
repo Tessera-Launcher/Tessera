@@ -266,6 +266,31 @@ pub fn spawn_install(
             }
             let _ = sender.send(InstallEvent::Log(format!("校验通过：{files} 个文件")));
 
+            // aria2 fetched the raw Mojang files, so the client jar is still
+            // signed and some libraries are sealed. The LWJGL 3 agent rewrites
+            // game classes, which the JVM refuses in a signed jar, and a sealed
+            // package rejects the agent's shim classes. MDT stripped both while
+            // it still downloaded the files itself; now the install does it.
+            let mut normalized = 0usize;
+            for entry in &plan.entries {
+                if !entry
+                    .path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".jar")
+                {
+                    continue;
+                }
+                if crate::jar::normalize(&client.root_dir().join(&entry.path))? {
+                    normalized += 1;
+                }
+            }
+            if normalized > 0 {
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "去签名 / 去密封：{normalized} 个 jar"
+                )));
+            }
+
             let _ = sender.send(InstallEvent::Finished {
                 version,
                 loader: loader_version.map(|v| format!("{} {v}", loader.label())),

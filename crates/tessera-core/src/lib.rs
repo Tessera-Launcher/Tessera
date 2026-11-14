@@ -19,6 +19,7 @@ pub mod http;
 pub mod input;
 pub mod install;
 pub mod instance;
+mod jar;
 pub mod java;
 pub mod launch;
 pub mod logfile;
