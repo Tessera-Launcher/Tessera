@@ -91,14 +91,6 @@ pub(super) fn prepare_inner(
     // same rule cannot answer differently in two places.
     let features = features(true);
 
-    // The agent rewrites game classes, and the JVM rejects a rewritten class
-    // from a signed jar; a sealed package would also reject the shim classes.
-    // Installs normalize their jars, but one made before that step existed is
-    // still signed — normalize here too, which is a no-op when it is not.
-    if lwjgl3.is_some() {
-        crate::jar::normalize(&client_jar)?;
-    }
-
     let libraries_dir = root.join("libraries");
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut missing = 0usize;
@@ -135,6 +127,19 @@ pub(super) fn prepare_inner(
         // On the class path too: the AOT cache is keyed by the class path, and
         // training and launch have to agree on it.
         classpath.push(agent.clone());
+    }
+
+    // A signed jar is not a usable class path entry: the JVM refuses a class
+    // the agent rewrote if it came from a signed jar, and a `Sealed:` package
+    // rejects classes defined next to it (the shim, an AOT-replayed class).
+    // Installs normalize every downloaded jar, but a version installed before
+    // that step existed still carries the signed/sealed originals, so the whole
+    // class path is checked here as well. A jar already in the normalized state
+    // is left untouched, which keeps this a cheap no-op after the first run.
+    for jar in &classpath {
+        if jar.extension().is_some_and(|extension| extension == "jar") {
+            crate::jar::normalize(jar)?;
+        }
     }
 
     // LWJGL 3 unpacks its native libraries from the class path itself, so the

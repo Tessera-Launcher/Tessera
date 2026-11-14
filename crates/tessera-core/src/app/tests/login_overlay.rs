@@ -426,7 +426,11 @@ fn launching_without_a_managed_runtime_says_where_to_get_one() {
         r#"{"id":"1.21.9","type":"release","mainClass":"net.minecraft.client.main.Main",
             "javaVersion":{"majorVersion":21},"libraries":[]}"#,
     );
-    std::fs::write(root.join("versions/1.21.9/1.21.9.jar"), b"jar").unwrap();
+    std::fs::write(
+        root.join("versions/1.21.9/1.21.9.jar"),
+        b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    )
+    .unwrap();
 
     let scanned = crate::discover::scan(&root);
     let mut app = App::new(&root, "/acc", scanned, vec![]);

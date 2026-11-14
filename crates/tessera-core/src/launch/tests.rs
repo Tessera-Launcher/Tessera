@@ -15,6 +15,73 @@ use super::natives::ascii_natives_mirror;
 use super::natives::{find_natives, lwjgl_needs_ascii_natives};
 use super::*;
 
+/// An empty ZIP. Fixtures only need the client/library jars to exist and to be
+/// readable, and launch now normalizes every class path entry.
+const EMPTY_JAR: &[u8] =
+    b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
+/// A class-path jar that is both signed and sealed, the shape an install made
+/// before jars were normalized still has.
+fn write_signed_jar(path: &Path) {
+    use std::io::Write;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
+    zip.write_all(b"Manifest-Version: 1.0\nSealed: true\n")
+        .unwrap();
+    zip.start_file("META-INF/MOJANGCS.SF", options).unwrap();
+    zip.write_all(b"Signature-Version: 1.0\n").unwrap();
+    zip.start_file("com/example/Thing.class", options).unwrap();
+    zip.write_all(b"CAFEBABE").unwrap();
+    zip.finish().unwrap();
+}
+
+fn entry_names(path: &Path) -> Vec<String> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().unwrap().to_string())
+        .collect()
+}
+
+fn manifest_of(path: &Path) -> String {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut text = String::new();
+    use std::io::Read;
+    archive
+        .by_name("META-INF/MANIFEST.MF")
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+#[test]
+fn every_class_path_jar_is_normalized_not_only_the_lwjgl3_client() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fixture(root);
+    // A plain (non-LWJGL3) install whose library is still signed and sealed.
+    let library = root.join("libraries/com/mojang/patchy/1.1/patchy-1.1.jar");
+    write_signed_jar(&library);
+
+    let options = Options {
+        runtimes: Some(managed_runtime(root, 28)),
+        ..Options::default()
+    };
+    prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();
+
+    let names = entry_names(&library);
+    assert!(
+        !names.iter().any(|name| name.ends_with(".SF")),
+        "signature blocks are gone: {names:?}"
+    );
+    assert!(names.iter().any(|name| name == "com/example/Thing.class"));
+    assert!(!manifest_of(&library)
+        .to_ascii_lowercase()
+        .contains("sealed:"));
+}
+
 #[test]
 fn offline_credentials_are_stable_and_legacy() {
     let a = Credentials::offline("Steve");
@@ -50,7 +117,7 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
     assert!(aot_status(&version_dir, "1.8.9", &runtimes).is_none());
 
     std::fs::write(&cache, b"cache").unwrap();
-    std::fs::write(&unsigned, b"jar").unwrap();
+    std::fs::write(&unsigned, EMPTY_JAR).unwrap();
     std::fs::write(&agent, b"agent").unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
@@ -73,7 +140,7 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
 
     // A cache trained by a runtime that has since been removed is equally
     // unusable, and the log names that runtime.
-    std::fs::write(&unsigned, b"jar").unwrap();
+    std::fs::write(&unsigned, EMPTY_JAR).unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
         r#"{"java_major":25,"java_version":"25.0.5+8","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
@@ -117,7 +184,7 @@ fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
     let unsigned = version_dir.join("1.8.9.unsigned.jar");
     let agent = version_dir.join("1.8.9.aot-agent.jar");
     std::fs::write(&cache, b"cache").unwrap();
-    std::fs::write(&unsigned, b"jar").unwrap();
+    std::fs::write(&unsigned, EMPTY_JAR).unwrap();
     std::fs::write(&agent, b"agent").unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
@@ -239,7 +306,7 @@ fn a_legacy_launch_goes_through_the_agent() {
         r#"{"id":"1.5.2","mainClass":"net.minecraft.launchwrapper.Launch","minecraftArguments":"${auth_player_name} --gameDir ${game_directory}","libraries":[]}"#,
     )
     .unwrap();
-    std::fs::write(version_dir.join("1.5.2.jar"), b"jar").unwrap();
+    std::fs::write(version_dir.join("1.5.2.jar"), EMPTY_JAR).unwrap();
 
     let launch = prepare(
         tmp.path(),
@@ -509,10 +576,10 @@ fn fixture(root: &Path) {
     ] {
         let path = root.join("libraries").join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"jar").unwrap();
+        std::fs::write(path, EMPTY_JAR).unwrap();
     }
     let jar = root.join("versions/1.8.9/1.8.9.jar");
-    std::fs::write(&jar, b"jar").unwrap();
+    std::fs::write(&jar, EMPTY_JAR).unwrap();
     std::fs::create_dir_all(root.join("versions/1.8.9/1.8.9-natives")).unwrap();
 
     // A loader install is a copy of the vanilla directory, so the jar inside it
@@ -570,7 +637,7 @@ fn natives_placeholders_are_substituted_with_an_absolute_path() {
             "libraries": []
         }),
     );
-    std::fs::write(root.join("versions/26.3/26.3.jar"), b"jar").unwrap();
+    std::fs::write(root.join("versions/26.3/26.3.jar"), EMPTY_JAR).unwrap();
     std::fs::create_dir_all(root.join("versions/26.3/26.3-natives")).unwrap();
 
     let options = Options {
@@ -692,9 +759,9 @@ fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
     ] {
         let path = root.join("libraries").join(library);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"jar").unwrap();
+        std::fs::write(path, EMPTY_JAR).unwrap();
     }
-    std::fs::write(version_dir.join(format!("{id}.jar")), b"jar").unwrap();
+    std::fs::write(version_dir.join(format!("{id}.jar")), EMPTY_JAR).unwrap();
     std::fs::create_dir_all(version_dir.join(format!("{id}-natives"))).unwrap();
 
     // Both runtimes: the loader still starts on 28, not on its 21 pin.
@@ -768,8 +835,8 @@ fn a_modern_profile_gets_the_classpath_from_its_own_jvm_arguments() {
     );
     let library = root.join("libraries/com/example/x/1.0/x-1.0.jar");
     std::fs::create_dir_all(library.parent().unwrap()).unwrap();
-    std::fs::write(&library, b"jar").unwrap();
-    std::fs::write(root.join("versions/1.20.1/1.20.1.jar"), b"jar").unwrap();
+    std::fs::write(&library, EMPTY_JAR).unwrap();
+    std::fs::write(root.join("versions/1.20.1/1.20.1.jar"), EMPTY_JAR).unwrap();
 
     let options = Options {
         runtimes: Some(managed_runtime(root, 28)),
@@ -806,7 +873,7 @@ fn a_profile_whose_id_disagrees_with_its_directory_still_uses_the_directory() {
             "libraries": []
         }),
     );
-    std::fs::write(root.join("versions/my-instance/my-instance.jar"), b"jar").unwrap();
+    std::fs::write(root.join("versions/my-instance/my-instance.jar"), EMPTY_JAR).unwrap();
 
     let options = Options {
         runtimes: Some(managed_runtime(root, 28)),
@@ -915,7 +982,7 @@ fn a_profile_without_java_version_gets_it_from_the_version_number() {
             "libraries": []
         }),
     );
-    std::fs::write(tmp.path().join("versions/1.20.5/1.20.5.jar"), b"jar").unwrap();
+    std::fs::write(tmp.path().join("versions/1.20.5/1.20.5.jar"), EMPTY_JAR).unwrap();
     let options = Options {
         runtimes: Some(managed_runtime(tmp.path(), 28)),
         ..Options::default()
@@ -954,7 +1021,7 @@ fn a_profile_newer_than_java_28_is_refused_with_what_was_found() {
         }),
     );
     // Give it a jar so only the Java decision is under test.
-    std::fs::write(tmp.path().join("versions/1.30/1.30.jar"), b"jar").unwrap();
+    std::fs::write(tmp.path().join("versions/1.30/1.30.jar"), EMPTY_JAR).unwrap();
     let error = prepare(tmp.path(), "1.30", &Credentials::offline("Steve"), &options)
         .expect_err("Java 28 cannot run a 30 profile");
     assert!(error.to_string().contains("Java 30"), "{error}");
@@ -1072,7 +1139,7 @@ fn a_loader_profile_can_borrow_the_parents_jar_and_natives() {
     let versions = tmp.path().join("versions");
     let parent = versions.join("1.12.2");
     std::fs::create_dir_all(parent.join("1.12.2-natives")).unwrap();
-    std::fs::write(parent.join("1.12.2.jar"), b"jar").unwrap();
+    std::fs::write(parent.join("1.12.2.jar"), EMPTY_JAR).unwrap();
     // A legacy Forge install keeps its own directory and inherits 1.12.2.
     let child = versions.join("1.12.2+Forge14.23.0.2486");
     std::fs::create_dir_all(&child).unwrap();
@@ -1108,12 +1175,12 @@ fn a_lwjgl_32_natives_path_is_mirrored_when_the_data_directory_is_not_ascii() {
             ]
         }),
     );
-    std::fs::write(root.join("versions/1.16.5/1.16.5.jar"), b"jar").unwrap();
+    std::fs::write(root.join("versions/1.16.5/1.16.5.jar"), EMPTY_JAR).unwrap();
     let natives = root.join("versions/1.16.5/1.16.5-natives");
     std::fs::create_dir_all(&natives).unwrap();
     let library = root.join("libraries/org/lwjgl/lwjgl/3.2.2/lwjgl-3.2.2.jar");
     std::fs::create_dir_all(library.parent().unwrap()).unwrap();
-    std::fs::write(&library, b"jar").unwrap();
+    std::fs::write(&library, EMPTY_JAR).unwrap();
 
     let options = Options {
         runtimes: Some(managed_runtime(&root, 28)),
@@ -1214,7 +1281,7 @@ fn lwjgl3_install(root: &Path) {
     ] {
         let jar = root.join("libraries").join(path);
         std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
-        std::fs::write(jar, b"jar").unwrap();
+        std::fs::write(jar, EMPTY_JAR).unwrap();
     }
     managed_runtime(root, 28);
 }
