@@ -202,25 +202,31 @@ pub fn spawn_install(
                 source.label()
             )));
 
-            match &loader_version {
+            // MDT only resolves metadata and writes the list; nothing is
+            // downloaded here. aria2 (or the front-end) consumes the list.
+            let plan = match &loader_version {
                 None => client
-                    .install_vanilla_with_assets(&version)
+                    .plan_vanilla(&version)
                     .await
-                    .map(|_| ())
                     .map_err(|error| describe(&error))?,
                 Some(loader_version) => client
-                    // Self-contained: the loader directory gets the client jar,
-                    // the natives and a profile that carries the vanilla fields
-                    // itself. No `versions/<version>/` is created beside it.
-                    .install_loader(
+                    .plan_loader(
                         &version,
                         loader.to_mdt().expect("checked above"),
                         loader_version,
                     )
                     .await
-                    .map(|_| ())
                     .map_err(|error| describe(&error))?,
-            }
+            };
+            let _ = sender.send(InstallEvent::Log(format!(
+                "下载清单：{} 个文件（{} 个带 sha-1）",
+                plan.entries.len(),
+                plan.hashed()
+            )));
+            let _ = sender.send(InstallEvent::Log(format!(
+                "已写入 {}",
+                plan.path(client.root_dir()).display()
+            )));
 
             let _ = sender.send(InstallEvent::Finished {
                 version,

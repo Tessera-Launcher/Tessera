@@ -137,6 +137,80 @@ impl AssetRegistry {
         .await
     }
 
+    /// Fetch the asset index (metadata only) and list every object it names.
+    ///
+    /// No asset is transferred: the caller gets one entry per object, hashed and
+    /// addressed exactly as the game will look it up in `assets/objects`.
+    ///
+    /// # Errors
+    ///
+    /// [`MdtError::InvalidManifest`] for an unsafe index id/URL or SHA-1,
+    /// [`MdtError::NetworkError`] when the index cannot be fetched.
+    pub async fn plan_objects(
+        root: &Path,
+        asset_index: &AssetIndexInfo,
+        downloader: &dyn Downloader,
+        mirror: &Mirror,
+        urls: &ManifestUrls,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Vec<crate::plan::PlanEntry>, MdtError> {
+        if !is_safe_path_component(&asset_index.id) {
+            return Err(MdtError::InvalidManifest(format!(
+                "unsafe asset index id: {:?}",
+                asset_index.id
+            )));
+        }
+        if !is_sha1_hex(&asset_index.sha1) {
+            return Err(MdtError::InvalidManifest(format!(
+                "asset index {:?} has an invalid SHA-1: {:?}",
+                asset_index.id, asset_index.sha1
+            )));
+        }
+        if !is_safe_http_url(&asset_index.url) {
+            return Err(MdtError::InvalidManifest(format!(
+                "asset index {:?} has an unsafe URL: {:?}",
+                asset_index.id, asset_index.url
+            )));
+        }
+        let local_index = root
+            .join("assets")
+            .join("indexes")
+            .join(format!("{}.json", asset_index.id));
+        let cache_dir = registry::index_cache_dir(registry::VANILLA_SOURCE);
+        fetch_index_file(
+            asset_index,
+            &local_index,
+            &cache_dir,
+            downloader,
+            mirror,
+            urls,
+            reporter,
+        )
+        .await?;
+
+        let content = crate::io::read_to_string(&local_index).await?;
+        let index: AssetIndex = serde_json::from_str(&content)?;
+        reporter.status(&format!(
+            "资源索引 {}：{} 个资源文件",
+            asset_index.id,
+            index.objects.len()
+        ));
+        let objects: Vec<AssetObject> = index.objects.into_values().collect();
+        let objects_dir = root.join("assets").join("objects");
+        Ok(downloader::build_tasks_from_assets(&objects, &objects_dir)
+            .into_iter()
+            .filter_map(|task| {
+                let path = task.dest_path.strip_prefix(root).ok()?.to_path_buf();
+                Some(crate::plan::PlanEntry {
+                    url: task.url,
+                    path,
+                    size: task.size,
+                    sha1: Some(task.sha1),
+                })
+            })
+            .collect())
+    }
+
     /// The parsed object table (logical asset name -> hash + size).
     #[must_use]
     pub fn objects(&self) -> &HashMap<String, AssetObject> {

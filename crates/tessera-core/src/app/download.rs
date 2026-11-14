@@ -120,7 +120,10 @@ impl InstallSummary {
     pub fn text(&self) -> String {
         let time = self.elapsed_label();
         if self.bytes == 0 {
-            return format!("用时 {time} · 所有文件都已在本地，没有下载");
+            // The install step resolves metadata and writes the aria2 list; the
+            // files themselves are fetched from that list, so nothing crossed the
+            // network here.
+            return format!("用时 {time} · 下载清单已生成");
         }
         format!(
             "用时 {} · 下载 {} · 平均 {}/s",
@@ -717,12 +720,12 @@ impl App {
                 self.download.stage = DownloadStage::Done;
                 self.reload();
                 self.log(format!(
-                    "安装完成：{version}{} · {text}",
+                    "清单已生成：{version}{} · {text}",
                     loader
                         .as_ref()
                         .map_or_else(String::new, |loader| format!(" + {loader}"))
                 ));
-                self.status = format!("安装完成：{version} · {text}");
+                self.status = format!("清单已生成：{version} · {text}");
             }
             InstallEvent::Failed(message) => {
                 self.download.fetching = false;
