@@ -14,7 +14,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::component::TitleBar;
+use gpui_kit::component::{Icon, IconName, TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, gui_key, open_browser};
@@ -242,6 +242,28 @@ impl Launcher {
     }
 }
 
+fn titlebar_button(
+    id: &'static str,
+    area: WindowControlArea,
+    icon: IconName,
+    color: u32,
+    hover_background: u32,
+    hover_color: u32,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .w(TITLE_BAR_HEIGHT)
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(rgb(color))
+        .hover(move |style| style.bg(rgb(hover_background)).text_color(rgb(hover_color)))
+        .window_control_area(area)
+        .child(Icon::new(icon).small())
+}
+
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
@@ -285,14 +307,23 @@ impl Render for Launcher {
                 this.on_key(event, window, cx);
             }))
             .child(
-                TitleBar::new()
+                div()
+                    .h_flex()
+                    .h(TITLE_BAR_HEIGHT)
+                    .flex_shrink_0()
+                    .items_center()
                     .bg(rgb(colors.canvas))
+                    .border_b(px(stroke::THIN))
                     .border_color(rgb(colors.border_default))
                     .child(
                         div()
                             .h_flex()
+                            .flex_1()
+                            .h_full()
                             .items_center()
                             .gap(px(space::SM))
+                            .pl(px(space::MD))
+                            .window_control_area(WindowControlArea::Drag)
                             .child(
                                 div()
                                     .text_size(px(font::TITLE))
@@ -300,14 +331,24 @@ impl Render for Launcher {
                                     .font_weight(FontWeight(weight::BOLD))
                                     .text_color(rgb(colors.text_accent))
                                     .child("Tessera"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(font::CAPTION))
-                                    .text_color(rgb(colors.text_secondary))
-                                    .child("Minecraft 启动器"),
                             ),
-                    ),
+                    )
+                    .child(titlebar_button(
+                        "titlebar-minimize",
+                        WindowControlArea::Min,
+                        IconName::WindowMinimize,
+                        colors.text_secondary,
+                        colors.hover,
+                        colors.text_primary,
+                    ))
+                    .child(titlebar_button(
+                        "titlebar-close",
+                        WindowControlArea::Close,
+                        IconName::WindowClose,
+                        colors.text_secondary,
+                        colors.fill_danger,
+                        colors.text_on_fill,
+                    )),
             )
             .child(
                 div()
