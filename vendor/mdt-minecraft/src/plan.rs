@@ -105,12 +105,38 @@ impl DownloadPlan {
         out
     }
 
-    /// Write the list next to the version JSON and return its path.
+    /// Create every directory the list's destinations live in.
+    ///
+    /// `aria2c` does not create them (a missing `dir=` fails the whole entry), so
+    /// the plan owns that step: after this, a downloader only has to write files.
     ///
     /// # Errors
     ///
-    /// [`MdtError::Io`] when the directory or the file cannot be written.
+    /// [`MdtError::Io`] when a directory cannot be created.
+    pub async fn create_dirs(&self, root: &Path) -> Result<(), MdtError> {
+        let mut seen = HashSet::new();
+        for entry in &self.entries {
+            let Some(parent) = entry.path.parent() else {
+                continue;
+            };
+            if parent.as_os_str().is_empty() {
+                continue;
+            }
+            let dir = root.join(parent);
+            if seen.insert(dir.clone()) {
+                crate::io::create_dir_all(&dir).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Create the directory tree, then write the list next to the version JSON.
+    ///
+    /// # Errors
+    ///
+    /// [`MdtError::Io`] when a directory or the file cannot be written.
     pub async fn write(&self, root: &Path) -> Result<PathBuf, MdtError> {
+        self.create_dirs(root).await?;
         let path = self.path(root);
         if let Some(parent) = path.parent() {
             crate::io::create_dir_all(parent).await?;
@@ -243,6 +269,24 @@ mod tests {
             vec![entry("https://example/b.jar", "libraries/b.jar", None)],
         );
         assert!(!plan.to_aria2(Path::new("/game")).contains("checksum="));
+    }
+
+    #[tokio::test]
+    async fn writing_the_list_creates_every_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = DownloadPlan::new(
+            "1.20.1",
+            vec![
+                entry("https://e/a.jar", "libraries/com/a/a.jar", None),
+                entry("https://e/b.jar", "libraries/com/b/b.jar", None),
+                entry("https://e/ab/cdef", "assets/objects/ab/cdef", None),
+            ],
+        );
+        plan.write(root.path()).await.unwrap();
+        assert!(root.path().join("libraries/com/a").is_dir());
+        assert!(root.path().join("libraries/com/b").is_dir());
+        assert!(root.path().join("assets/objects/ab").is_dir());
+        assert!(plan.path(root.path()).is_file());
     }
 
     #[test]

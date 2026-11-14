@@ -274,11 +274,6 @@ fn describe(error: &MdtError) -> Error {
         MdtError::VersionNotFound(version) => {
             Error::missing(format!("镜像里没有版本 {version}（换一个镜像或检查拼写）"))
         }
-        MdtError::PartialDownloadFailed(failed) => Error::network(format!(
-            "{} 个文件下载失败，最后一个是 {}",
-            failed.len(),
-            failed.last().map_or_else(String::new, |f| f.url.clone())
-        )),
         other => Error::network(other.to_string()),
     }
 }

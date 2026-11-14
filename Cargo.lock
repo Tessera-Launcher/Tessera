@@ -4015,16 +4015,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "md-5"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
-dependencies = [
- "cfg-if",
- "digest 0.11.3",
-]
-
-[[package]]
 name = "mdt-macros"
 version = "0.4.3"
 dependencies = [
@@ -4039,7 +4029,6 @@ version = "0.7.0"
 dependencies = [
  "futures",
  "hex",
- "md-5 0.11.0",
  "mdt-macros",
  "quick-xml 0.42.0",
  "reqwest",
@@ -4937,7 +4926,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hkdf",
  "hmac 0.12.1",
- "md-5 0.10.6",
+ "md-5",
  "num",
  "num-bigint-dig",
  "pbkdf2 0.12.2",

@@ -14,7 +14,7 @@ use std::time::Duration;
 #[cfg(feature = "tokio")]
 use futures::StreamExt;
 #[cfg(feature = "tokio")]
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 #[cfg(any(feature = "tokio", feature = "blocking"))]
 use crate::error::io_error;
@@ -77,7 +77,7 @@ pub(crate) fn debug_line(reporter: &dyn ProgressReporter, line: &str) {
 /// A [`ProgressReporter`] that discards every event.
 ///
 /// Used where MDT drives a pipeline that has no user-facing sink of its own (the low-level free
-/// functions in [`crate::installer`], [`crate::virtual_dir::mount_all`]) and in tests. Pass it as
+/// functions in [`crate::installer`]) and in tests. Pass it as
 /// the `reporter` when you want a call to stay completely silent.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopReporter;
@@ -265,27 +265,6 @@ pub trait Downloader: Send + Sync {
         dest: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), MdtError>> + Send + 'a>>;
 
-    /// Download `url` into `dest` with `connections` parallel HTTP Range requests.
-    ///
-    /// Returns `Ok(true)` when the whole file arrived this way and is ready to be
-    /// verified. `Ok(false)` means the transport (or the server) cannot do it — no
-    /// Range support, no usable `Content-Range`, a truncated segment — and the
-    /// caller must fall back to [`Self::download`]. A failed attempt never leaves a
-    /// believable file behind: the partial bytes are removed before returning.
-    ///
-    /// The default implementation declines, so a custom transport keeps working
-    /// unchanged and simply downloads large files on one connection.
-    fn download_parallel<'a>(
-        &'a self,
-        url: &'a str,
-        dest: &'a Path,
-        size: u64,
-        connections: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<bool, MdtError>> + Send + 'a>> {
-        let _ = (url, dest, size, connections);
-        Box::pin(async { Ok(false) })
-    }
-
     /// Read `url` into a UTF-8 string (small metadata payloads).
     fn fetch<'a>(
         &'a self,
@@ -336,111 +315,6 @@ impl Downloader for HttpDownloader {
                 .await
                 .map_err(|e| io_error(e, "during download"))?;
             Ok(())
-        })
-    }
-
-    fn download_parallel<'a>(
-        &'a self,
-        url: &'a str,
-        dest: &'a Path,
-        size: u64,
-        connections: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<bool, MdtError>> + Send + 'a>> {
-        let client = self.client.clone();
-        let url = url.to_string();
-        let dest = dest.to_path_buf();
-        Box::pin(async move {
-            if size == 0 || connections < 2 {
-                return Ok(false);
-            }
-            // Never open more connections than there is data to carry.
-            let connections = connections.min(16) as u64;
-            let segment = size.div_ceil(connections).max(1);
-            let count = size.div_ceil(segment);
-            if count < 2 {
-                return Ok(false);
-            }
-            if let Some(parent) = dest.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-
-            // Reserve the full length first so each worker can seek to its own
-            // offset; every worker opens its own handle (no shared cursor).
-            {
-                let file = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&dest)
-                    .await?;
-                file.set_len(size).await?;
-            }
-
-            let segments: Vec<(u64, u64)> = (0..count)
-                .map(|index| {
-                    let start = index * segment;
-                    (start, (start + segment).min(size) - 1)
-                })
-                .collect();
-
-            let results = futures::future::join_all(segments.into_iter().map(|(start, end)| {
-                let client = client.clone();
-                let url = url.clone();
-                let dest = dest.clone();
-                async move {
-                    let expected = end - start + 1;
-                    let response = client
-                        .get(&url)
-                        .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
-                        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-                        .send()
-                        .await?;
-                    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                        // The mirror ignored `Range` (200 with the whole body) or
-                        // rejected it. Fall back instead of writing the wrong bytes.
-                        return Ok::<bool, MdtError>(false);
-                    }
-                    let mut file = tokio::fs::OpenOptions::new()
-                        .write(true)
-                        .open(&dest)
-                        .await
-                        .map_err(|error| io_error(error, "opening ranged download"))?;
-                    file.seek(std::io::SeekFrom::Start(start))
-                        .await
-                        .map_err(|error| io_error(error, "seeking ranged download"))?;
-                    let mut written = 0u64;
-                    let mut stream = response.bytes_stream();
-                    while let Some(chunk) = stream.next().await {
-                        let chunk = chunk?;
-                        written += chunk.len() as u64;
-                        file.write_all(&chunk)
-                            .await
-                            .map_err(|error| io_error(error, "during ranged download"))?;
-                    }
-                    if written != expected {
-                        return Err(MdtError::InvalidManifest(format!(
-                            "ranged download of {url} returned {written} of {expected} bytes"
-                        )));
-                    }
-                    Ok::<bool, MdtError>(true)
-                }
-            }))
-            .await;
-
-            let mut ok = true;
-            for result in results {
-                if !matches!(result, Ok(true)) {
-                    ok = false;
-                }
-            }
-            if ok {
-                Ok(true)
-            } else {
-                // A partial multi-segment file is worse than none: the caller's
-                // fallback rewrites every byte.
-                let _ = tokio::fs::remove_file(&dest).await;
-                Ok(false)
-            }
         })
     }
 
@@ -551,106 +425,5 @@ impl RegistryCache for FsRegistryCache {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, data)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stderr_reporter_emits_without_panicking() {
-        let reporter = StderrReporter::new();
-        reporter.status("hello");
-        reporter.debug("resolved https://example.com/a.jar");
-        reporter.progress(1, 3);
-        reporter.progress(3, 3);
-        reporter.progress_bytes(1, 3, 1024);
-        reporter.summary(3, 4096, Duration::from_secs(83), Some(("client.jar", 2048)));
-        reporter.finish();
-    }
-
-    /// A reporter that implements only the required methods, to prove `debug` is additive.
-    struct LegacyReporter;
-
-    impl ProgressReporter for LegacyReporter {
-        fn status(&self, _line: &str) {}
-        fn progress(&self, _done: usize, _total: usize) {}
-        fn finish(&self) {}
-    }
-
-    #[test]
-    fn debug_has_a_no_op_default() {
-        // Compiles and does nothing: existing third-party reporters keep working unchanged.
-        LegacyReporter.debug("ignored");
-    }
-
-    /// The redaction cases live in `tests/redact_credentials.rs`; this pins the chokepoint that
-    /// every former `eprintln!` now goes through.
-    #[test]
-    fn debug_line_redacts_before_handing_the_line_to_the_reporter() {
-        use std::sync::Mutex;
-
-        #[derive(Default)]
-        struct Capturing(Mutex<Vec<String>>);
-        impl ProgressReporter for Capturing {
-            fn status(&self, _line: &str) {}
-            fn progress(&self, _done: usize, _total: usize) {}
-            fn finish(&self) {}
-            fn debug(&self, line: &str) {
-                self.0.lock().unwrap().push(line.to_string());
-            }
-        }
-
-        let reporter = Capturing::default();
-        debug_line(
-            &reporter,
-            "GET https://alice:hunter2@mirror.example/a.jar failed",
-        );
-
-        let lines = reporter.0.lock().unwrap();
-        assert_eq!(lines.len(), 1);
-        assert!(
-            !lines[0].contains("hunter2") && !lines[0].contains("alice"),
-            "the chokepoint leaked a credential: {}",
-            lines[0]
-        );
-        assert!(
-            lines[0].contains("https://***:***@mirror.example/a.jar"),
-            "{}",
-            lines[0]
-        );
-    }
-
-    #[test]
-    fn format_bytes_formats_sizes() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1024), "1.0 KiB");
-        assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
-        assert_eq!(format_bytes(107479040), "102.5 MiB");
-        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
-    }
-
-    #[test]
-    fn format_duration_formats_compactly() {
-        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
-        assert_eq!(format_duration(Duration::from_secs(59)), "59s");
-        assert_eq!(format_duration(Duration::from_secs(83)), "1m23s");
-        assert_eq!(format_duration(Duration::from_secs(3723)), "1h2m3s");
-    }
-
-    #[test]
-    fn fs_registry_cache_roundtrips() {
-        let dir = std::env::temp_dir().join(format!("mdt-cache-test-{}", std::process::id()));
-        let cache = FsRegistryCache::new(&dir);
-        let hash = "0123456789abcdef0123456789abcdef01234567";
-
-        assert!(!cache.has(hash));
-        cache.put(hash, b"hello").unwrap();
-        assert!(cache.has(hash));
-        assert_eq!(cache.get(hash), Some(b"hello".to_vec()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

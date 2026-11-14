@@ -9,7 +9,7 @@ use crate::mirror::Mirror;
 use crate::urls::ManifestUrls;
 
 use super::version_json::install_from_profile;
-use super::{dedup_urls, InstallRequest, InstalledVersion};
+use super::{dedup, InstallRequest, InstalledVersion};
 
 pub async fn install(
     downloader: &dyn Downloader,
@@ -20,6 +20,6 @@ pub async fn install(
     // Mirror first, official as fallback.
     let official = ManifestUrls::try_new(&Mirror::Mojang)?
         .fabric_profile(&req.loader_version, &req.mc_version);
-    let candidates = dedup_urls(&[mirrored, official]);
+    let candidates = dedup(&[mirrored, official]);
     install_from_profile(downloader, &candidates, &req, &urls).await
 }
