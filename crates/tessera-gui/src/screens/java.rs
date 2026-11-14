@@ -10,11 +10,8 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = theme::colors(cx);
-        let proxy = if self.state.java.source == java::Source::Github {
-            Some(self.ensure_proxy(window, cx))
-        } else {
-            None
-        };
+        // GitHub is the only source, so the proxy field is always useful.
+        let proxy = Some(self.ensure_proxy(window, cx));
 
         let java = &self.state.java;
         let show_loading = self.loading_visible(crate::LoadingKey::Java);
@@ -49,7 +46,6 @@ impl Launcher {
                 let major = runtime.major;
                 let version = runtime.version();
                 let size = discover::human_size(runtime.size);
-                let ea = runtime.ea;
                 runtimes = runtimes.child(
                     div()
                         .id(format!("java-{index}"))
@@ -116,7 +112,8 @@ impl Launcher {
                         )
                         .children(update.then(|| chip(colors, "可更新", colors.status_warning)))
                         .children(installed.then(|| chip(colors, "已装", colors.status_success)))
-                        .children(ea.then(|| chip(colors, "EA", colors.text_secondary))),
+                        // The only feature offered is still early access.
+                        .child(chip(colors, "EA", colors.text_secondary)),
                 );
             }
         }
@@ -168,7 +165,7 @@ impl Launcher {
                 div()
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
-                    .child(format!("源：{}", java.source.label())),
+                    .child("源：GitHub（Adoptium）"),
             );
         } else {
             let fraction = if java.progress.1 > 0 {
@@ -207,7 +204,6 @@ impl Launcher {
             );
         }
 
-        let source = java.source.label();
         let updates = java.update_count();
         let busy = java.stage == JavaStage::Downloading;
         let proxy = proxy.map(|proxy| {
@@ -270,14 +266,6 @@ impl Launcher {
                         cx,
                         |this: &mut Launcher, cx| {
                             this.state.handle_java_key(Key::Char('u'), Modifiers::NONE);
-                            this.refresh(cx);
-                        },
-                    ))
-                    .child(button(
-                        &format!("换源（{source}）"),
-                        cx,
-                        |this: &mut Launcher, cx| {
-                            this.state.handle_java_key(Key::Char('s'), Modifiers::NONE);
                             this.refresh(cx);
                         },
                     ))

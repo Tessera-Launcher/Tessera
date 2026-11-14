@@ -1,5 +1,5 @@
-//! The Java runtime picker: Adoptium's feature versions (including Java 28 EA),
-//! the source switch, the GitHub proxy field and minor-version updates.
+//! The Java runtime picker: the one runtime this launcher offers (Java 28 EA),
+//! the GitHub proxy field and minor-version updates.
 
 use super::*;
 
@@ -22,11 +22,10 @@ pub enum JavaStage {
 #[derive(Debug, Clone)]
 pub struct JavaUi {
     pub stage: JavaStage,
-    /// Latest JRE of each offered feature, in [`crate::java::FEATURES`] order.
+    /// The runtime the picker offers (Java 28 EA, always one row).
     pub runtimes: Vec<crate::java::Runtime>,
     pub selected: usize,
-    pub source: crate::java::Source,
-    /// What the user typed as a GitHub proxy; only used by [`crate::java::Source::Github`].
+    /// What the user typed as a GitHub proxy; empty means go direct.
     pub proxy: String,
     /// Whether keystrokes go into the proxy field instead of the list.
     pub editing_proxy: bool,
@@ -56,7 +55,6 @@ impl Default for JavaUi {
             stage: JavaStage::Loading,
             runtimes: Vec::new(),
             selected: 0,
-            source: crate::java::Source::default(),
             proxy: String::new(),
             editing_proxy: false,
             progress: (0, 0, 0.0),
@@ -159,21 +157,6 @@ impl App {
         self.java.editing_proxy = false;
     }
 
-    /// `s`: the other source. Only meaningful for the artifact, so the list stays.
-    pub fn set_java_source(&mut self, source: crate::java::Source) {
-        if self.java.source == source {
-            return;
-        }
-        self.java.source = source;
-        self.java.editing_proxy = false;
-        self.status = format!("Java 下载源：{}", source.label());
-    }
-
-    /// Say why the proxy field is inert: it only applies to the GitHub source.
-    fn explain_proxy_needs_github(&mut self) {
-        self.status = "先按 s 切到官方源，代理只对它生效".to_string();
-    }
-
     /// Keys while the Java picker is open.
     pub fn handle_java_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
         let _ = modifiers;
@@ -215,14 +198,9 @@ impl App {
                     let last = self.java.runtimes.len().saturating_sub(1);
                     self.java.selected = (self.java.selected + 1).min(last);
                 }
-                Key::Char('s') => self.set_java_source(self.java.source.next()),
                 Key::Char('p') => {
-                    if self.java.source == crate::java::Source::Github {
-                        self.java.editing_proxy = true;
-                        self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
-                    } else {
-                        self.explain_proxy_needs_github();
-                    }
+                    self.java.editing_proxy = true;
+                    self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
                 }
                 Key::Enter => self.start_java_download(),
                 Key::Char('u') => self.start_java_updates(),
@@ -313,31 +291,20 @@ impl App {
     /// Download one specific runtime.
     fn start_java_install(&mut self, runtime: crate::java::Runtime) {
         self.settings.github_proxy = self.java.proxy.trim().to_string();
-        let urls = crate::java::candidates(
-            &runtime,
-            self.java.source,
-            &self.java.proxy,
-            crate::java::platform(),
-        );
+        let urls = crate::java::candidates(&runtime, &self.java.proxy);
         self.java.stage = JavaStage::Downloading;
         self.java.current = Some(runtime.major);
         self.java.progress = (0, 0, 0.0);
         self.java.message = None;
         self.status = format!("Java {}：开始下载", runtime.major);
-        let source_label = if runtime.ea {
-            crate::java::Source::Github.label()
-        } else {
-            self.java.source.label()
-        };
-        self.log(format!(
-            "Java {} {}（{}）",
-            runtime.major,
-            runtime.version(),
-            source_label
-        ));
-        if runtime.ea {
-            self.log("Java 28 是 EA：只有官方源提供，清华源没有（可设 Proxy）");
-        }
+        self.log(match crate::java::normalize_proxy(&self.java.proxy) {
+            Some(proxy) => format!(
+                "Java {} {}（GitHub，经 {proxy}）",
+                runtime.major,
+                runtime.version()
+            ),
+            None => format!("Java {} {}（GitHub）", runtime.major, runtime.version()),
+        });
         self.request(Effect::InstallJava { runtime, urls });
     }
 

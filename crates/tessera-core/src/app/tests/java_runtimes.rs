@@ -13,11 +13,7 @@ fn opening_the_java_picker_asks_for_the_list() {
         "the loop fetches Adoptium's list"
     );
     assert!(app.java.runtimes.is_empty());
-    assert_eq!(
-        app.java.source,
-        crate::java::Source::Github,
-        "官方源默认"
-    );
+    assert!(app.java.proxy.is_empty(), "直连 GitHub，直到用户填代理");
     assert!(app.java.installed.is_empty(), "nothing downloaded yet");
 }
 
@@ -118,13 +114,12 @@ fn u_updates_every_outdated_runtime_in_turn() {
 }
 
 #[test]
-fn the_java_source_and_the_proxy_decide_the_urls() {
+fn the_proxy_decides_the_urls() {
     let mut app = app();
     app.open_java();
-    app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
+    app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(28)]));
 
-    // 官方源是默认，所以代理字段开箱可用。
-    assert_eq!(app.java.source, crate::java::Source::Github);
+    // GitHub is the only source, so the proxy field is usable straight away.
     app.handle_java_key(Key::Char('p'), Modifiers::NONE);
     assert!(app.java.editing_proxy);
     for c in "gh-proxy.com".chars() {
@@ -133,15 +128,6 @@ fn the_java_source_and_the_proxy_decide_the_urls() {
     app.handle_java_key(Key::Enter, Modifiers::NONE);
     assert!(!app.java.editing_proxy, "Enter leaves the field");
     assert_eq!(app.java.proxy, "gh-proxy.com");
-
-    // 切到清华源后代理字段失效，切回来又生效（代理值一直保留）。
-    app.handle_java_key(Key::Char('s'), Modifiers::NONE);
-    assert_eq!(app.java.source, crate::java::Source::Tuna);
-    app.handle_java_key(Key::Char('p'), Modifiers::NONE);
-    assert!(!app.java.editing_proxy, "not while the mirror is selected");
-    assert!(app.status.contains("先按 s"), "{}", app.status);
-    app.handle_java_key(Key::Char('s'), Modifiers::NONE);
-    assert_eq!(app.java.source, crate::java::Source::Github);
 
     app.handle_java_key(Key::Enter, Modifiers::NONE);
     let (_, urls) = java_effect(&app).expect("a download started");

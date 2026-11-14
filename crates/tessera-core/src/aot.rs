@@ -137,7 +137,7 @@ fn train(
                 version: version.to_string(),
                 message: "正在安装 Java 28 EA…".to_string(),
             });
-            java::ensure_feature(runtimes, 28, proxy)?
+            java::ensure_feature(runtimes, proxy)?
         }
     };
 
