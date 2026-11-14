@@ -102,7 +102,7 @@ pub use manifest::{
 pub use mc_version::McVersion;
 pub use mirror::Mirror;
 pub use modloader::ModLoader;
-pub use plan::{DownloadPlan, PlanEntry};
+pub use plan::{DownloadPlan, Extraction, PlanEntry};
 pub use urls::{reload_runtime_providers, runtime_providers_error, ManifestUrls};
 #[cfg(not(feature = "minimal"))]
 
