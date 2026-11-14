@@ -242,13 +242,45 @@ impl Launcher {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TitlebarIcon {
+    Minimize,
+    Close,
+}
+
+fn titlebar_icon(icon: TitlebarIcon, color: u32) -> impl IntoElement {
+    canvas(
+        |bounds, _, _| bounds,
+        move |bounds, _, window, _| {
+            let mut path = PathBuilder::stroke(px(1.5));
+            let x = bounds.origin.x;
+            let y = bounds.origin.y;
+            match icon {
+                TitlebarIcon::Minimize => {
+                    path.move_to(point(x + px(4.0), y + px(8.0)));
+                    path.line_to(point(x + px(12.0), y + px(8.0)));
+                }
+                TitlebarIcon::Close => {
+                    path.move_to(point(x + px(4.0), y + px(4.0)));
+                    path.line_to(point(x + px(12.0), y + px(12.0)));
+                    path.move_to(point(x + px(12.0), y + px(4.0)));
+                    path.line_to(point(x + px(4.0), y + px(12.0)));
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, rgb(color));
+            }
+        },
+    )
+    .size(px(16.0))
+}
+
 fn titlebar_button(
     id: &'static str,
     area: WindowControlArea,
-    glyph: &'static str,
+    icon: TitlebarIcon,
     color: u32,
     hover_background: u32,
-    hover_color: u32,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -258,12 +290,9 @@ fn titlebar_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .text_size(px(16.0))
-        .line_height(relative(1.0))
-        .text_color(rgb(color))
-        .hover(move |style| style.bg(rgb(hover_background)).text_color(rgb(hover_color)))
+        .hover(move |style| style.bg(rgb(hover_background)))
         .window_control_area(area)
-        .child(glyph)
+        .child(titlebar_icon(icon, color))
 }
 
 impl Render for Launcher {
@@ -338,18 +367,16 @@ impl Render for Launcher {
                     .child(titlebar_button(
                         "titlebar-minimize",
                         WindowControlArea::Min,
-                        "−",
-                        colors.text_secondary,
-                        colors.hover,
+                        TitlebarIcon::Minimize,
                         colors.text_primary,
+                        colors.hover,
                     ))
                     .child(titlebar_button(
                         "titlebar-close",
                         WindowControlArea::Close,
-                        "×",
-                        colors.status_danger,
-                        colors.fill_danger,
-                        colors.text_on_fill,
+                        TitlebarIcon::Close,
+                        colors.text_primary,
+                        colors.hover,
                     )),
             )
             .child(
