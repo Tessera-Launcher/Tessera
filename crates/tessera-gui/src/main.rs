@@ -404,10 +404,13 @@ fn main() {
         let view = launcher.clone();
         gpui_kit::open_window(
             WindowOptions {
+                // Opens at the smallest size the layout is drawn for: the window
+                // is resizable, so anyone who wants more room drags it bigger and
+                // the window manager keeps it above this floor.
                 window_min_size: Some(size(px(layout::MIN_WIDTH), px(layout::MIN_HEIGHT))),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(120.0), px(90.0)),
-                    size: size(px(layout::WINDOW_WIDTH), px(layout::WINDOW_HEIGHT)),
+                    size: size(px(layout::MIN_WIDTH), px(layout::MIN_HEIGHT)),
                 })),
                 ..TitleBar::window_options()
             },
