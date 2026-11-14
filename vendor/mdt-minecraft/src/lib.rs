@@ -6,7 +6,7 @@
 //! asset index, loader profile — all small JSON files), writes the profile the
 //! launcher reads back, and emits one list per version at
 //! `versions/<id>/<id>.txt`, in the format `aria2c --input-file` understands:
-//! a URL followed by its indented `dir=`, `out=` and `checksum=sha-1=` options.
+//! a URL followed by its indented `dir=` and `out=` options.
 //! Directory creation is part of writing the list, because aria2 does not create
 //! them and a missing `dir=` fails the whole entry.
 //!

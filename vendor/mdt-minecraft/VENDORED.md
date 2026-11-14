@@ -33,7 +33,9 @@ Upstream downloads everything itself. This copy does not:
 Added:
 
 - `plan::DownloadPlan` / `PlanEntry` — `versions/<id>/<id>.txt` in the
-  `aria2c --input-file` format (`dir=`, `out=`, `checksum=sha-1=…`).
+  `aria2c --input-file` format (`dir=`, `out=`; one URL per file, no checksum).
+- `DownloadPlan::verify` — the single verification step: missing, empty, wrong
+  size or wrong SHA-1. The list stays a download list, not a proof.
 - `DownloadPlan::create_dirs` — called by `write`. aria2 does not create `dir=`,
   and one missing directory fails the whole entry.
 - `plan::fill_missing_hashes` — Fabric's profile names its own artifacts without

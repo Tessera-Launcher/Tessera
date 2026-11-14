@@ -66,7 +66,6 @@ pub async fn plan_objects(
         .filter_map(|task| {
             let path = task.dest_path.strip_prefix(root).ok()?.to_path_buf();
             Some(crate::plan::PlanEntry {
-                fallbacks: Vec::new(),
                 url: task.url,
                 path,
                 size: task.size,
@@ -104,7 +103,7 @@ async fn fetch_index_file(
 }
 
 /// Lowercase hex SHA-1 of a file, when it can be read.
-fn sha1_of_file(path: &Path) -> Option<String> {
+pub(crate) fn sha1_of_file(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = Sha1::new();
     let mut buffer = vec![0u8; 64 * 1024];

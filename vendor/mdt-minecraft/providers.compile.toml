@@ -41,26 +41,12 @@ from = "https://resources.download.minecraft.net"
 to = "https://bmclapi2.bangbang93.com/assets"
 
 # Maven URL rewriting applied by `ManifestUrls::apply_maven_mirror`, in order.
+# Maven 走教育网镜像（SJTU 的 /bmclapi 实测 21.8 MiB/s，bmclapi2 直连 4.7 MiB/s）。
+# 资源对象与客户端 jar 没有 EDU 副本，仍由上面的 `mirror` 表指向 BMCLAPI 本体。
 [[bmclapi.maven]]
 from = "https://maven.fabricmc.net"
-to = "https://bmclapi2.bangbang93.com/maven"
-
-[[bmclapi.maven]]
-from = "https://libraries.minecraft.net"
-to = "https://bmclapi2.bangbang93.com/maven"
-
-# 教育网镜像：SJTU 的 /bmclapi 只镜像了 maven（Mojang 库 + Fabric），
-# 资源对象与客户端 jar 没有 EDU 副本，所以 `mirror` 表留空。
-[edu]
-minecraft = "https://piston-meta.mojang.com/mc/game/version_manifest.json"
-fabric = "https://meta.fabricmc.net/v2/versions"
-fabric_maven = "https://maven.fabricmc.net"
-fabric_meta = "https://meta.fabricmc.net"
-
-[[edu.maven]]
-from = "https://libraries.minecraft.net"
 to = "https://mirror.sjtu.edu.cn/bmclapi"
 
-[[edu.maven]]
-from = "https://maven.fabricmc.net"
+[[bmclapi.maven]]
+from = "https://libraries.minecraft.net"
 to = "https://mirror.sjtu.edu.cn/bmclapi"

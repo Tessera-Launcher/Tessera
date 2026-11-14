@@ -6,8 +6,9 @@
 //!
 //! The list is written in the format `aria2c --input-file` reads: a URL, then its
 //! indented options. `dir`/`out` pin the destination exactly (aria2 does not
-//! create directories, so the caller still has to), and `checksum=sha-1=…` makes
-//! aria2 verify the file itself. One list per version, named like the game
+//! create directories, so the caller still has to). No checksum is written: the
+//! hashes stay in memory and [`DownloadPlan::verify`] is the single place a file
+//! is judged after the download. One list per version, named like the game
 //! directory it belongs to: `versions/<id>/<id>.txt`.
 
 use std::collections::HashSet;
@@ -26,15 +27,18 @@ pub struct PlanEntry {
     pub size: u64,
     /// Lowercase hex SHA-1 the download must match, when the metadata has one.
     pub sha1: Option<String>,
-    /// Upstream URLs to try when [`Self::url`] fails.
-    ///
-    /// An EDU mirror carries only part of Maven, and a volunteer mirror can lose
-    /// an object; aria2 falls through the URI list in order, so the mirror is used
-    /// first and the original repository stays as the safety net.
-    pub fallbacks: Vec<String>,
 }
 
 impl PlanEntry {
+    /// Whether `len` bytes on disk can be this entry.
+    ///
+    /// `size == 0` means the metadata did not state one; such an entry is only
+    /// checked for existence.
+    #[must_use]
+    pub fn size_match(&self, len: u64) -> bool {
+        len > 0 && (self.size == 0 || self.size == len)
+    }
+
     /// An entry with no fallback URIs.
     #[must_use]
     pub fn new(url: impl Into<String>, path: impl Into<PathBuf>, size: u64) -> Self {
@@ -43,7 +47,6 @@ impl PlanEntry {
             path: path.into(),
             size,
             sha1: None,
-            fallbacks: Vec::new(),
         }
     }
 }
@@ -100,8 +103,11 @@ impl DownloadPlan {
 
     /// The `aria2c --input-file` body.
     ///
-    /// Every entry is one or more URLs (the mirror first, then its fallbacks),
-    /// `dir=`, `out=` and — when known — `checksum=`.
+    /// Every entry is `url`, `dir=` and `out=`. The hash is deliberately *not*
+    /// written: aria2's own check would be a second verification, and on failure
+    /// it leaves the file on disk anyway. [`Self::verify`] is the single place a
+    /// file is judged, after the download.
+    ///
     /// `dir` is absolute because aria2 resolves a relative one against the
     /// process working directory, not against this file.
     #[must_use]
@@ -115,19 +121,58 @@ impl DownloadPlan {
                 .map_or_else(|| root.to_path_buf(), |parent| root.join(parent));
             out.push_str(&entry.url);
             out.push('\n');
-            for fallback in &entry.fallbacks {
-                out.push_str(fallback);
-                out.push('\n');
-            }
             out.push_str(&format!("  dir={}\n", dir.display()));
             if let Some(name) = entry.path.file_name() {
                 out.push_str(&format!("  out={}\n", name.to_string_lossy()));
             }
-            if let Some(sha1) = &entry.sha1 {
-                out.push_str(&format!("  checksum=sha-1={sha1}\n"));
-            }
         }
         out
+    }
+
+    /// Which entries are missing or wrong on disk.
+    ///
+    /// This is the one verification step: the list carries no `checksum=` line, so
+    /// whatever downloaded the files (aria2, a browser, a resumed partial) is not
+    /// trusted. An entry is reported when its file is absent, empty, has the wrong
+    /// size, or hashes to something other than [`PlanEntry::sha1`].
+    ///
+    /// Entries without a hash in the metadata can only be checked for existence
+    /// and size.
+    pub async fn verify(&self, root: &Path) -> Vec<PlanEntry> {
+        #[cfg(feature = "tokio")]
+        {
+            let plan = self.clone();
+            let root = root.to_path_buf();
+            match tokio::task::spawn_blocking(move || plan.verify_blocking(&root)).await {
+                Ok(failed) => failed,
+                Err(_) => Vec::new(),
+            }
+        }
+        #[cfg(not(feature = "tokio"))]
+        {
+            self.verify_blocking(root)
+        }
+    }
+
+    fn verify_blocking(&self, root: &Path) -> Vec<PlanEntry> {
+        let mut failed = Vec::new();
+        for entry in &self.entries {
+            let path = root.join(&entry.path);
+            let Ok(meta) = std::fs::metadata(&path) else {
+                failed.push(entry.clone());
+                continue;
+            };
+            if !entry.size_match(meta.len()) {
+                failed.push(entry.clone());
+                continue;
+            }
+            if let Some(expected) = &entry.sha1 {
+                if crate::asset::sha1_of_file(&path).as_deref() != Some(expected.as_str()) {
+                    failed.push(entry.clone());
+                }
+            }
+        }
+        failed
     }
 
     /// Create every directory the list's destinations live in.
@@ -199,7 +244,6 @@ pub fn entries_from_libraries(profile: &serde_json::Value) -> Vec<PlanEntry> {
                 continue;
             };
             entries.push(PlanEntry {
-                fallbacks: Vec::new(),
                 url: url.to_string(),
                 path: Path::new("libraries").join(path),
                 size: artifact
@@ -239,7 +283,6 @@ pub fn entries_from_libraries(profile: &serde_json::Value) -> Vec<PlanEntry> {
                 .and_then(serde_json::Value::as_str)
                 .filter(|sha1| is_sha1(sha1))
                 .map(str::to_ascii_lowercase),
-            fallbacks: Vec::new(),
         });
     }
     entries
@@ -257,12 +300,8 @@ pub fn apply_mirror_to_entries(
     mirror: &crate::mirror::Mirror,
 ) {
     for entry in entries {
-        let original = entry.url.clone();
-        let maven = urls.apply_maven_mirror(&original, mirror);
+        let maven = urls.apply_maven_mirror(&entry.url, mirror);
         entry.url = urls.apply_mirror(&maven, mirror);
-        if entry.url != original && !entry.fallbacks.contains(&original) {
-            entry.fallbacks.insert(0, original);
-        }
     }
 }
 
@@ -329,7 +368,6 @@ mod tests {
             path: PathBuf::from(path),
             size: 10,
             sha1: sha1.map(str::to_string),
-            fallbacks: Vec::new(),
         }
     }
 
@@ -352,37 +390,11 @@ mod tests {
                 Some("0123456789abcdef0123456789abcdef01234567"),
             )],
         );
+        // One URL per entry, no hash: the plan is a download list, not a proof.
         assert_eq!(
             plan.to_aria2(Path::new("/game")),
-            "https://example/a.jar\n  dir=/game/libraries/a\n  out=a.jar\n  checksum=sha-1=0123456789abcdef0123456789abcdef01234567\n"
+            "https://example/a.jar\n  dir=/game/libraries/a\n  out=a.jar\n"
         );
-    }
-
-    #[test]
-    fn a_missing_hash_leaves_the_checksum_line_out() {
-        let plan = DownloadPlan::new(
-            "1.20.1",
-            vec![entry("https://example/b.jar", "libraries/b.jar", None)],
-        );
-        assert!(!plan.to_aria2(Path::new("/game")).contains("checksum="));
-    }
-
-    #[tokio::test]
-    async fn writing_the_list_creates_every_directory() {
-        let root = tempfile::tempdir().unwrap();
-        let plan = DownloadPlan::new(
-            "1.20.1",
-            vec![
-                entry("https://e/a.jar", "libraries/com/a/a.jar", None),
-                entry("https://e/b.jar", "libraries/com/b/b.jar", None),
-                entry("https://e/ab/cdef", "assets/objects/ab/cdef", None),
-            ],
-        );
-        plan.write(root.path()).await.unwrap();
-        assert!(root.path().join("libraries/com/a").is_dir());
-        assert!(root.path().join("libraries/com/b").is_dir());
-        assert!(root.path().join("assets/objects/ab").is_dir());
-        assert!(plan.path(root.path()).is_file());
     }
 
     #[test]
@@ -435,28 +447,24 @@ mod tests {
         // The three hosts a plan actually points at, plus a Fabric maven artifact.
         let mut entries = vec![
             PlanEntry {
-                fallbacks: Vec::new(),
                 url: "https://piston-data.mojang.com/v1/objects/aa/client.jar".into(),
                 path: "versions/1.20.1/client.jar".into(),
                 size: 0,
                 sha1: None,
             },
             PlanEntry {
-                fallbacks: Vec::new(),
                 url: "https://libraries.minecraft.net/com/example/a/1.0/a-1.0.jar".into(),
                 path: "libraries/com/example/a/1.0/a-1.0.jar".into(),
                 size: 0,
                 sha1: None,
             },
             PlanEntry {
-                fallbacks: Vec::new(),
                 url: "https://resources.download.minecraft.net/3d/3de85c".into(),
                 path: "assets/objects/3d/3de85c".into(),
                 size: 0,
                 sha1: None,
             },
             PlanEntry {
-                fallbacks: Vec::new(),
                 url: "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.20.1/f.jar".into(),
                 path: "libraries/net/fabricmc/f/0.20.1/f.jar".into(),
                 size: 0,
@@ -471,7 +479,7 @@ mod tests {
         );
         assert_eq!(
             entries[1].url,
-            "https://bmclapi2.bangbang93.com/maven/com/example/a/1.0/a-1.0.jar"
+            "https://mirror.sjtu.edu.cn/bmclapi/com/example/a/1.0/a-1.0.jar"
         );
         assert_eq!(
             entries[2].url,
@@ -479,23 +487,53 @@ mod tests {
         );
         assert_eq!(
             entries[3].url,
-            "https://bmclapi2.bangbang93.com/maven/net/fabricmc/fabric-loader/0.20.1/f.jar"
+            "https://mirror.sjtu.edu.cn/bmclapi/net/fabricmc/fabric-loader/0.20.1/f.jar"
         );
-
-        // The original URL stays as the fallback, so a mirror that lacks this
-        // object still resolves: aria2 walks the URI list in order.
-        assert_eq!(
-            entries[2].fallbacks,
-            vec!["https://resources.download.minecraft.net/3d/3de85c".to_string()]
-        );
-        let list = DownloadPlan::new("t", entries.clone()).to_aria2(Path::new("/root"));
-        assert!(list.contains("https://bmclapi2.bangbang93.com/assets/3d/3de85c\n"));
-        assert!(list.contains("https://resources.download.minecraft.net/3d/3de85c\n"));
 
         // `mojang` has no rules: nothing may change.
         let mut untouched = entries.clone();
         let mojang = crate::urls::ManifestUrls::try_new(&crate::mirror::Mirror::Mojang).unwrap();
         apply_mirror_to_entries(&mut untouched, &mojang, &crate::mirror::Mirror::Mojang);
         assert_eq!(untouched, entries);
+    }
+
+    #[tokio::test]
+    async fn verify_is_the_only_place_a_file_is_judged() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("good.jar"), b"abc").unwrap();
+        // Same length, different bytes: only the hash can tell.
+        std::fs::write(root.path().join("short.jar"), b"xyz").unwrap();
+        let good = {
+            use sha1::Digest as _;
+            hex::encode(sha1::Sha1::digest(b"abc"))
+        };
+
+        let entry = |name: &str, sha1: Option<&str>| PlanEntry {
+            url: format!("https://example/{name}"),
+            path: PathBuf::from(name),
+            size: 3,
+            sha1: sha1.map(ToString::to_string),
+        };
+        let plan = DownloadPlan::new(
+            "t",
+            vec![
+                entry("good.jar", Some(&good)),
+                entry("short.jar", Some(&good)),
+                entry("missing.jar", Some(&good)),
+                entry("size-only.jar", None),
+            ],
+        );
+        // `size-only.jar` is absent, so three of four are reported.
+        let failed = plan.verify(root.path()).await;
+        assert_eq!(failed.len(), 3, "{failed:?}");
+        assert!(!failed
+            .iter()
+            .any(|entry| entry.path == Path::new("good.jar")));
+        assert!(
+            failed
+                .iter()
+                .any(|entry| entry.path == Path::new("short.jar")),
+            "wrong content is caught by the hash"
+        );
     }
 }
