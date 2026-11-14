@@ -52,6 +52,19 @@ async fn main() -> ExitCode {
             println!("hashed:  {}", plan.hashed());
             println!("bytes:   {}", plan.total_bytes());
             println!("list:    {}", plan.path(client.root_dir()).display());
+            if std::env::var("MDT_VERIFY").is_ok() {
+                let started = std::time::Instant::now();
+                let failed = plan.verify(client.root_dir()).await;
+                println!(
+                    "verify:  {} 个文件不符（{} 个条目，{:.1}s）",
+                    failed.len(),
+                    plan.entries.len(),
+                    started.elapsed().as_secs_f64(),
+                );
+                for entry in failed.iter().take(5) {
+                    println!("  缺/坏: {}", entry.path.display());
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {

@@ -21,18 +21,6 @@ versions/26.3-fabric-0.20.1/26.3-fabric-0.20.1.txt
 https://piston-data.mojang.com/v1/objects/e877…/client.jar
   dir=/game/versions/26.3-fabric-0.20.1
   out=26.3-fabric-0.20.1.jar
-  checksum=sha-1=e877b6a07acd633fb3bb475002175cec036e7b87
-```
-
-一个条目可以写多个 URL，aria2 按顺序尝试；镜像改写时会把上游留作回落（`edu`
-就是这个模式，教育网镜像只覆盖 Maven 的一部分）：
-
-```text
-https://mirror.sjtu.edu.cn/bmclapi/com/google/code/gson/…/gson-2.11.0.jar
-https://libraries.minecraft.net/com/google/code/gson/…/gson-2.11.0.jar
-  dir=/game/libraries/com/google/code/gson/…
-  out=gson-2.11.0.jar
-  checksum=sha-1=…
 ```
 
 写清单的同时会把每个条目的目录建好——aria2 不会创建 `dir=`，缺一个目录整条就失败。
@@ -42,9 +30,10 @@ https://libraries.minecraft.net/com/google/code/gson/…/gson-2.11.0.jar
 - 全版本原版 Minecraft（manifest 里的任意版本）+ Fabric 加载器。
 - 每个版本一份清单，逐文件带 SHA-1，按目标路径去重。
 - 同时写版本 JSON：启动器要读它拼命令行；Fabric profile 会与 vanilla 合并，目录自包含。
-- 镜像：`Mirror::BMCLAPI`、`Mirror::Mojang`、`Mirror::Custom("edu")`，端点由
-  `providers.compile.toml` 编译进静态表。被改写的条目会把原始 URL 留作回落，
-  aria2 先试镜像、失败再走上游。
+- 镜像：`Mirror::BMCLAPI`、`Mirror::Mojang`、`Mirror::Custom("<name>")`，端点由
+  `providers.compile.toml` 编译进静态表。
+- 一个文件一个地址，清单里不带 `checksum=`；校验只做一次，由
+  `plan.verify()` 在下载后负责。
 - `minimal` 特性：只保留版本清单解析与清单核心。
 
 MDT **不**下载游戏文件、不启动游戏、不处理登录，也没有 CLI / TUI，唯一的二进制是示例。
@@ -104,8 +93,13 @@ aria2c -i versions/<id>/<id>.txt \
 
 - 几千个小文件时 `-j` 才是关键；`-x`/`-s` 只对超过 `--min-split-size`（默认 20 MiB）
   的文件有意义，保持 1 即可。
-- aria2 会边下边校验 `checksum=sha-1=`，但 **校验失败时文件仍留在盘上**（退出码 32），
-  目标已存在则退出码 13。所以非 0 退出应当理解为“这些路径要复检”，而不是“文件在就算好”。
+- 哈希不写进清单：aria2 自己校验等于校验两遍，而且失败时文件照样留在盘上。校验一次就够：
+
+  ```rust
+  let failed = plan.verify(client.root_dir()).await;   // 缺失 / 空 / 大小不符 / 哈希不符
+  ```
+
+- 目标已存在时 aria2 退出码 13，传输失败是 32；非 0 退出就当“这批路径要复检”。
 - `--stop-with-process` 防止 aria2 子进程比启动器活得久。
 - `--save-session=<file>` 把失败的条目写回去，第二轮只补缺的。
 

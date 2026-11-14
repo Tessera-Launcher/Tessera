@@ -90,7 +90,6 @@ pub(crate) async fn plan_swap(
             path: Path::new("libraries").join(&path),
             size: 0,
             sha1: Some(published.to_ascii_lowercase()),
-            fallbacks: Vec::new(),
         });
         libraries.push(serde_json::json!({
             "name": name,

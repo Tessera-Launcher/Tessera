@@ -194,7 +194,6 @@ impl MdtClient {
                 path: path.to_path_buf(),
                 size: task.size,
                 sha1: Some(task.sha1),
-                fallbacks: Vec::new(),
             });
         }
 
@@ -292,7 +291,6 @@ impl MdtClient {
                 path: path.to_path_buf(),
                 size: task.size,
                 sha1: Some(task.sha1),
-                fallbacks: Vec::new(),
             });
         }
         // The loader's own libraries, straight from its profile.
@@ -624,7 +622,6 @@ mod tests {
         assert!(list.is_file(), "{}", list.display());
         let text = std::fs::read_to_string(&list).unwrap();
         assert!(text.contains("  dir="));
-        assert!(text.contains("  checksum=sha-1="));
         // Only metadata landed on disk: the directories exist (aria2 needs
         // them), but no jar, library or asset object was fetched.
         let version_dir = root.path().join("versions/1.20.1");
@@ -670,6 +667,6 @@ mod tests {
         assert!(plan.path(root.path()).is_file());
         assert_eq!(files_under(&root.path().join("libraries")), 0);
         let text = std::fs::read_to_string(plan.path(root.path())).unwrap();
-        assert!(text.contains("checksum=sha-1="));
+        assert!(!text.contains("checksum="), "the list carries no hash");
     }
 }

@@ -22,18 +22,6 @@ That file is an `aria2c --input-file` list: a URL, then its indented options.
 https://piston-data.mojang.com/v1/objects/e877…/client.jar
   dir=/game/versions/26.3-fabric-0.20.1
   out=26.3-fabric-0.20.1.jar
-  checksum=sha-1=e877b6a07acd633fb3bb475002175cec036e7b87
-```
-
-An entry may name several URLs; aria2 walks them in order. Mirrored entries use
-that to keep the upstream repository as a fallback (`edu` is such a provider:
-
-```text
-https://mirror.sjtu.edu.cn/bmclapi/com/google/code/gson/…/gson-2.11.0.jar
-https://libraries.minecraft.net/com/google/code/gson/…/gson-2.11.0.jar
-  dir=/game/libraries/com/google/code/gson/…
-  out=gson-2.11.0.jar
-  checksum=sha-1=…
 ```
 
 Every destination directory is created while the list is written, because aria2
@@ -45,9 +33,10 @@ does not create `dir=` and one missing directory fails the whole entry.
 - One list per version, per-file SHA-1 included, deduplicated by destination.
 - The version JSON is written too: the launcher reads it back to build a command
   line, and Fabric's profile is merged so the directory stands on its own.
-- Mirrors: `Mirror::BMCLAPI`, `Mirror::Mojang`, `Mirror::Custom("edu")`, with
-  provider tables compiled in from `providers.compile.toml`. A mirrored entry keeps
-  its original URL as a fallback: aria2 tries the mirror, then the upstream.
+- Mirrors: `Mirror::BMCLAPI`, `Mirror::Mojang`, `Mirror::Custom("<name>")`, with
+  provider tables compiled in from `providers.compile.toml`.
+- One URL per file — no fallback chains, no `checksum=` line. `plan.verify()` is
+  the single place a file is judged, after the download
 - `minimal` feature: version-manifest parsing and the plan core only.
 
 MDT does **not** download game files, launch the game, or authenticate. It has no
@@ -107,11 +96,16 @@ aria2c -i versions/<id>/<id>.txt \
 
 Notes from using it:
 
+- The hash is not in the list. aria2's own check would be a second verification,
+  and it leaves a failed file on disk anyway; verify once, in the launcher:
+
+  ```rust
+  let failed = plan.verify(client.root_dir()).await;   // missing, empty, wrong size or hash
+  ```
+
 - `-j` is the knob for thousands of small files; `-x`/`-s` only matter for files
   above `--min-split-size` (20 MiB default), so keep them at 1.
-- aria2 verifies each `checksum=sha-1=` while it writes, but **leaves the file on
-  disk when the checksum fails** (exit code 32) and exits 13 when the target
-  already exists. Treat a non-zero exit as "re-check these paths", not as "the
+- aria2 exits 13 when the target already exists, and 32 when a transfer fails. Treat a non-zero exit as "re-check these paths", not as "the
   file is there".
 - `--stop-with-process` keeps an aria2 child from outliving the launcher.
 - `--save-session=<file>` writes the failures back out, so a second run only
