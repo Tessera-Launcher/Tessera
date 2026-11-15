@@ -337,11 +337,6 @@ impl Launcher {
                     let text = state.read(cx).value().to_string();
                     this.state.aria2.proxy = text.clone();
                     this.state.settings.aria2_proxy = text;
-                    if let Err(error) =
-                        tessera_core::settings::save(&this.settings_path, &this.state.settings)
-                    {
-                        this.state.log(format!("配置写入失败：{error}"));
-                    }
                     this.refresh(cx);
                 }
             },
@@ -365,11 +360,6 @@ impl Launcher {
                     let text = state.read(cx).value().to_string();
                     this.state.java.proxy = text.clone();
                     this.state.settings.github_proxy = text;
-                    if let Err(error) =
-                        tessera_core::settings::save(&this.settings_path, &this.state.settings)
-                    {
-                        this.state.log(format!("配置写入失败：{error}"));
-                    }
                     this.refresh(cx);
                 }
             },

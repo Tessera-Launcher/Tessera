@@ -78,6 +78,10 @@ impl Launcher {
             self.state.take_ui_requests();
             return;
         }
+        // Every path that can change theme or account goes through here (keys,
+        // mouse handlers and worker reports), so this is where the config is
+        // written.
+        self.persist_settings();
         let mut changed = self.observe_loading();
 
         // Desktop requests first: they are cheap and one of them starts the
@@ -293,12 +297,33 @@ impl Launcher {
         cx.notify();
     }
 
+    /// Write `配置.toml` when a persisted field changed.
+    ///
+    /// Theme and account are changed by state-machine actions that do not touch
+    /// the disk, so this is the one place every front-end path already goes
+    /// through; comparing against the last saved copy keeps a repaint cheap.
+    fn persist_settings(&mut self) {
+        if self.state.settings == self.settings_saved {
+            return;
+        }
+        match tessera_core::settings::save(&self.settings_path, &self.state.settings) {
+            Ok(()) => self.settings_saved = self.state.settings.clone(),
+            Err(error) => {
+                // Give up on this change instead of retrying every frame; the
+                // next edit tries again.
+                self.settings_saved = self.state.settings.clone();
+                self.state.log(format!("配置写入失败：{error}"));
+            }
+        }
+    }
+
     /// Quit without losing the log tail or leaving a training JVM behind.
     ///
     /// The game process is deliberately not killed: a player who closes the
     /// launcher expects the game to keep running.
     pub(crate) fn shutdown(&mut self, cx: &mut Context<Self>) {
         self.tasks.stop();
+        self.persist_settings();
         self.flush_log();
         // Dropping the handle closes the file; do it while the window still
         // exists so a failed final write can be logged before the process ends.

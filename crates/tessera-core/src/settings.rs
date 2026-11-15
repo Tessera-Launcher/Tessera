@@ -1,12 +1,12 @@
-//! `data/配置.toml` — launch defaults that outlive a run.
+//! `data/配置.toml` — state that should outlive a run.
 //!
-//! Only things the launcher genuinely owns live here: the heap size and the
-//! window size, plus the GitHub proxies the user typed on the dependency page
-//! (one for the Java runtime, one for aria2 — they are separate downloads and
-//! are not always reachable through the same proxy). The
-//! download source is deliberately *not* persisted (a one-off switch should not
-//! become the new normal), and nothing about
-//! credentials or accounts is written here.
+//! Only things the launcher genuinely owns live here: the heap size, the window
+//! size, the color theme, which saved account was last active (by file name,
+//! never its tokens), and the GitHub proxies the user typed on the dependency
+//! page (one for the Java runtime, one for aria2 — they are separate downloads
+//! and are not always reachable through the same proxy). The download source is
+//! deliberately *not* persisted (a one-off switch should not become the new
+//! normal), and nothing about credentials is written here.
 //!
 //! The file is optional: a missing or broken one falls back to the built-in
 //! defaults and says why in the log. The GUI applies the values at startup; a
@@ -21,7 +21,16 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// Persisted launch defaults.
+/// The color scheme last chosen in the settings page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+}
+
+/// Persisted state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -37,6 +46,11 @@ pub struct Settings {
     pub github_proxy: String,
     /// The same, for the aria2 download on the dependency page.
     pub aria2_proxy: String,
+    /// The color scheme in use.
+    pub theme: Theme,
+    /// File name (under the account directory) of the account in use; empty
+    /// when signed out. The tokens stay in the account file.
+    pub account: String,
 }
 
 impl Default for Settings {
@@ -48,6 +62,8 @@ impl Default for Settings {
             window_height: 480,
             github_proxy: String::new(),
             aria2_proxy: String::new(),
+            theme: Theme::Light,
+            account: String::new(),
         }
     }
 }
@@ -197,6 +213,8 @@ mod tests {
             window_height: 720,
             github_proxy: "gh-proxy.com".into(),
             aria2_proxy: "127.0.0.1:8080".into(),
+            theme: Theme::Dark,
+            account: "Steve (1).json".into(),
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));
@@ -247,6 +265,35 @@ mod tests {
         assert_eq!(settings.version, Settings::CURRENT_VERSION);
         assert_eq!(settings.memory_mb, 4096);
         assert!(note.unwrap().contains("升级到"));
+    }
+
+    #[test]
+    fn theme_and_account_survive_a_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Settings::path(tmp.path());
+        let settings = Settings {
+            theme: Theme::Dark,
+            account: "Alex.json".into(),
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let (loaded, note) = load(&path);
+        assert!(note.is_none());
+        assert_eq!(loaded.theme, Theme::Dark);
+        assert_eq!(loaded.account, "Alex.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("theme = \"dark\""), "{text}");
+    }
+
+    #[test]
+    fn an_old_file_without_theme_or_account_still_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Settings::path(tmp.path());
+        std::fs::write(&path, "memory_mb = 4096\n").unwrap();
+        let (settings, note) = load(&path);
+        assert!(note.is_none(), "{note:?}");
+        assert_eq!(settings.theme, Theme::Light);
+        assert!(settings.account.is_empty());
     }
 
     #[test]

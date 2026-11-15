@@ -12,17 +12,14 @@ pub(crate) fn colors(cx: &App) -> &'static color::Palette {
     }
 }
 
-pub(crate) fn install(cx: &mut App) {
-    apply(ThemeMode::Light, cx);
-}
-
-pub(crate) fn toggle(cx: &mut App) {
-    let mode = if Theme::global(cx).is_dark() {
-        ThemeMode::Light
-    } else {
-        ThemeMode::Dark
-    };
-    apply(mode, cx);
+pub(crate) fn set(mode: tessera_core::settings::Theme, cx: &mut App) {
+    apply(
+        match mode {
+            tessera_core::settings::Theme::Light => ThemeMode::Light,
+            tessera_core::settings::Theme::Dark => ThemeMode::Dark,
+        },
+        cx,
+    );
 }
 
 fn apply(mode: ThemeMode, cx: &mut App) {
