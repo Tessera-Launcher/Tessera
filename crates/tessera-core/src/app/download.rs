@@ -598,8 +598,11 @@ impl App {
         self.download.started = Some(Instant::now());
         self.download.error = None;
         self.screen = Screen::Download;
-        self.status = format!("安装 {version} · {}", loader.label());
-        self.log(format!("开始安装 {version}（{}）", loader.label()));
+        self.status = format!("安装 {version} · {}", loader.display_label(&version));
+        self.log(format!(
+            "开始安装 {version}（{}）",
+            loader.display_label(&version)
+        ));
         self.request(Effect::Install { version, loader });
     }
 

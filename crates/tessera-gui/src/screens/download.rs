@@ -263,9 +263,13 @@ impl Launcher {
             );
 
         let mut loaders = div().v_flex().gap(px(space::XS)).p(px(space::MD));
+        let selected_version = download
+            .picked_version()
+            .map(|version| version.id.as_str())
+            .unwrap_or_default();
         for (index, loader) in download.loaders.iter().enumerate() {
             let picked = index == download.loader_pick;
-            let label = loader.label();
+            let label = loader.display_label(selected_version);
             loaders = loaders.child(
                 div()
                     .id(format!("loader-{index}"))
