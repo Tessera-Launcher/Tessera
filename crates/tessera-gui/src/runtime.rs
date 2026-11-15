@@ -164,6 +164,7 @@ impl Launcher {
                         dir,
                         credentials,
                         self.state.launch_options.clone(),
+                        self.state.settings.github_proxy.clone(),
                     );
                     self.tasks
                         .watch(TaskKind::Game, rx, deliver_game, game_done);

@@ -443,6 +443,7 @@ fn launching_without_a_managed_runtime_says_where_to_get_one() {
         dir,
         credentials,
         app.launch_options.clone(),
+        String::new(),
     ) {
         app.handle_game_event(event);
     }
