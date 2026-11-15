@@ -1,5 +1,5 @@
-//! The Java runtime picker: the one runtime this launcher offers (Java 28 EA),
-//! the GitHub proxy field and minor-version updates.
+//! The Java runtime picker: the one runtime this launcher offers (Java 28 EA)
+//! and its minor-version updates. The GitHub proxy is a global setting.
 
 use super::*;
 
@@ -25,10 +25,6 @@ pub struct JavaUi {
     /// The runtime the picker offers (Java 28 EA, always one row).
     pub runtimes: Vec<crate::java::Runtime>,
     pub selected: usize,
-    /// What the user typed as a GitHub proxy; empty means go direct.
-    pub proxy: String,
-    /// Whether keystrokes go into the proxy field instead of the list.
-    pub editing_proxy: bool,
     /// Bytes done, bytes total, and a smoothed speed.
     pub progress: (u64, u64, f64),
     /// Runtimes already on disk, newest first.
@@ -55,8 +51,6 @@ impl Default for JavaUi {
             stage: JavaStage::Loading,
             runtimes: Vec::new(),
             selected: 0,
-            proxy: String::new(),
-            editing_proxy: false,
             progress: (0, 0, 0.0),
             installed: Vec::new(),
             current: None,
@@ -139,14 +133,10 @@ impl App {
         // runtimes are already on disk after a download elsewhere.
         self.java.installed = crate::java::installed_runtimes(&self.runtimes);
         // One `--version` run; the card has to show what is actually on disk.
-        // The aria2 proxy is its own field, seeded once like the Java one.
-        self.aria2.proxy = self.settings.aria2_proxy.clone();
         self.refresh_aria2();
         // Empty list and not already loading: first visit, or the last fetch
         // failed. A request still in flight is left alone.
         if self.java.runtimes.is_empty() && !self.java.fetching {
-            // The proxy is seeded from the config once; a typed value survives.
-            self.java.proxy = self.settings.github_proxy.clone();
             self.java.stage = JavaStage::Loading;
             self.java.fetching = true;
             self.request(Effect::FetchJavaList);
@@ -177,35 +167,11 @@ impl App {
     pub fn close_java(&mut self) {
         self.screen = Screen::Main;
         // A download in flight keeps its thread; only the screen goes away.
-        self.java.editing_proxy = false;
     }
 
     /// Keys while the Java picker is open.
     pub fn handle_java_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
         let _ = modifiers;
-        // The proxy field swallows typing, like the download search box does.
-        if self.java.editing_proxy {
-            match code {
-                Key::Esc | Key::Enter | Key::Tab => {
-                    self.java.editing_proxy = false;
-                    self.settings.github_proxy = self.java.proxy.trim().to_string();
-                    self.status = if self.java.proxy.trim().is_empty() {
-                        "GitHub Proxy：未设置".to_string()
-                    } else {
-                        format!("GitHub Proxy: {}", self.java.proxy.trim())
-                    };
-                }
-                Key::Backspace => {
-                    self.java.proxy.pop();
-                }
-                Key::Char(c) if !c.is_control() && self.java.proxy.len() < 128 => {
-                    self.java.proxy.push(c);
-                }
-                _ => {}
-            }
-            return true;
-        }
-
         match self.java.stage {
             JavaStage::Loading => {
                 if matches!(code, Key::Esc | Key::Char('q')) {
@@ -220,10 +186,6 @@ impl App {
                 Key::Down | Key::Char('j') => {
                     let last = self.java.runtimes.len().saturating_sub(1);
                     self.java.selected = (self.java.selected + 1).min(last);
-                }
-                Key::Char('p') => {
-                    self.java.editing_proxy = true;
-                    self.status = "输入 GitHub Proxy（如 gh-proxy.com，可留空）".to_string();
                 }
                 Key::Char('a') => self.start_aria2_install(),
                 Key::Enter => self.start_java_download(),
@@ -314,14 +276,14 @@ impl App {
 
     /// Download one specific runtime.
     fn start_java_install(&mut self, runtime: crate::java::Runtime) {
-        self.settings.github_proxy = self.java.proxy.trim().to_string();
-        let urls = crate::java::candidates(&runtime, &self.java.proxy);
+        let proxy = self.settings.github_proxy.clone();
+        let urls = crate::java::candidates(&runtime, &proxy);
         self.java.stage = JavaStage::Downloading;
         self.java.current = Some(runtime.major);
         self.java.progress = (0, 0, 0.0);
         self.java.message = None;
         self.status = format!("Java {}：开始下载", runtime.major);
-        self.log(match crate::java::normalize_proxy(&self.java.proxy) {
+        self.log(match crate::java::normalize_proxy(&proxy) {
             Some(proxy) => format!(
                 "Java {} {}（GitHub，经 {proxy}）",
                 runtime.major,

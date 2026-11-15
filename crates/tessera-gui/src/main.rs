@@ -92,10 +92,9 @@ struct Launcher {
     app_id_sub: Option<Subscription>,
     offline_input: Option<Entity<InputState>>,
     offline_sub: Option<Subscription>,
-    proxy_input: Option<Entity<InputState>>,
-    proxy_sub: Option<Subscription>,
-    aria2_proxy_input: Option<Entity<InputState>>,
-    aria2_proxy_sub: Option<Subscription>,
+    /// The GitHub proxy field on the settings page. Kept separate from
+    /// `state.settings` so typing only reaches 配置.toml after "保存".
+    github_proxy_input: Option<Entity<InputState>>,
     /// The audio worker's command side. Its reports live in [`Tasks`], and the
     /// worker is started on the first sound: a launcher that never plays
     /// anything must not open an audio device.
@@ -240,10 +239,7 @@ impl Launcher {
             app_id_sub: None,
             offline_input: None,
             offline_sub: None,
-            proxy_input: None,
-            proxy_sub: None,
-            aria2_proxy_input: None,
-            aria2_proxy_sub: None,
+            github_proxy_input: None,
             music_audio: None,
             music_progress: None,
             music_progress_sub: None,
@@ -326,7 +322,7 @@ impl Render for Launcher {
             Screen::Download => self.download_screen(window, cx).into_any_element(),
             Screen::Java => self.java_screen(window, cx).into_any_element(),
             Screen::Music => self.music_screen(window, cx).into_any_element(),
-            Screen::Settings => self.settings_screen(cx).into_any_element(),
+            Screen::Settings => self.settings_screen(window, cx).into_any_element(),
         };
 
         let overlay = self.uninstall_overlay(cx);

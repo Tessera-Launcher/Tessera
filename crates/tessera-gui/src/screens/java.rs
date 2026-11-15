@@ -8,14 +8,10 @@ use crate::*;
 impl Launcher {
     pub(crate) fn java_screen(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = theme::colors(cx);
-        // GitHub is the only source, so each card carries its own proxy field:
-        // the two downloads do not always sit behind the same proxy.
-        let proxy = self.ensure_proxy(window, cx);
-        let aria2_proxy = self.ensure_aria2_proxy(window, cx);
         let show_loading = self.loading_visible(crate::LoadingKey::Java);
 
         let java = &self.state.java;
@@ -114,23 +110,6 @@ impl Launcher {
                     .child(message),
             );
         }
-
-        card = card.child(
-            div()
-                .v_flex()
-                .gap(px(space::XS))
-                .child(
-                    div()
-                        .text_size(px(font::CAPTION))
-                        .text_color(rgb(colors.text_secondary))
-                        .child("GitHub Proxy（留空直连）"),
-                )
-                .child(
-                    Input::new(&proxy)
-                        .appearance(true)
-                        .text_size(px(font::BODY)),
-                ),
-        );
 
         // The button lives with the thing it acts on, not in the page footer:
         // the footer stays for the status line, and the next dependency will
@@ -258,22 +237,6 @@ impl Launcher {
         }
         aria2_card = aria2_card.child(
             div()
-                .v_flex()
-                .gap(px(space::XS))
-                .child(
-                    div()
-                        .text_size(px(font::CAPTION))
-                        .text_color(rgb(colors.text_secondary))
-                        .child("GitHub Proxy（留空直连）"),
-                )
-                .child(
-                    Input::new(&aria2_proxy)
-                        .appearance(true)
-                        .text_size(px(font::BODY)),
-                ),
-        );
-        aria2_card = aria2_card.child(
-            div()
                 .h_flex()
                 .w_full()
                 .items_center()
@@ -316,55 +279,5 @@ impl Launcher {
             )
             .child(div().flex_1())
             .child(footer_bar(colors, &status))
-    }
-
-    /// The aria2 card's own GitHub proxy field, created once.
-    fn ensure_aria2_proxy(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<InputState> {
-        if let Some(state) = &self.aria2_proxy_input {
-            return state.clone();
-        }
-        let state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("GitHub Proxy，例如 gh-proxy.com（可留空）")
-        });
-        self.aria2_proxy_sub = Some(cx.subscribe(
-            &state,
-            |this: &mut Launcher, state, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let text = state.read(cx).value().to_string();
-                    this.state.aria2.proxy = text.clone();
-                    this.state.settings.aria2_proxy = text;
-                    this.refresh(cx);
-                }
-            },
-        ));
-        self.aria2_proxy_input = Some(state.clone());
-        state
-    }
-
-    /// The GitHub proxy field on the dependency page, created once.
-    fn ensure_proxy(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
-        if let Some(state) = &self.proxy_input {
-            return state.clone();
-        }
-        let state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("GitHub Proxy，例如 gh-proxy.com（可留空）")
-        });
-        self.proxy_sub = Some(cx.subscribe(
-            &state,
-            |this: &mut Launcher, state, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let text = state.read(cx).value().to_string();
-                    this.state.java.proxy = text.clone();
-                    this.state.settings.github_proxy = text;
-                    this.refresh(cx);
-                }
-            },
-        ));
-        self.proxy_input = Some(state.clone());
-        state
     }
 }
