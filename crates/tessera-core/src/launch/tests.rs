@@ -1255,7 +1255,7 @@ fn lwjgl3_install(root: &Path) {
         }),
     );
     // The client jar has to be a real zip: prepare normalizes it (the 1.8.9
-    // install is signed and sealed, which the rewrite agent cannot use).
+    // install is signed and sealed, which the patched jar must not be).
     {
         use std::io::Write;
         let file = std::fs::File::create(root.join("versions/1.8.9/1.8.9.jar")).unwrap();
@@ -1287,7 +1287,7 @@ fn lwjgl3_install(root: &Path) {
 }
 
 #[test]
-fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
+fn a_version_installed_on_lwjgl3_launches_without_an_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     lwjgl3_install(root);
@@ -1300,12 +1300,11 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
     let args = &launch.command.args;
     assert_eq!(launch.lwjgl3.as_deref(), Some("3.4.3"));
 
-    // The agent is written next to the version and put on the command line.
-    let agent = root.join("versions/1.8.9/1.8.9.lwjgl3-agent.jar");
-    assert!(agent.is_file(), "the embedded agent is written out");
+    // The shim and the call-site rewrites live in the patched client jar, so
+    // this launch path must not create or pass an agent.
+    assert!(!root.join("versions/1.8.9/1.8.9.lwjgl3-agent.jar").exists());
     assert!(
-        args.iter()
-            .any(|arg| arg == &format!("-javaagent:{}", agent.display())),
+        !args.iter().any(|arg| arg.starts_with("-javaagent:")),
         "{args:?}"
     );
     assert!(args
@@ -1323,8 +1322,8 @@ fn a_version_installed_on_lwjgl3_launches_with_the_agent() {
         args.iter().any(|arg| arg.ends_with("1.8.9.jar")),
         "{args:?}"
     );
-    // A signed jar handed to the agent would make the JVM refuse the rewritten
-    // classes, so prepare strips the signature blocks and the Sealed attribute.
+    // A signed jar would make the JVM refuse rewritten classes, so prepare
+    // strips the signature blocks and the Sealed attribute.
     let mut client =
         zip::ZipArchive::new(std::fs::File::open(root.join("versions/1.8.9/1.8.9.jar")).unwrap())
             .unwrap();
@@ -1390,9 +1389,11 @@ fn a_trained_lwjgl3_version_replays_its_cache_from_the_unsigned_jar() {
         !args.iter().any(|arg| arg.ends_with("1.8.9.lwjgl3.jar")),
         "{args:?}"
     );
-    // LWJGL 3 still needs its agent and native access even with a cache.
+    // LWJGL 3 still needs native access even with a cache, but it must not
+    // inject the old launcher agent: the patched client jar has the shim.
     assert!(
-        args.iter()
+        !args
+            .iter()
             .any(|arg| arg.ends_with("1.8.9.lwjgl3-agent.jar")),
         "{args:?}"
     );
@@ -1418,7 +1419,7 @@ fn a_version_without_the_marker_keeps_lwjgl2() {
             .command
             .args
             .iter()
-            .any(|arg| arg.contains("lwjgl3-agent")),
+            .any(|arg| arg == "--enable-native-access=ALL-UNNAMED"),
         "{:?}",
         launch.command.args
     );

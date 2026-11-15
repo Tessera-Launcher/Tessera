@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-use super::agents::{ensure_asset, LEGACY_AGENT, LWJGL3_AGENT};
+use super::agents::{ensure_asset, LEGACY_AGENT};
 use super::aot_cache::aot_cache;
 use super::java::{find_java, launch_path, required_java, LaunchPath, LEGACY_MAIN};
 use super::manifest::{client_jar, features, merge_chain, resolve_argument, substitute};
@@ -67,7 +67,7 @@ pub(super) fn prepare_inner(
     // built from.
     // A version the installer put on LWJGL 3 says so in its own JSON (`mdtLwjgl3`),
     // and its library list already names the LWJGL 3 jars: the class path needs no
-    // special case here, only the agent and the flags below.
+    // special case here, only the native-access flags below.
     let lwjgl3 = merged.lwjgl3.clone();
     let client_jar = if let Some(selection) = &aot {
         // The cache was trained on this unsigned copy; replaying it from any
@@ -130,8 +130,8 @@ pub(super) fn prepare_inner(
     }
 
     // A signed jar is not a usable class path entry: the JVM refuses a class
-    // the agent rewrote if it came from a signed jar, and a `Sealed:` package
-    // rejects classes defined next to it (the shim, an AOT-replayed class).
+    // a transformer rewrote if it came from a signed jar, and a `Sealed:`
+    // package rejects classes defined next to it (the shim, an AOT class).
     // Installs normalize every downloaded jar, but a version installed before
     // that step existed still carries the signed/sealed originals, so the whole
     // class path is checked here as well. A jar already in the normalized state
@@ -220,11 +220,9 @@ pub(super) fn prepare_inner(
     // Required no matter what the profile claimed.
     args.push(format!("-Xmx{}M", options.memory_mb));
     if lwjgl3.is_some() {
-        // The agent carries the LWJGL 2 shim and rewrites the call sites LWJGL 3
-        // renamed; `--enable-native-access` is what LWJGL 3 asks for on JDK 24+.
-        let agent = version_dir.join(format!("{version_dir_name}.lwjgl3-agent.jar"));
-        ensure_asset(&agent, LWJGL3_AGENT)?;
-        args.push(format!("-javaagent:{}", agent.display()));
+        // The patched client jar carries the LWJGL 2 shim and already has the
+        // LWJGL 3 call-site rewrites baked in. Only the native-access flag is
+        // still the launcher's job; there is no agent to add.
         args.push("--enable-native-access=ALL-UNNAMED".to_string());
     }
     // Only if the profile did not ask for a natives directory itself: ours is the
