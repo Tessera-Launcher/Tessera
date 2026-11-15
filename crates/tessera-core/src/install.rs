@@ -58,16 +58,18 @@ pub enum Loader {
     #[default]
     None,
     Fabric,
+    Outlands,
 }
 
 /// Every loader, in picker order.
-pub const LOADERS: [Loader; 2] = [Loader::None, Loader::Fabric];
+pub const LOADERS: [Loader; 3] = [Loader::None, Loader::Fabric, Loader::Outlands];
 
 impl Loader {
     pub fn label(self) -> &'static str {
         match self {
             Loader::None => "无",
             Loader::Fabric => "Fabric",
+            Loader::Outlands => "Outlands",
         }
     }
 
@@ -80,6 +82,7 @@ impl Loader {
         match (self, mc_version) {
             (Loader::None, "1.8.9") => "Celeritas Patch",
             (Loader::Fabric, _) => "Fabric Loader & API",
+            (Loader::Outlands, _) => "Outlands & Mod-of-Mending",
             _ => self.label(),
         }
     }
@@ -88,6 +91,7 @@ impl Loader {
         match self {
             Loader::None => None,
             Loader::Fabric => Some(ModLoader::Fabric),
+            Loader::Outlands => Some(ModLoader::Outlands),
         }
     }
 
@@ -238,9 +242,9 @@ pub fn spawn_install(
                     .await
                     .map_err(|error| describe(&error))?,
             };
-            let fabric_api_added = add_fabric_api(&mut plan, loader, &version, &sender).await;
+            let mods_added = add_required_mods(&mut plan, loader, &version, &sender).await;
             let fastutil_added = crate::fastutil::add_plan_entry(&mut plan, &version);
-            if fastutil_added || fabric_api_added {
+            if fastutil_added || mods_added {
                 // MDT writes the aria2 list before returning the plan, so the
                 // extra entries have to be written back before aria2 reads it.
                 plan.write(client.root_dir(), &list_dir)
@@ -383,24 +387,44 @@ pub fn spawn_install(
     })
 }
 
-/// Add the Fabric API jar to an install's `mods/` directory.
+/// A jar that an install forces into `mods/`.
+struct ModFile {
+    /// File name under `mods/`.
+    name: String,
+    url: String,
+    size: u64,
+    /// `None` when the source publishes no digest this launcher can check.
+    sha1: Option<String>,
+}
+
+/// Add the mods an install cannot be without.
 ///
 /// Returns whether the plan grew, because the caller has to write the aria2 list
 /// again when it did: MDT wrote it before this step ran.
 ///
-/// Nothing here can fail the install. Fabric API is mandatory in the sense that
-/// every Fabric install asks for it, but a metadata or network hiccup must not
-/// throw away the several hundred megabytes that are about to be downloaded, so
-/// the failure is reported loudly and the install continues without it.
-async fn add_fabric_api(
+/// Nothing here can fail the install. Both mods are mandatory in the sense that
+/// every install asks for them, but a metadata or network hiccup must not throw
+/// away the several hundred megabytes that are about to be downloaded, so a
+/// failure is reported loudly and the install continues without it.
+async fn add_required_mods(
     plan: &mut mdt::plan::DownloadPlan,
     loader: Loader,
     mc_version: &str,
     sender: &Sender<InstallEvent>,
 ) -> bool {
-    if loader != Loader::Fabric {
-        return false;
+    match loader {
+        Loader::Fabric => add_fabric_api(plan, mc_version, sender).await,
+        Loader::Outlands => add_mod_of_mending(plan, sender).await,
+        Loader::None => false,
     }
+}
+
+/// Fabric API: nearly every Fabric mod links against it.
+async fn add_fabric_api(
+    plan: &mut mdt::plan::DownloadPlan,
+    mc_version: &str,
+    sender: &Sender<InstallEvent>,
+) -> bool {
     let _ = sender.send(InstallEvent::Log("Fabric API：解析版本…".to_string()));
     let api = match crate::fabric_api::resolve(mc_version).await {
         Ok(Some(api)) => api,
@@ -417,40 +441,86 @@ async fn add_fabric_api(
             return false;
         }
     };
-    // `plan.id` is the version directory under `versions/` (the loader profile
-    // id), which is also the game directory this install launches in.
-    let entry = mods_entry(&plan.id, &api);
     let _ = sender.send(InstallEvent::Log(format!(
         "Fabric API {}（{}，{}）",
         api.version,
         api.origin.label(),
         crate::discover::human_size(api.size)
     )));
-    if plan
-        .entries
-        .iter()
-        .any(|existing| existing.path == entry.path)
-    {
-        return false;
-    }
-    plan.entries.push(entry);
-    true
+    push_mod(
+        plan,
+        ModFile {
+            name: api.file_name(),
+            url: api.url,
+            size: api.size,
+            sha1: api.sha1,
+        },
+    )
 }
 
-/// Where one Fabric API jar goes: `versions/<install>/mods/fabric-api-<v>.jar`.
+/// Mod of Mending: upstream marks it required for Outlands.
+async fn add_mod_of_mending(
+    plan: &mut mdt::plan::DownloadPlan,
+    sender: &Sender<InstallEvent>,
+) -> bool {
+    let _ = sender.send(InstallEvent::Log("Mod of Mending：解析版本…".to_string()));
+    let api = match crate::mod_of_mending::resolve().await {
+        Ok(Some(api)) => api,
+        Ok(None) => {
+            let _ = sender.send(InstallEvent::Log(
+                "Mod of Mending：没有可下载的制品（Maven 未发布、GitHub 无 release）—— 未安装"
+                    .to_string(),
+            ));
+            return false;
+        }
+        Err(error) => {
+            let _ = sender.send(InstallEvent::Log(format!(
+                "Mod of Mending：获取失败（{error}）—— 未安装"
+            )));
+            return false;
+        }
+    };
+    let verified = if api.sha1.is_some() {
+        "含校验"
+    } else {
+        "无可用校验"
+    };
+    let _ = sender.send(InstallEvent::Log(format!(
+        "Mod of Mending {}（{}，{}，{verified}）",
+        api.version,
+        api.origin.label(),
+        crate::discover::human_size(api.size)
+    )));
+    push_mod(
+        plan,
+        ModFile {
+            name: api.file_name(),
+            url: api.url,
+            size: api.size,
+            sha1: api.sha1,
+        },
+    )
+}
+
+/// Append a jar to `<install>/mods/`, unless the same path is already planned.
 ///
 /// The install's own game directory is its version directory, so `mods/` sits
 /// next to the version JSON and no other install can see it.
-fn mods_entry(version_dir: &str, api: &crate::fabric_api::Api) -> mdt::plan::PlanEntry {
-    mdt::plan::PlanEntry {
-        url: api.url.clone(),
-        path: PathBuf::from("versions")
-            .join(version_dir)
-            .join("mods")
-            .join(api.file_name()),
-        size: api.size,
-        sha1: api.sha1.clone(),
+fn push_mod(plan: &mut mdt::plan::DownloadPlan, file: ModFile) -> bool {
+    let path = PathBuf::from("versions")
+        .join(&plan.id)
+        .join("mods")
+        .join(&file.name);
+    if plan.entries.iter().any(|existing| existing.path == path) {
+        return false;
     }
+    plan.entries.push(mdt::plan::PlanEntry {
+        url: file.url,
+        path,
+        size: file.size,
+        sha1: file.sha1,
+    });
+    true
 }
 
 /// Latest loader build for one Minecraft version.
@@ -463,6 +533,22 @@ async fn resolve_loader_version(
     loader: ModLoader,
     mc_version: &str,
 ) -> Result<String> {
+    // Outlands keeps its builds in a Maven repository, not in a loader manifest:
+    // the newest CalVer entry is the one to install.
+    if loader == ModLoader::Outlands {
+        let versions = mdt::outlands::fetch_versions(client.downloader())
+            .await
+            .map_err(|error| {
+                Error::network(format!(
+                    "获取 {} 版本列表失败：{error}",
+                    loader.display_name()
+                ))
+            })?;
+        return versions
+            .latest()
+            .cloned()
+            .ok_or_else(|| Error::missing("Outlands 没有已发布的构建".to_string()));
+    }
     let versions = manifest::fetch_fabric_manifest(client.downloader(), client.mirror())
         .await
         .map_err(|error| {
@@ -694,20 +780,24 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Fabric API lands in the install's own `mods/`, next to its version JSON.
+    fn fabric_api_file() -> ModFile {
+        ModFile {
+            name: "fabric-api-0.116.18+1.21.1.jar".into(),
+            url: "https://maven.fabricmc.net/x.jar".into(),
+            sha1: Some("584d303f646287ee6be059ecb2fc451255be9ee9".into()),
+            size: 2_453_884,
+        }
+    }
+
+    /// A forced mod lands in the install's own `mods/`, next to its version JSON.
     ///
     /// Sharing `versions/<id>/` with the game directory is what makes a mod
     /// global to this install and invisible to every other one.
     #[test]
-    fn fabric_api_goes_into_the_installs_own_mods_directory() {
-        let api = crate::fabric_api::Api {
-            version: "0.116.18+1.21.1".into(),
-            url: "https://maven.fabricmc.net/x.jar".into(),
-            sha1: Some("584d303f646287ee6be059ecb2fc451255be9ee9".into()),
-            size: 2_453_884,
-            origin: crate::fabric_api::Origin::Maven,
-        };
-        let entry = mods_entry("1.21.1+Fabric0.16.10", &api);
+    fn a_forced_mod_goes_into_the_installs_own_mods_directory() {
+        let mut plan = mdt::plan::DownloadPlan::new("1.21.1+Fabric0.16.10".to_string(), Vec::new());
+        assert!(push_mod(&mut plan, fabric_api_file()));
+        let entry = &plan.entries[0];
         assert_eq!(
             entry.path,
             PathBuf::from("versions/1.21.1+Fabric0.16.10/mods/fabric-api-0.116.18+1.21.1.jar")
@@ -717,24 +807,18 @@ mod tests {
             Some("584d303f646287ee6be059ecb2fc451255be9ee9")
         );
         assert_eq!(entry.size, 2_453_884);
-        assert_eq!(entry.url, "https://maven.fabricmc.net/x.jar");
+
+        // Planning the same install twice must not queue the same file twice.
+        assert!(!push_mod(&mut plan, fabric_api_file()));
+        assert_eq!(plan.entries.len(), 1);
     }
 
     /// The aria2 list has to point at the `mods/` directory it created, or the
     /// loader finds nothing to load.
     #[test]
-    fn the_aria2_list_writes_the_api_jar_next_to_the_version() {
-        let api = crate::fabric_api::Api {
-            version: "0.116.18+1.21.1".into(),
-            url: "https://maven.fabricmc.net/x.jar".into(),
-            sha1: None,
-            size: 10,
-            origin: crate::fabric_api::Origin::Maven,
-        };
-        let plan = mdt::plan::DownloadPlan::new(
-            "1.21.1+Fabric0.16.10".to_string(),
-            vec![mods_entry("1.21.1+Fabric0.16.10", &api)],
-        );
+    fn the_aria2_list_writes_the_mod_jar_next_to_the_version() {
+        let mut plan = mdt::plan::DownloadPlan::new("1.21.1+Fabric0.16.10".to_string(), Vec::new());
+        push_mod(&mut plan, fabric_api_file());
         let list = plan.to_aria2(std::path::Path::new("/mc"));
         assert!(
             list.contains("dir=/mc/versions/1.21.1+Fabric0.16.10/mods"),
@@ -744,6 +828,92 @@ mod tests {
             list.contains("out=fabric-api-0.116.18+1.21.1.jar"),
             "{list}"
         );
+    }
+
+    /// The picker row names everything the install contains, because neither
+    /// half can be installed without the other.
+    #[test]
+    fn loader_rows_name_the_mod_that_comes_with_them() {
+        assert_eq!(
+            Loader::Fabric.display_label("1.21.1"),
+            "Fabric Loader & API"
+        );
+        assert_eq!(
+            Loader::Outlands.display_label("1.12.2"),
+            "Outlands & Mod-of-Mending"
+        );
+        // Outlands is the 1.12.2 stack only, and its label is per-version.
+        assert!(Loader::Outlands.compatible("1.12.2"));
+        assert!(!Loader::Outlands.compatible("1.20.1"));
+        assert_eq!(Loader::Outlands.label(), "Outlands");
+    }
+
+    /// Live: Outlands resolves its build list from Maven and writes a plan.
+    ///
+    /// Only metadata is fetched (the build list, the installer jar's
+    /// `version.json`, the asset index), so this runs in seconds and proves the
+    /// whole path except moving bytes.
+    ///
+    /// ```sh
+    /// cargo test -p tessera-core --lib -- --ignored live_outlands --nocapture
+    /// ```
+    #[test]
+    #[ignore = "network + ~7 MB of metadata"]
+    fn live_outlands_build_list_and_plan() {
+        let root = std::env::temp_dir().join("tessera-live-outlands");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let list_dir = root.join("cache");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let client = MdtClient::builder()
+                .mirror(MdtMirror::Mojang)
+                .root_dir(&root)
+                .list_dir(&list_dir)
+                .build()
+                .expect("a client");
+            let versions = mdt::outlands::fetch_versions(client.downloader())
+                .await
+                .expect("a build list");
+            let latest = versions.latest().cloned().expect("at least one build");
+            eprintln!(
+                "outlands builds: {} (latest {latest})",
+                versions.versions.len()
+            );
+            assert!(versions.versions.len() > 5);
+
+            let plan = client
+                .plan_loader("1.12.2", ModLoader::Outlands, &latest)
+                .await
+                .expect("a plan");
+            eprintln!("{} entries, {} hashed", plan.entries.len(), plan.hashed());
+            assert!(plan.entries.len() > 100, "{} entries", plan.entries.len());
+            // Every Outlands library ships a digest, so nothing is left to guess.
+            assert!(plan.hashed() + 32 >= plan.entries.len(), "unhashed entries");
+            assert!(!plan.extractions.is_empty(), "natives must be unpacked");
+            assert!(plan.path(&list_dir).is_file(), "no download list written");
+
+            let wanted = plan.id.clone();
+            let profile: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(
+                    root.join("versions")
+                        .join(&wanted)
+                        .join(format!("{wanted}.json")),
+                )
+                .expect("the profile"),
+            )
+            .expect("parseable");
+            assert_eq!(profile["id"], wanted.as_str());
+            assert_eq!(profile["mdtLoader"]["id"], "outlands");
+            assert!(profile.get("inheritsFrom").is_none(), "not a delta");
+            assert!(profile["mainClass"].as_str().unwrap().contains("outlands"));
+        });
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

@@ -305,7 +305,13 @@ impl Launcher {
                             })),
                     )
                     .child(
+                        // The inspector is 280 px wide and one row now names a
+                        // loader *and* the mod it always installs, so the label
+                        // has to ellipsize instead of pushing the panel apart.
                         div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
                             .text_size(px(font::BODY))
                             .text_color(rgb(if picked {
                                 colors.text_accent
