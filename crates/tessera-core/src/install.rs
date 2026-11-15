@@ -307,7 +307,10 @@ pub fn spawn_install(
             // signed and some libraries are sealed. The LWJGL 3 agent rewrites
             // game classes, which the JVM refuses in a signed jar, and a sealed
             // package rejects the agent's shim classes. MDT stripped both while
-            // it still downloaded the files itself; now the install does it.
+            // it still downloaded the files itself; now the install does it —
+            // for every jar on the list, mods included. A jar that keeps its
+            // signature is a jar the launcher cannot guarantee, and having two
+            // kinds on disk is how a "works for me" bug is born.
             let mut normalized = 0usize;
             for entry in &plan.entries {
                 if !entry
@@ -315,16 +318,6 @@ pub fn spawn_install(
                     .to_string_lossy()
                     .to_ascii_lowercase()
                     .ends_with(".jar")
-                {
-                    continue;
-                }
-                // A mod is not a game jar: rewriting it would strip a signature
-                // nothing asked us to touch, and the jar is loaded as-is by the
-                // loader rather than through this launcher's shims.
-                if entry
-                    .path
-                    .components()
-                    .any(|part| part.as_os_str() == "mods")
                 {
                     continue;
                 }

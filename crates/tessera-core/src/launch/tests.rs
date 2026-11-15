@@ -1484,92 +1484,37 @@ fn a_version_without_the_marker_keeps_lwjgl2() {
     );
 }
 
-/// Outlands pins Java 25 and cannot run on the shims' 28: its bootstrap opens
-/// modules through `java.lang.Module.implAddExportsOrOpens`, which 28 removed.
-/// It also loses the client jar's Mojang signature to normalization, so FML's
-/// certificate check has to be switched off for it.
+/// Every jar this launcher owns is normalized, and `mods/` is not an exception.
+///
+/// The loader reads mods itself rather than off the class path, so a signed mod
+/// jar is not rewritten by any transformer — but "unsigned and unsealed" is a
+/// rule about what the launcher leaves on disk, not about what happens to break
+/// first. It also repairs an instance installed before the rule covered mods.
 #[test]
-fn an_outlands_profile_runs_on_its_pinned_java_with_the_certificate_check_off() {
+fn jars_in_the_instance_mods_directory_are_normalized_too() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    let id = "1.12.2-outlands-2026.11.14";
-    write_version(
-        root,
-        id,
-        serde_json::json!({
-            "id": id,
-            "type": "release",
-            "mainClass": "top.outlands.foundation.boot.Foundation",
-            "javaVersion": { "majorVersion": 25 },
-            "assetIndex": { "id": "1.12" },
-            "mdtLoader": { "id": "outlands", "version": "2026.11.14" },
-            "arguments": {
-                "jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"],
-                "game": ["--username", "${auth_player_name}", "--tweakClass",
-                         "net.minecraftforge.fml.common.launcher.FMLTweaker"]
-            },
-            "libraries": [
-                { "name": "com.mojang:patchy:1.1",
-                  "downloads": { "artifact": { "path": "com/mojang/patchy/1.1/patchy-1.1.jar" } } }
-            ]
-        }),
-    );
-    let version_dir = root.join("versions").join(id);
-    let library = root.join("libraries/com/mojang/patchy/1.1/patchy-1.1.jar");
-    std::fs::create_dir_all(library.parent().unwrap()).unwrap();
-    std::fs::write(&library, EMPTY_JAR).unwrap();
-    std::fs::write(version_dir.join(format!("{id}.jar")), EMPTY_JAR).unwrap();
-    std::fs::create_dir_all(version_dir.join(format!("{id}-natives"))).unwrap();
+    fixture(root);
+    let mods = root.join("versions/1.8.9/mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let signed = mods.join("some-mod-1.0.jar");
+    write_signed_jar(&signed);
+    let untouched = mods.join("readme.txt");
+    std::fs::write(&untouched, b"not a jar").unwrap();
 
-    // Both runtimes installed: 28 is the launcher's default and must not win.
-    managed_runtime(root, 28);
     let options = Options {
-        runtimes: Some(managed_runtime(root, 25)),
-        ..Options::default()
-    };
-    let launch = prepare(root, id, &Credentials::offline("Steve"), &options).unwrap();
-
-    assert_eq!(launch.required_major, 25);
-    assert_eq!(launch.java_major, 25, "the pinned Java runs it");
-    assert!(
-        launch.command.exe.to_string_lossy().contains("25"),
-        "{}",
-        launch.command.exe.display()
-    );
-    assert!(launch
-        .command
-        .args
-        .iter()
-        .any(|arg| arg == "-Dfml.ignoreInvalidMinecraftCertificates=true"));
-
-    // A profile that pins nothing keeps the launcher's runtime and no flag.
-    let fabric_options = Options {
         runtimes: Some(managed_runtime(root, 28)),
         ..Options::default()
     };
-    let id = "26.3";
-    write_version(
-        root,
-        id,
-        serde_json::json!({
-            "id": id,
-            "type": "release",
-            "mainClass": "net.minecraft.client.main.Main",
-            "javaVersion": { "majorVersion": 21 },
-            "assetIndex": { "id": "34" },
-            "libraries": []
-        }),
+    prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();
+
+    let names = entry_names(&signed);
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("META-INF/MOJANGCS")),
+        "signature entries survived: {names:?}"
     );
-    std::fs::write(
-        root.join("versions").join(id).join(format!("{id}.jar")),
-        EMPTY_JAR,
-    )
-    .unwrap();
-    let launch = prepare(root, id, &Credentials::offline("Steve"), &fabric_options).unwrap();
-    assert_eq!(launch.java_major, 28);
-    assert!(!launch
-        .command
-        .args
-        .iter()
-        .any(|arg| arg == "-Dfml.ignoreInvalidMinecraftCertificates=true"));
+    assert!(!manifest_of(&signed).contains("Sealed"), "still sealed");
+    assert_eq!(std::fs::read(&untouched).unwrap(), b"not a jar");
 }

@@ -76,17 +76,6 @@ pub fn pick_major(installed: &[u32], required: u32) -> Option<u32> {
         .find(|major| *major == LAUNCH_JAVA)
 }
 
-/// The runtime a loader stack insists on, if it insists on one.
-///
-/// Outlands pins Java 25 (its metadata says `[25, 26]`): its bootstrap opens
-/// modules through `java.lang.Module.implAddExportsOrOpens`, which 28 removed.
-/// Running it on the shims' runtime is not "newer is better", it is a crash in
-/// a static initialiser before the game can log anything.
-pub fn pinned_major(loader_id: Option<&str>, required: u32) -> Option<u32> {
-    let pinned = matches!(loader_id, Some("outlands"));
-    (pinned && required > 0 && required < LAUNCH_JAVA).then_some(required)
-}
-
 /// Whether this profile boots through LaunchWrapper.
 ///
 /// It only says how the game starts: a bare LaunchWrapper profile gets the
@@ -94,37 +83,6 @@ pub fn pinned_major(loader_id: Option<&str>, required: u32) -> Option<u32> {
 /// point (old Forge) does not.
 pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
     main_class == Some(LAUNCHWRAPPER)
-}
-
-/// The runtime a pinned profile asked for, which has to be installed.
-///
-/// No fallback: the newer runtime cannot run this stack, so a missing pinned
-/// major is a download the user has to make, not a substitution to make for
-/// them.
-pub fn find_pinned_java(runtimes: &Path, major: u32) -> Result<(PathBuf, u32)> {
-    let installed = crate::java::installed(runtimes);
-    let pick = installed.iter().find(|(found, _)| *found == major);
-    let Some((_, path)) = pick else {
-        let seen = installed
-            .iter()
-            .map(|(major, _)| format!("Java {major}"))
-            .collect::<Vec<_>>()
-            .join("、");
-        return Err(Error::missing(format!(
-            "这个版本需要 Java {major}（现在只有 {seen}）。它会自动下载，请稍后重试"
-        )));
-    };
-    match probe_java(path) {
-        Some(probed) if probed == major => Ok((path.clone(), probed)),
-        Some(probed) => Err(Error::invalid(format!(
-            "{} 报告自己是 Java {probed}，但目录写着 Java {major}（按 v 重新下载）",
-            path.display()
-        ))),
-        None => Err(Error::missing(format!(
-            "{} 无法执行，重新下载 Java {major}",
-            path.display()
-        ))),
-    }
 }
 
 /// Find the Java every profile launches on among the runtimes this launcher
