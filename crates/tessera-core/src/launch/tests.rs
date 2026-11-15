@@ -1236,6 +1236,34 @@ fn a_non_ascii_natives_path_gets_an_ascii_symlink() {
 
 /// What the installer writes for 1.8.9 on LWJGL 3: the LWJGL 3 jars in
 /// `libraries/`, no LWJGL 2 group at all, the marker, and a real client zip.
+
+/// Add the marker Celeritas writes into a patched client jar. Kept in the test
+/// instead of the fixture so unpatched-order tests still exercise the old path.
+fn mark_patched_client(path: &Path) {
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let tmp = path.with_extension("patched");
+    let mut out = zip::ZipWriter::new(std::fs::File::create(&tmp).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap().to_string();
+        out.start_file(&name, options).unwrap();
+        if name.eq_ignore_ascii_case("META-INF/MANIFEST.MF") {
+            let mut manifest = String::new();
+            entry.read_to_string(&mut manifest).unwrap();
+            out.write_all(manifest.as_bytes()).unwrap();
+            out.write_all(b"Tessera-Client-Patch: celeritas-lwjgl3\n")
+                .unwrap();
+        } else {
+            std::io::copy(&mut entry, &mut out).unwrap();
+        }
+    }
+    out.finish().unwrap();
+    drop(archive);
+    std::fs::rename(tmp, path).unwrap();
+}
+
 fn lwjgl3_install(root: &Path) {
     write_version(
         root,
@@ -1284,6 +1312,38 @@ fn lwjgl3_install(root: &Path) {
         std::fs::write(jar, EMPTY_JAR).unwrap();
     }
     managed_runtime(root, 28);
+}
+
+#[test]
+fn a_patched_client_jar_goes_before_the_libraries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    lwjgl3_install(root);
+    mark_patched_client(&root.join("versions/1.8.9/1.8.9.jar"));
+
+    let options = Options {
+        runtimes: Some(root.join("依赖").join("java")),
+        ..Options::default()
+    };
+    let launch = prepare(root, "1.8.9", &Credentials::offline("Steve"), &options).unwrap();
+    let classpath = launch
+        .command
+        .args
+        .iter()
+        .position(|arg| arg == "-cp")
+        .map(|index| launch.command.args[index + 1].clone())
+        .expect("classpath");
+    let entries: Vec<&str> = classpath.split(&[':', ';'][..]).collect();
+    assert!(
+        entries[0].ends_with("1.8.9.jar"),
+        "the patched client must win over rewritten library classes: {classpath}"
+    );
+    assert!(
+        entries[1..]
+            .iter()
+            .all(|entry| !entry.ends_with("1.8.9.jar")),
+        "{classpath}"
+    );
 }
 
 #[test]
