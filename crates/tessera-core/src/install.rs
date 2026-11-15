@@ -163,6 +163,7 @@ pub fn spawn_install(
     // Where the aria2 list goes (`data/缓存`); `None` keeps it in `<root>/列表`.
     list_dir: Option<PathBuf>,
     source: Source,
+    proxy: String,
     version: String,
     loader: Loader,
 ) -> Receiver<InstallEvent> {
@@ -290,6 +291,25 @@ pub fn spawn_install(
             if normalized > 0 {
                 let _ = sender.send(InstallEvent::Log(format!(
                     "去签名 / 去密封：{normalized} 个 jar"
+                )));
+            }
+
+            // 1.8.9 is not usable without the Celeritas/LWJGL3 patch: it carries
+            // the shim and the call-site rewrites, so this is part of install,
+            // not an optional post-step.
+            if version == crate::patch::VERSION {
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "1.8.9 补丁：下载（{}）…",
+                    crate::patch::log_url(&proxy)
+                )));
+                let patch = crate::patch::download(&list_dir, &proxy).await?;
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "1.8.9 补丁：应用到 client.jar（{} 个条目）…",
+                    crate::patch::VERSION
+                )));
+                let entries = crate::patch::apply(client.root_dir(), &patch)?;
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "1.8.9 补丁：完成（{entries} 个条目）"
                 )));
             }
 
@@ -525,6 +545,7 @@ mod tests {
             deps,
             None,
             Source::Mojang,
+            String::new(),
             "26.3".into(),
             Loader::None,
         );
