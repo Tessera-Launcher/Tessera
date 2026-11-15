@@ -28,11 +28,11 @@ use crate::error::{Error, Result};
 
 pub const VERSION: &str = "1.8.9";
 pub const PATCH_URL: &str =
-    "https://github.com/Tessera-Launcher/Celeritas/releases/download/v2.5.0-patch3-1.8.9/celeritas-1.8.9-2.5.0-patch3.tpatch";
+    "https://github.com/Tessera-Launcher/Celeritas/releases/download/v2.5.0-patch4-1.8.9/celeritas-1.8.9-2.5.0-patch4.tpatch";
 /// SHA-256 of the published patch asset. Bump both constants when a new patch
 /// is released; installing an unexpected file must never proceed silently.
-pub const PATCH_SHA256: &str = "a45f2f35d29dea834db3093262072932922433a30414dcc085053b71645c6e68";
-const PATCH_FILE: &str = "celeritas-1.8.9-2.5.0-patch3.tpatch";
+pub const PATCH_SHA256: &str = "1ceb4b69a82b9ac316c1d710bfbfe42d8bdf39a9c9da859226d5c31ed9e1a52a";
+const PATCH_FILE: &str = "celeritas-1.8.9-2.5.0-patch4.tpatch";
 const FORMAT: u32 = 1;
 const CANONICALIZATION: u32 = 1;
 
