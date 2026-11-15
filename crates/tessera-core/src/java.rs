@@ -39,15 +39,6 @@ use sha2::{Digest, Sha256};
 /// When it ships GA, this constant and [`api_ea_url`] are the whole change.
 pub const FEATURE: u32 = 28;
 
-/// The runtime a 1.12.2 loader stack needs (Outlands: `compatibleJavaMajors`
-/// `[25, 26]`).
-///
-/// 28 is not a substitute even though it is newer: Outlands' bootstrap opens
-/// modules through `java.lang.Module.implAddExportsOrOpens`, and 28 no longer
-/// has that method — the very first launch dies in a static initialiser, before
-/// the game writes a log.
-pub const LEGACY: u32 = 25;
-
 /// Adoptium's own metadata API.
 pub const API_BASE: &str = "https://api.adoptium.net/v3";
 
@@ -118,25 +109,6 @@ pub fn api_ea_url(feature: u32, (os, arch): (&str, &str)) -> String {
          ?os={os}&architecture={arch}&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk\
          &page=0&page_size=1&sort_method=DATE&sort_order=DESC"
     )
-}
-
-/// The URL for a released runtime.
-pub fn api_ga_url(feature: u32, (os, arch): (&str, &str)) -> String {
-    format!(
-        "{API_BASE}/assets/feature_releases/{feature}/ga\
-         ?os={os}&architecture={arch}&image_type=jre&vendor=eclipse&heap_size=normal&project=jdk\
-         &page=0&page_size=1&sort_method=DATE&sort_order=DESC"
-    )
-}
-
-/// The endpoint that publishes `feature`: 28 is still early access, everything
-/// this launcher pins below it (`25`) is a finished release.
-pub fn api_url(feature: u32, platform: (&str, &str)) -> String {
-    if feature == FEATURE {
-        api_ea_url(feature, platform)
-    } else {
-        api_ga_url(feature, platform)
-    }
 }
 
 pub use crate::http::normalize_proxy;
@@ -256,32 +228,23 @@ pub fn is_newer(latest: &str, installed: &str) -> bool {
 /// Used by the forced AOT training: it must not silently fall back to an older
 /// JVM, because the cache is tied to the exact build.
 pub fn ensure_feature(runtimes: &Path, proxy: &str) -> Result<Installed> {
-    ensure(runtimes, FEATURE, proxy)
-}
-
-/// Make sure one feature version is installed, downloading it if needed.
-///
-/// A profile that pins its own runtime (Outlands pins 25) has no runtime to fall
-/// back to: the newer one cannot run it at all, so the runtime is fetched rather
-/// than substituted.
-pub fn ensure(runtimes: &Path, major: u32, proxy: &str) -> Result<Installed> {
     if let Some(found) = installed_runtimes(runtimes)
         .into_iter()
-        .find(|runtime| runtime.major == major)
+        .find(|runtime| runtime.major == FEATURE)
     {
         return Ok(found);
     }
     let client = blocking_client()?;
     let (sender, _receiver) = mpsc::channel();
-    let url = api_url(major, platform());
+    let url = api_ea_url(FEATURE, platform());
     let text = blocking_fetch(&client, &url, &sender)?;
-    let runtime = parse_assets(&text, major)?;
+    let runtime = parse_ea_assets(&text, FEATURE)?;
     let urls = candidates(&runtime, proxy);
     install(&client, runtimes, &runtime, &urls, &sender)?;
     installed_runtimes(runtimes)
         .into_iter()
-        .find(|installed| installed.major == major)
-        .ok_or_else(|| Error::missing(format!("Java {major} 安装后没有找到 bin/java")))
+        .find(|installed| installed.major == FEATURE)
+        .ok_or_else(|| Error::missing(format!("Java {FEATURE} 安装后没有找到 bin/java")))
 }
 
 /// `bin/java` under an unpacked runtime, if there is one.
@@ -298,7 +261,7 @@ pub fn spawn_list() -> Receiver<Event> {
         let client = blocking_client()?;
         let url = api_ea_url(FEATURE, platform());
         let text = blocking_fetch(&client, &url, &sender)?;
-        let runtime = parse_assets(&text, FEATURE)?;
+        let runtime = parse_ea_assets(&text, FEATURE)?;
         let _ = sender.send(Event::Listed(vec![runtime]));
         Ok(())
     })
@@ -635,13 +598,13 @@ fn blocking_fetch(
 ///
 /// That endpoint returns releases with a `binaries` array, not the flat
 /// one-binary-per-asset shape of `/assets/latest`.
-pub fn parse_assets(text: &str, feature: u32) -> Result<Runtime> {
+pub fn parse_ea_assets(text: &str, feature: u32) -> Result<Runtime> {
     let releases: Vec<EaRelease> = serde_json::from_str(text)
         .map_err(|error| Error::invalid(format!("Java {feature} EA 的响应无法解析：{error}")))?;
     let release = releases
         .into_iter()
         .next()
-        .ok_or_else(|| Error::missing(format!("Adoptium 没有 Java {feature} 的 JRE 版本")))?;
+        .ok_or_else(|| Error::missing(format!("Adoptium 没有 Java {feature} 的 EA 版本")))?;
     let binary = release
         .binaries
         .into_iter()
@@ -760,7 +723,7 @@ mod tests {
                 {"image_type": "jre", "package": {"name": "OpenJDK-jre_x64_linux_hotspot_28_23-ea.tar.gz", "size": 79777499, "checksum": "b95395db6acc6aa4ff46495b0c58814356676787d2f50f64dbfed77d76ae9523", "link": "https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B23-ea-beta/OpenJDK-jre_x64_linux_hotspot_28_23-ea.tar.gz"}}
             ]
         }]"#;
-        let runtime = parse_assets(text, 28).unwrap();
+        let runtime = parse_ea_assets(text, 28).unwrap();
         assert_eq!(runtime.major, 28);
         assert_eq!(runtime.version(), "28+23-ea-beta");
         assert_eq!(runtime.size, 79777499);
@@ -865,7 +828,7 @@ mod tests {
     #[test]
     fn a_response_without_a_jre_is_an_error_not_a_panic() {
         let text = r#"[{"release_name":"jdk-28+23-ea-beta","binaries":[{"image_type":"jdk","package":{"name":"x","size":1,"checksum":"0","link":"https://example/x"}}]}]"#;
-        let error = parse_assets(text, 28).unwrap_err();
+        let error = parse_ea_assets(text, 28).unwrap_err();
         assert_eq!(error.kind(), crate::error::Kind::Missing);
         assert!(error.to_string().contains("Java 28"), "{error}");
     }

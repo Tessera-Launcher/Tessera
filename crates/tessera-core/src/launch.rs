@@ -224,50 +224,12 @@ pub fn spawn_game(
     version_dir: String,
     credentials: Credentials,
     options: Options,
-    proxy: String,
 ) -> Receiver<GameEvent> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         // The game keeps reading libraries/assets for its whole lifetime; a
         // sweep must wait until it exits rather than delete the files under it.
         let _maintenance = crate::task::read();
-        // A profile that pins its own runtime gets it before anything else is
-        // prepared: Outlands pins Java 25, which the dependency page does not
-        // offer, and without it the launch dies inside the loader's own
-        // bootstrap. The download is reported on the same channel as the rest of
-        // the launch progress.
-        if let Some(major) = build::pinned_java(&root, &version_dir) {
-            let installed = options
-                .runtimes
-                .as_deref()
-                .map(crate::java::installed)
-                .unwrap_or_default();
-            if !installed.iter().any(|(found, _)| *found == major) {
-                let _ = sender.send(GameEvent::Note(format!(
-                    "{version_dir} 需要 Java {major}，正在下载…"
-                )));
-                let Some(runtimes) = options.runtimes.clone() else {
-                    let _ = sender.send(GameEvent::Failed {
-                        reason: "没有配置 Java 依赖目录".to_string(),
-                    });
-                    return;
-                };
-                match crate::java::ensure(&runtimes, major, &proxy) {
-                    Ok(java) => {
-                        let _ = sender.send(GameEvent::Note(format!(
-                            "Java {major} 就绪（{}）",
-                            java.version
-                        )));
-                    }
-                    Err(error) => {
-                        let _ = sender.send(GameEvent::Failed {
-                            reason: error.to_string(),
-                        });
-                        return;
-                    }
-                }
-            }
-        }
         let prepared = match prepare(&root, &version_dir, &credentials, &options) {
             Ok(prepared) => prepared,
             Err(error) => {

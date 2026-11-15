@@ -117,8 +117,6 @@ pub(super) struct Merged {
     pub(super) java_version: u32,
     pub(super) version_type: String,
     pub(super) parents: Vec<String>,
-    /// The loader the profile installs (`mdtLoader.id`), when it says so.
-    pub(super) loader_id: Option<String>,
     /// A mod-loader profile, self-contained or inheriting: it launches on the
     /// same runtime as everything else, but is refused by AOT training.
     pub(super) loader: bool,
@@ -435,14 +433,6 @@ pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged>
         // A marker in the profile itself, or anything it inherits from, makes
         // this a loader launch.
         merged.loader |= version.loader_marker.is_some() || index > 0;
-        if merged.loader_id.is_none() {
-            merged.loader_id = version
-                .loader_marker
-                .as_ref()
-                .and_then(|marker| marker.get("id"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-        }
         if merged.lwjgl3.is_none() {
             merged.lwjgl3 = version.lwjgl3_version.clone();
         }

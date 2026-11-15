@@ -10,11 +10,13 @@
 //! - a sealed package (jinput declares one) rejects the shim classes added next
 //!   to it.
 //!
-//! So [`normalize`] runs on every downloaded `.jar` at install time and on the
-//! whole class path at launch time (a version installed before this step existed
-//! is still signed). It rewrites the jar **in place**: the original is replaced,
-//! never backed up. A jar that is neither signed nor sealed is left untouched,
-//! which keeps the second run from rewriting hundreds of megabytes for nothing.
+//! So [`normalize`] runs on **every** `.jar` this launcher puts on disk: each
+//! downloaded file at install time (mods included — `mods/` is a directory, not
+//! an exemption), and at launch time the whole class path plus the instance's
+//! `mods/` directory, which also repairs a version installed before the rule
+//! existed. It rewrites the jar **in place**: the original is replaced, never
+//! backed up. A jar that is neither signed nor sealed is left untouched, which
+//! keeps the second run from rewriting hundreds of megabytes for nothing.
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};

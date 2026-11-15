@@ -11,9 +11,7 @@ use crate::error::{Error, Result};
 
 use super::agents::{ensure_asset, LEGACY_AGENT};
 use super::aot_cache::aot_cache;
-use super::java::{
-    find_java, find_pinned_java, launch_path, pinned_major, required_java, LaunchPath, LEGACY_MAIN,
-};
+use super::java::{find_java, launch_path, required_java, LaunchPath, LEGACY_MAIN};
 use super::manifest::{client_jar, features, merge_chain, resolve_argument, substitute};
 use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
 use super::{Command, Credentials, Launch, Options};
@@ -24,17 +22,23 @@ pub(super) fn is_1_8(id: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('-'))
 }
 
-/// The runtime this profile pins, if it pins one.
-///
-/// Read before a launch so the runtime can be downloaded first: `prepare` cannot
-/// do that itself, it has no downloader and no channel.
-pub(crate) fn pinned_java(root: &Path, version_dir_name: &str) -> Option<u32> {
-    let merged = merge_chain(root, version_dir_name).ok()?;
-    let required = required_java(
-        &merged.id,
-        (merged.java_version > 0).then_some(merged.java_version),
-    );
-    pinned_major(merged.loader_id.as_deref(), required)
+/// Every `.jar` directly inside `<version_dir>/mods`, sorted for a stable order.
+fn mod_jars(version_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(version_dir.join("mods")) else {
+        return Vec::new();
+    };
+    let mut jars: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+        })
+        .collect();
+    jars.sort();
+    jars
 }
 
 pub(super) fn prepare_inner(
@@ -69,16 +73,10 @@ pub(super) fn prepare_inner(
         None
     };
     let route = launch_path(merged.loader, Some(&merged.main_class));
-    // A loader that pins its own runtime gets it: `required` is what its
-    // metadata asks for, and for these stacks a newer JVM is a crash rather
-    // than an upgrade.
-    let pinned = pinned_major(merged.loader_id.as_deref(), required);
     let (java, java_major) = if let Some(selection) = &aot {
         (selection.java.clone(), selection.java_major)
     } else if let Some(override_java) = java_override {
         override_java
-    } else if let Some(major) = pinned {
-        find_pinned_java(&runtimes, major)?
     } else {
         find_java(&runtimes, required)?
     };
@@ -173,6 +171,14 @@ pub(super) fn prepare_inner(
             crate::jar::normalize(jar)?;
         }
     }
+    // Mods are not on the class path — the loader reads them itself — but they
+    // are still `.jar`s this launcher put on disk, and the rule does not have a
+    // `mods/` exception. Normalizing here also repairs an instance installed
+    // before the rule was applied to them. Already-normalized jars are skipped
+    // after a scan, so this is cheap on every launch after the first.
+    for jar in mod_jars(&version_dir) {
+        crate::jar::normalize(&jar)?;
+    }
 
     // LWJGL 3 unpacks its native libraries from the class path itself, so the
     // `-natives` directory (and the ASCII mirror for LWJGL 3.1/3.2) is only
@@ -265,17 +271,6 @@ pub(super) fn prepare_inner(
             .any(|arg| arg.starts_with("-Djava.library.path="))
     {
         args.push(format!("-Djava.library.path={natives_string}"));
-    }
-    // FML 1.12.2 refuses to launch unless the client jar still carries Mojang's
-    // certificate (`FMLSanityChecker`), and a normalized jar has no signatures
-    // left. Its own documented switch turns the check off, and it is the honest
-    // one to use: the jar's bytes were verified against the profile's SHA-1 when
-    // it was installed, and only the signature entries were removed afterwards.
-    // Outlands' metadata offers a second switch (`outlands.patchedJar`), but that
-    // one also claims the patches are already applied on disk, which they are
-    // not — the loader applies them in memory.
-    if pinned.is_some() {
-        args.push("-Dfml.ignoreInvalidMinecraftCertificates=true".to_string());
     }
     args.push("-Dminecraft.launcher.brand=tessera".to_string());
     args.push(format!(
