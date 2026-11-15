@@ -112,12 +112,21 @@ pub enum InstallEvent {
 }
 
 /// Fetch the version list for the picker.
-pub fn spawn_versions(root: PathBuf, source: Source) -> Receiver<InstallEvent> {
+///
+/// Takes the same list directory as an install (`data/缓存`) instead of MDT's
+/// default `<root>/列表`: fetching the picker's list never writes a plan, so
+/// the default would leave an empty `data/游戏/列表` behind on every start.
+pub fn spawn_versions(
+    root: PathBuf,
+    list_dir: Option<PathBuf>,
+    source: Source,
+) -> Receiver<InstallEvent> {
     spawn_worker(move |sender| {
+        let list_dir = list_dir.unwrap_or_else(|| root.join(mdt::plan::LIST_DIR));
         let transferred = Arc::new(AtomicU64::new(0));
         let client = build_client(
             &root,
-            &root.join(mdt::plan::LIST_DIR),
+            &list_dir,
             source,
             sender.clone(),
             transferred.clone(),
@@ -478,7 +487,7 @@ mod tests {
     #[ignore = "network"]
     fn live_version_list_arrives_from_the_mirror() {
         let dir = std::env::temp_dir().join("tessera-live-versions");
-        let receiver = spawn_versions(dir, Source::Mojang);
+        let receiver = spawn_versions(dir, None, Source::Mojang);
         let mut versions = Vec::new();
         while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(60)) {
             match event {
