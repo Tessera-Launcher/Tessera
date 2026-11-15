@@ -71,6 +71,17 @@ impl Loader {
         }
     }
 
+    /// What the picker calls this option for `mc_version`.
+    ///
+    /// 1.8.9's only choice is not "no loader": it is the mandatory Celeritas
+    /// client patch, so the row says what the install actually contains.
+    pub fn display_label(self, mc_version: &str) -> &'static str {
+        match (self, mc_version) {
+            (Loader::None, "1.8.9") => "Celeritas Patch",
+            _ => self.label(),
+        }
+    }
+
     fn to_mdt(self) -> Option<ModLoader> {
         match self {
             Loader::None => None,
@@ -303,10 +314,9 @@ pub fn spawn_install(
                     crate::patch::log_url(&proxy)
                 )));
                 let patch = crate::patch::download(&list_dir, &proxy).await?;
-                let _ = sender.send(InstallEvent::Log(format!(
-                    "1.8.9 补丁：应用到 client.jar（{} 个条目）…",
-                    crate::patch::VERSION
-                )));
+                let _ = sender.send(InstallEvent::Log(
+                    "1.8.9 补丁：应用到 client.jar…".to_string(),
+                ));
                 let entries = crate::patch::apply(client.root_dir(), &patch)?;
                 let _ = sender.send(InstallEvent::Log(format!(
                     "1.8.9 补丁：完成（{entries} 个条目）"
@@ -485,6 +495,8 @@ mod tests {
     fn loader_labels_and_compatibility() {
         assert_eq!(Loader::None.label(), "无");
         assert_eq!(Loader::Fabric.label(), "Fabric");
+        assert_eq!(Loader::None.display_label("1.8.9"), "Celeritas Patch");
+        assert_eq!(Loader::None.display_label("1.12.2"), "无");
         assert!(Loader::None.compatible("1.8.9"));
         assert!(Loader::Fabric.compatible("1.14"));
         assert!(!Loader::Fabric.compatible("1.12.2"));
