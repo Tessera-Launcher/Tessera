@@ -232,6 +232,11 @@ pub fn spawn_install(
                     .map_err(|error| describe(&error))?,
             };
             if crate::fastutil::add_plan_entry(&mut plan, &version) {
+                // MDT writes the aria2 list before returning the plan, so the
+                // extra entry has to be written back before aria2 reads it.
+                plan.write(client.root_dir(), &list_dir)
+                    .await
+                    .map_err(|error| Error::internal(format!("无法写入下载清单：{error}")))?;
                 let _ = sender.send(InstallEvent::Log("1.8.9 依赖：fastutil 8.5.18".to_string()));
             }
             let files = plan.entries.len();
