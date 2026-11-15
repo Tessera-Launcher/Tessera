@@ -591,6 +591,18 @@ impl App {
         };
         let version = version.id.clone();
         let loader = self.download.picked_loader();
+        // A loader the launcher cannot install says so and stops here: the
+        // option stays visible so the reason is readable, but starting an
+        // install that is known to produce a client that cannot start would be
+        // worse than saying no.
+        if let Some(reason) = loader.unavailable() {
+            self.status = format!("{}：{reason}", loader.label());
+            self.log(format!(
+                "{version} · {}：{reason}",
+                loader.display_label(&version)
+            ));
+            return;
+        }
         self.install_running = true;
         self.download.stage = DownloadStage::Installing;
         self.download.installed = None;

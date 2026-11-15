@@ -613,3 +613,52 @@ fn a_vanilla_install_never_carries_fabric_api() {
         Some(("1.20.1".to_string(), Loader::None))
     );
 }
+
+/// Outlands is listed so the reason is readable, but starting an install of it
+/// is refused instead of producing a client that cannot start.
+#[test]
+fn an_uninstallable_loader_refuses_the_install_and_says_why() {
+    let mut app = App::new("/mc", "/acc", vec![], vec![]);
+    app.open_download();
+    app.handle_install_event(InstallEvent::Versions(vec![remote("1.12.2", "release")]));
+    let outlands = app
+        .download
+        .loaders
+        .iter()
+        .position(|loader| *loader == Loader::Outlands)
+        .expect("outlands is listed for 1.12.2");
+    app.download.loader_pick = outlands;
+    assert_eq!(app.download.picked_loader(), Loader::Outlands);
+    assert_eq!(
+        Loader::Outlands.unavailable(),
+        Some("不可用，需等待 Outlands 适配")
+    );
+
+    app.handle_download_key(Key::Enter, Modifiers::NONE);
+
+    assert!(
+        install_effect(&app).is_none(),
+        "nothing may be queued for a loader that cannot run"
+    );
+    assert_eq!(
+        app.download.stage,
+        DownloadStage::Picking,
+        "stays on the picker"
+    );
+    assert!(
+        app.status.contains("需等待 Outlands 适配"),
+        "status was {:?}",
+        app.status
+    );
+    assert!(
+        app.log
+            .iter()
+            .last()
+            .is_some_and(|line| line.contains("需等待 Outlands 适配")),
+        "log was {:?}",
+        app.log.iter().last()
+    );
+    // The loaders that do work are untouched.
+    assert_eq!(Loader::Fabric.unavailable(), None);
+    assert_eq!(Loader::None.unavailable(), None);
+}
