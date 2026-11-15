@@ -77,6 +77,8 @@ pub mod manifest;
 pub mod mc_version;
 pub mod mirror;
 pub mod modloader;
+#[cfg(not(feature = "minimal"))]
+pub mod outlands;
 pub mod plan;
 #[cfg(not(feature = "minimal"))]
 pub mod registry;

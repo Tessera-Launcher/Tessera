@@ -270,6 +270,23 @@ pub trait Downloader: Send + Sync {
         &'a self,
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, MdtError>> + Send + 'a>>;
+
+    /// Read `url` into memory, bytes and all (metadata that is not UTF-8).
+    ///
+    /// Only Outlands needs this: its launcher profile lives inside a JAR rather
+    /// than at its own URL, so the archive has to be read as bytes before the
+    /// one entry can be inflated. A downloader that does not implement it fails
+    /// with a clear message instead of silently returning nothing.
+    fn fetch_bytes<'a>(
+        &'a self,
+        _url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, MdtError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(MdtError::InvalidManifest(
+                "this downloader cannot read binary metadata (fetch_bytes)".to_string(),
+            ))
+        })
+    }
 }
 
 /// The default [`Downloader`], backed by a [`reqwest::Client`].
@@ -334,6 +351,23 @@ impl Downloader for HttpDownloader {
             Ok(resp.text().await?)
         })
     }
+
+    fn fetch_bytes<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, MdtError>> + Send + 'a>> {
+        let client = self.client.clone();
+        let url = url.to_string();
+        Box::pin(async move {
+            let resp = client
+                .get(&url)
+                .timeout(Duration::from_secs(60))
+                .send()
+                .await?
+                .error_for_status()?;
+            Ok(resp.bytes().await?.to_vec())
+        })
+    }
 }
 
 /// A synchronous [`Downloader`] backed by [`ureq`], for the `blocking` feature.
@@ -374,6 +408,20 @@ impl Downloader for UreqDownloader {
         Box::pin(async move {
             let resp = ureq::get(&url).call().map_err(MdtError::from)?;
             resp.into_string().map_err(MdtError::from)
+        })
+    }
+
+    fn fetch_bytes<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, MdtError>> + Send + 'a>> {
+        let url = url.to_string();
+        Box::pin(async move {
+            let resp = ureq::get(&url).call().map_err(MdtError::from)?;
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)
+                .map_err(MdtError::from)?;
+            Ok(bytes)
         })
     }
 }
