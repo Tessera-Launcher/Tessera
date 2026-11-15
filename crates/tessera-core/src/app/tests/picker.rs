@@ -575,3 +575,41 @@ fn escape_while_installing_leaves_the_download_running() {
         "the worker keeps going; only the screen was closed"
     );
 }
+
+/// Every Fabric install carries Fabric API; there is no switch to turn it off.
+#[test]
+fn a_fabric_install_always_carries_fabric_api() {
+    let mut app = downloader();
+    let fabric = app
+        .download
+        .loaders
+        .iter()
+        .position(|l| *l == Loader::Fabric)
+        .expect("fabric listed for 1.20.1");
+    app.download.loader_pick = fabric;
+    // The row names both halves of the install, because there is no way to
+    // install the loader without the API.
+    assert_eq!(
+        Loader::Fabric.display_label("1.20.1"),
+        "Fabric Loader & API"
+    );
+
+    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    assert_eq!(
+        install_effect(&app),
+        Some(("1.20.1".to_string(), Loader::Fabric))
+    );
+}
+
+/// The launcher never puts a Fabric mod into a vanilla install.
+#[test]
+fn a_vanilla_install_never_carries_fabric_api() {
+    let mut app = downloader();
+    assert_eq!(app.download.picked_loader(), Loader::None);
+
+    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    assert_eq!(
+        install_effect(&app),
+        Some(("1.20.1".to_string(), Loader::None))
+    );
+}

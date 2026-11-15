@@ -73,11 +73,13 @@ impl Loader {
 
     /// What the picker calls this option for `mc_version`.
     ///
-    /// 1.8.9's only choice is not "no loader": it is the mandatory Celeritas
-    /// client patch, so the row says what the install actually contains.
+    /// Both rows name everything the install contains, because neither is just
+    /// a loader: 1.8.9's only choice is the mandatory Celeritas client patch,
+    /// and a Fabric install always brings Fabric API with it.
     pub fn display_label(self, mc_version: &str) -> &'static str {
         match (self, mc_version) {
             (Loader::None, "1.8.9") => "Celeritas Patch",
+            (Loader::Fabric, _) => "Fabric Loader & API",
             _ => self.label(),
         }
     }
@@ -168,6 +170,11 @@ pub fn spawn_versions(
 }
 
 /// Install `version` (plus `loader`, when not [`Loader::None`]).
+///
+/// A Fabric install always carries Fabric API: nearly every Fabric mod links
+/// against it, and a loader without it is a game that starts and then dies on
+/// the first mod. There is no switch, because the alternative is a broken
+/// install that looks finished.
 pub fn spawn_install(
     root: PathBuf,
     deps: PathBuf,
@@ -231,12 +238,16 @@ pub fn spawn_install(
                     .await
                     .map_err(|error| describe(&error))?,
             };
-            if crate::fastutil::add_plan_entry(&mut plan, &version) {
+            let fabric_api_added = add_fabric_api(&mut plan, loader, &version, &sender).await;
+            let fastutil_added = crate::fastutil::add_plan_entry(&mut plan, &version);
+            if fastutil_added || fabric_api_added {
                 // MDT writes the aria2 list before returning the plan, so the
-                // extra entry has to be written back before aria2 reads it.
+                // extra entries have to be written back before aria2 reads it.
                 plan.write(client.root_dir(), &list_dir)
                     .await
                     .map_err(|error| Error::internal(format!("无法写入下载清单：{error}")))?;
+            }
+            if fastutil_added {
                 let _ = sender.send(InstallEvent::Log("1.8.9 依赖：fastutil 8.5.18".to_string()));
             }
             let files = plan.entries.len();
@@ -303,6 +314,16 @@ pub fn spawn_install(
                 {
                     continue;
                 }
+                // A mod is not a game jar: rewriting it would strip a signature
+                // nothing asked us to touch, and the jar is loaded as-is by the
+                // loader rather than through this launcher's shims.
+                if entry
+                    .path
+                    .components()
+                    .any(|part| part.as_os_str() == "mods")
+                {
+                    continue;
+                }
                 if crate::jar::normalize(&client.root_dir().join(&entry.path))? {
                     normalized += 1;
                 }
@@ -360,6 +381,76 @@ pub fn spawn_install(
             Ok(())
         })
     })
+}
+
+/// Add the Fabric API jar to an install's `mods/` directory.
+///
+/// Returns whether the plan grew, because the caller has to write the aria2 list
+/// again when it did: MDT wrote it before this step ran.
+///
+/// Nothing here can fail the install. Fabric API is mandatory in the sense that
+/// every Fabric install asks for it, but a metadata or network hiccup must not
+/// throw away the several hundred megabytes that are about to be downloaded, so
+/// the failure is reported loudly and the install continues without it.
+async fn add_fabric_api(
+    plan: &mut mdt::plan::DownloadPlan,
+    loader: Loader,
+    mc_version: &str,
+    sender: &Sender<InstallEvent>,
+) -> bool {
+    if loader != Loader::Fabric {
+        return false;
+    }
+    let _ = sender.send(InstallEvent::Log("Fabric API：解析版本…".to_string()));
+    let api = match crate::fabric_api::resolve(mc_version).await {
+        Ok(Some(api)) => api,
+        Ok(None) => {
+            let _ = sender.send(InstallEvent::Log(format!(
+                "Fabric API：没有适用于 {mc_version} 的版本 —— 未安装（缺少 API 的模组会报错）"
+            )));
+            return false;
+        }
+        Err(error) => {
+            let _ = sender.send(InstallEvent::Log(format!(
+                "Fabric API：获取失败（{error}）—— 未安装（缺少 API 的模组会报错）"
+            )));
+            return false;
+        }
+    };
+    // `plan.id` is the version directory under `versions/` (the loader profile
+    // id), which is also the game directory this install launches in.
+    let entry = mods_entry(&plan.id, &api);
+    let _ = sender.send(InstallEvent::Log(format!(
+        "Fabric API {}（{}，{}）",
+        api.version,
+        api.origin.label(),
+        crate::discover::human_size(api.size)
+    )));
+    if plan
+        .entries
+        .iter()
+        .any(|existing| existing.path == entry.path)
+    {
+        return false;
+    }
+    plan.entries.push(entry);
+    true
+}
+
+/// Where one Fabric API jar goes: `versions/<install>/mods/fabric-api-<v>.jar`.
+///
+/// The install's own game directory is its version directory, so `mods/` sits
+/// next to the version JSON and no other install can see it.
+fn mods_entry(version_dir: &str, api: &crate::fabric_api::Api) -> mdt::plan::PlanEntry {
+    mdt::plan::PlanEntry {
+        url: api.url.clone(),
+        path: PathBuf::from("versions")
+            .join(version_dir)
+            .join("mods")
+            .join(api.file_name()),
+        size: api.size,
+        sha1: api.sha1.clone(),
+    }
 }
 
 /// Latest loader build for one Minecraft version.
@@ -509,6 +600,10 @@ mod tests {
         assert_eq!(Loader::None.label(), "无");
         assert_eq!(Loader::Fabric.label(), "Fabric");
         assert_eq!(Loader::None.display_label("1.8.9"), "Celeritas Patch");
+        assert_eq!(
+            Loader::Fabric.display_label("1.20.1"),
+            "Fabric Loader & API"
+        );
         assert_eq!(Loader::None.display_label("1.12.2"), "无");
         assert!(Loader::None.compatible("1.8.9"));
         assert!(Loader::Fabric.compatible("1.14"));
@@ -597,6 +692,58 @@ mod tests {
         assert!(root.join("versions/26.3/26.3.json").is_file());
         println!("aria2 reported {files} files");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Fabric API lands in the install's own `mods/`, next to its version JSON.
+    ///
+    /// Sharing `versions/<id>/` with the game directory is what makes a mod
+    /// global to this install and invisible to every other one.
+    #[test]
+    fn fabric_api_goes_into_the_installs_own_mods_directory() {
+        let api = crate::fabric_api::Api {
+            version: "0.116.18+1.21.1".into(),
+            url: "https://maven.fabricmc.net/x.jar".into(),
+            sha1: Some("584d303f646287ee6be059ecb2fc451255be9ee9".into()),
+            size: 2_453_884,
+            origin: crate::fabric_api::Origin::Maven,
+        };
+        let entry = mods_entry("1.21.1+Fabric0.16.10", &api);
+        assert_eq!(
+            entry.path,
+            PathBuf::from("versions/1.21.1+Fabric0.16.10/mods/fabric-api-0.116.18+1.21.1.jar")
+        );
+        assert_eq!(
+            entry.sha1.as_deref(),
+            Some("584d303f646287ee6be059ecb2fc451255be9ee9")
+        );
+        assert_eq!(entry.size, 2_453_884);
+        assert_eq!(entry.url, "https://maven.fabricmc.net/x.jar");
+    }
+
+    /// The aria2 list has to point at the `mods/` directory it created, or the
+    /// loader finds nothing to load.
+    #[test]
+    fn the_aria2_list_writes_the_api_jar_next_to_the_version() {
+        let api = crate::fabric_api::Api {
+            version: "0.116.18+1.21.1".into(),
+            url: "https://maven.fabricmc.net/x.jar".into(),
+            sha1: None,
+            size: 10,
+            origin: crate::fabric_api::Origin::Maven,
+        };
+        let plan = mdt::plan::DownloadPlan::new(
+            "1.21.1+Fabric0.16.10".to_string(),
+            vec![mods_entry("1.21.1+Fabric0.16.10", &api)],
+        );
+        let list = plan.to_aria2(std::path::Path::new("/mc"));
+        assert!(
+            list.contains("dir=/mc/versions/1.21.1+Fabric0.16.10/mods"),
+            "{list}"
+        );
+        assert!(
+            list.contains("out=fabric-api-0.116.18+1.21.1.jar"),
+            "{list}"
+        );
     }
 
     #[test]
