@@ -408,8 +408,8 @@ impl App {
             app.versions.len(),
             app.accounts.len()
         ));
-        if let Some(newest) = app.accounts.last() {
-            app.account = Account::from_saved(newest);
+        if let Some(newest) = app.accounts.last().cloned() {
+            app.set_account(Account::from_saved(&newest));
             app.log(format!("使用已保存账户 {}", newest.label()));
         }
         app
@@ -983,12 +983,56 @@ impl App {
         self.screen = Screen::Main;
     }
 
-    /// Open the settings page. It has no state of its own yet.
+    /// Open the settings page.
     pub fn open_settings(&mut self) {
         if self.screen == Screen::Login {
             self.close_login();
         }
         self.screen = Screen::Settings;
+    }
+
+    /// Make `account` the active one and remember which file it is.
+    ///
+    /// The file name, not the player name, is the identity: two sessions of the
+    /// same player are told apart by nothing else. Only the name is written to
+    /// the config; the tokens stay in the account file.
+    fn set_account(&mut self, account: Account) {
+        self.settings.account = account
+            .file()
+            .and_then(|file| file.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.account = account;
+    }
+
+    /// Restore the account recorded in `配置.toml`.
+    ///
+    /// A config naming a file the user has since deleted is not an error: the
+    /// startup default (the newest account) stays, and the stale name is
+    /// replaced with the account actually in use so the next save is accurate.
+    pub fn restore_account(&mut self) {
+        let saved = self.settings.account.clone();
+        if saved.is_empty() {
+            return;
+        }
+        let found = self.accounts.iter().position(|account| {
+            account.file.file_name().and_then(|name| name.to_str()) == Some(saved.as_str())
+        });
+        match found {
+            Some(index) => {
+                let saved = self.accounts[index].clone();
+                let already = self.account.file() == Some(saved.file.as_path());
+                self.set_account(Account::from_saved(&saved));
+                self.accounts_ui.selected = index;
+                if !already {
+                    self.log(format!("恢复上次账户：{}", saved.label()));
+                }
+            }
+            None => {
+                let current = self.account.clone();
+                self.set_account(current);
+            }
+        }
     }
 
     /// Apply the result of the background sweep an uninstall started.

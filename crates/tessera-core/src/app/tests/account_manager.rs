@@ -182,6 +182,10 @@ fn removing_an_offline_account_deletes_only_its_file() {
     app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
     assert!(!offline_file.exists());
     assert_eq!(app.account, Account::SignedOut);
+    assert!(
+        app.settings.account.is_empty(),
+        "removing the active account signs out in the config too"
+    );
     assert!(tmp.path().join("Steve.json").exists(), "sessions untouched");
     assert_eq!(app.accounts.len(), 2);
 }
@@ -201,4 +205,44 @@ fn an_offline_account_is_not_treated_as_a_session_at_startup() {
         app.account
     );
     assert_eq!(app.account.label(), "Steve · Offline");
+}
+
+#[test]
+fn activating_an_account_remembers_its_file() {
+    let (_tmp, mut app) = with_accounts();
+    app.open_accounts();
+    let alex = app
+        .accounts
+        .iter()
+        .position(|account| account.player_name == "Alex")
+        .unwrap();
+    app.accounts_ui.selected = alex;
+    app.activate_selected_account();
+    assert_eq!(app.settings.account, "Alex.json");
+    assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
+}
+
+#[test]
+fn the_account_named_in_settings_wins_at_startup() {
+    let (_tmp, mut app) = with_accounts();
+    app.settings.account = "Alex.json".to_string();
+    app.restore_account();
+    assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
+    assert_eq!(
+        app.accounts_ui.selected,
+        app.accounts
+            .iter()
+            .position(|account| account.player_name == "Alex")
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_settings_account_that_no_longer_exists_falls_back_to_the_startup_one() {
+    let (_tmp, mut app) = with_accounts();
+    app.settings.account = "Gone.json".to_string();
+    app.restore_account();
+    // The startup default is still Steve; the stale name is replaced by it.
+    assert_eq!(app.account.label(), "Steve · Minecraft Launcher");
+    assert_eq!(app.settings.account, "Steve.json");
 }

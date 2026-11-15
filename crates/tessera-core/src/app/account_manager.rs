@@ -100,7 +100,7 @@ impl App {
         let Some(account) = self.selected_account() else {
             return;
         };
-        self.account = Account::from_saved(&account);
+        self.set_account(Account::from_saved(&account));
         let label = self.account.label();
         self.status = format!("当前账户 {label}");
         self.log(format!("切换账户：{label}"));
@@ -145,7 +145,7 @@ impl App {
         let was_active = self.account.file() == Some(account.file.as_path());
         self.accounts = accounts::list(&self.accounts_dir);
         if was_active {
-            self.account = Account::SignedOut;
+            self.set_account(Account::SignedOut);
         }
         if self.accounts_ui.selected >= self.accounts.len() {
             self.accounts_ui.selected = self.accounts.len().saturating_sub(1);

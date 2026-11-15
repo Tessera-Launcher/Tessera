@@ -114,6 +114,9 @@ struct Launcher {
     music_progress_seen: f32,
     /// `data/配置.toml`; edits to the persisted fields are written back here.
     settings_path: std::path::PathBuf,
+    /// The settings last written to disk, so a repaint that changes nothing does
+    /// not rewrite the file.
+    settings_saved: tessera_core::settings::Settings,
 }
 
 impl Launcher {
@@ -166,7 +169,12 @@ impl Launcher {
         state.launch_options.memory_mb = settings.memory_mb;
         state.launch_options.width = settings.window_width;
         state.launch_options.height = settings.window_height;
+        let theme = settings.theme;
         state.settings = settings;
+        // Apply the persisted scheme before the first frame, then bring back the
+        // account the user last switched to.
+        theme::set(theme, cx);
+        state.restore_account();
         for note in startup_notes {
             state.log(note);
         }
@@ -210,6 +218,7 @@ impl Launcher {
         if blocked {
             state.status = "另一个 Tessera 正在使用这个数据目录".to_string();
         }
+        let settings_saved = state.settings.clone();
         Self {
             state,
             client,
@@ -243,6 +252,7 @@ impl Launcher {
             music_seeking: false,
             music_progress_seen: 0.0,
             settings_path,
+            settings_saved,
         }
     }
 }
@@ -401,7 +411,6 @@ impl Render for Launcher {
 fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
-        theme::install(cx);
         let launcher = cx.new(|cx| {
             let mut launcher = Launcher::new(cx);
             launcher.start(cx);

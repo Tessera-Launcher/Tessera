@@ -13,6 +13,11 @@ impl Launcher {
         } else {
             "切换到深色"
         };
+        let next = if dark {
+            tessera_core::settings::Theme::Light
+        } else {
+            tessera_core::settings::Theme::Dark
+        };
 
         let appearance = div()
             .h_flex()
@@ -37,7 +42,11 @@ impl Launcher {
                             .child(format!("当前：{current}")),
                     ),
             )
-            .child(button(toggle_label, cx, |_, cx| theme::toggle(cx)));
+            .child(button(toggle_label, cx, move |this, cx| {
+                theme::set(next, cx);
+                this.state.settings.theme = next;
+                this.refresh(cx);
+            }));
 
         div()
             .v_flex()

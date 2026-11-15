@@ -345,11 +345,11 @@ impl App {
         // Re-read instead of appending: the list is what the account manager and
         // the numbered copy are read from.
         self.accounts = accounts::list(&self.accounts_dir);
-        self.account = Account::Offline {
+        self.set_account(Account::Offline {
             name: name.clone(),
             copy,
             file: file.clone(),
-        };
+        });
         self.login.step = LoginStep::Done {
             player: name.clone(),
             application: "Offline".to_string(),
@@ -417,12 +417,12 @@ impl App {
                     Some((_, saved)) => saved.name(),
                     None => player_name.clone(),
                 };
-                self.account = Account::SignedIn {
+                self.set_account(Account::SignedIn {
                     name: player_name.clone(),
                     copy: saved.as_ref().map_or(0, |(_, saved)| saved.copy),
                     application: application.clone(),
                     file: file.clone(),
-                };
+                });
                 self.login.step = LoginStep::Done {
                     player: shown.clone(),
                     application: application.clone(),
