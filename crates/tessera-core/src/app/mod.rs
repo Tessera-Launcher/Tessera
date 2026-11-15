@@ -40,6 +40,9 @@ pub enum Screen {
     Java,
     /// Discs and background music read straight from an installed version.
     Music,
+    /// Settings. The page exists so the sidebar has somewhere to go; the body
+    /// is still empty.
+    Settings,
 }
 
 /// Launcher work the state machine wants performed.
@@ -599,6 +602,16 @@ impl App {
                 self.handle_music_key(code, modifiers);
                 return;
             }
+            Screen::Settings => {
+                // Nothing on the page is interactive yet; Esc leaves it like the
+                // music page, q quits.
+                match code {
+                    Key::Esc => self.show_main(),
+                    Key::Char('q') => self.should_quit = true,
+                    _ => {}
+                }
+                return;
+            }
             Screen::Main => {}
         }
         match code {
@@ -968,6 +981,14 @@ impl App {
             self.close_login();
         }
         self.screen = Screen::Main;
+    }
+
+    /// Open the settings page. It has no state of its own yet.
+    pub fn open_settings(&mut self) {
+        if self.screen == Screen::Login {
+            self.close_login();
+        }
+        self.screen = Screen::Settings;
     }
 
     /// Apply the result of the background sweep an uninstall started.

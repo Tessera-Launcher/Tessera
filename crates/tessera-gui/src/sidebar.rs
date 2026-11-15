@@ -1,7 +1,6 @@
-//! Sidebar pages and the switch between the five screens.
+//! Sidebar pages and the switch between the screens.
 
 use super::*;
-use crate::widgets::button;
 
 /// The sidebar's pages, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +10,7 @@ enum Page {
     Download,
     Runtimes,
     Music,
+    Settings,
 }
 
 impl Page {
@@ -29,6 +29,7 @@ impl Page {
             Page::Download => "下载",
             Page::Runtimes => "依赖",
             Page::Music => "音乐",
+            Page::Settings => "设置",
         }
     }
 
@@ -39,6 +40,7 @@ impl Page {
             Page::Download => "page-download",
             Page::Runtimes => "page-runtimes",
             Page::Music => "page-music",
+            Page::Settings => "page-settings",
         }
     }
 
@@ -50,7 +52,59 @@ impl Page {
             Screen::Download => Page::Download,
             Screen::Java => Page::Runtimes,
             Screen::Music => Page::Music,
+            Screen::Settings => Page::Settings,
         }
+    }
+
+    /// One sidebar row: the indicator dot plus the label.
+    fn row(
+        self,
+        picked: bool,
+        colors: &'static crate::design_tokens::color::Palette,
+        cx: &mut Context<Launcher>,
+    ) -> impl IntoElement {
+        div()
+            .id(self.id())
+            .h_flex()
+            .items_center()
+            .gap(px(space::MD))
+            .px(px(space::MD))
+            .py(px(space::MD))
+            .rounded(px(radius::MD))
+            .bg(rgb(if picked {
+                colors.selected
+            } else {
+                colors.surface
+            }))
+            .min_h(px(layout::ROW_HEIGHT))
+            .cursor_pointer()
+            .hover(move |style| style.bg(rgb(colors.hover)))
+            .child(
+                div()
+                    .w(px(layout::INDICATOR_WIDTH))
+                    .h(px(layout::INDICATOR_HEIGHT))
+                    .rounded(px(radius::PILL))
+                    .bg(rgb(if picked {
+                        colors.fill_primary
+                    } else {
+                        colors.surface
+                    })),
+            )
+            .child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(if picked {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    }))
+                    .child(self.label()),
+            )
+            .on_click(
+                cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                    this.navigate(self, cx);
+                }),
+            )
     }
 }
 
@@ -69,6 +123,7 @@ impl Launcher {
             Page::Download => self.state.open_download(),
             Page::Runtimes => self.state.open_java(),
             Page::Music => self.state.open_music(),
+            Page::Settings => self.state.open_settings(),
         }
         self.refresh(cx);
     }
@@ -78,51 +133,7 @@ impl Launcher {
         let active = Page::of(self.state.screen);
         let mut nav = div().v_flex().gap(px(space::XS));
         for page in Page::ALL {
-            let picked = page == active;
-            nav = nav.child(
-                div()
-                    .id(page.id())
-                    .h_flex()
-                    .items_center()
-                    .gap(px(space::MD))
-                    .px(px(space::MD))
-                    .py(px(space::MD))
-                    .rounded(px(radius::MD))
-                    .bg(rgb(if picked {
-                        colors.selected
-                    } else {
-                        colors.surface
-                    }))
-                    .min_h(px(layout::ROW_HEIGHT))
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(rgb(colors.hover)))
-                    .child(
-                        div()
-                            .w(px(layout::INDICATOR_WIDTH))
-                            .h(px(layout::INDICATOR_HEIGHT))
-                            .rounded(px(radius::PILL))
-                            .bg(rgb(if picked {
-                                colors.fill_primary
-                            } else {
-                                colors.surface
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(font::BODY))
-                            .text_color(rgb(if picked {
-                                colors.text_primary
-                            } else {
-                                colors.text_secondary
-                            }))
-                            .child(page.label()),
-                    )
-                    .on_click(
-                        cx.listener(move |this: &mut Launcher, _event, _window, cx| {
-                            this.navigate(page, cx);
-                        }),
-                    ),
-            );
+            nav = nav.child(page.row(page == active, colors, cx));
         }
 
         div()
@@ -137,15 +148,6 @@ impl Launcher {
             .border_color(rgb(colors.border_default))
             .child(nav)
             .child(div().flex_1())
-            .child(button(
-                if gpui_kit::component::Theme::global(cx).is_dark() {
-                    "切换到浅色"
-                } else {
-                    "切换到深色"
-                },
-                cx,
-                |_, cx| theme::toggle(cx),
-            ))
             .child(
                 div()
                     .v_flex()
@@ -159,5 +161,8 @@ impl Launcher {
                             .child(self.state.account.label()),
                     ),
             )
+            // Settings closes the sidebar: like a preference pane, it belongs
+            // below the pages and the account, not among them.
+            .child(Page::Settings.row(active == Page::Settings, colors, cx))
     }
 }

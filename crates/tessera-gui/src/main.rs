@@ -316,6 +316,7 @@ impl Render for Launcher {
             Screen::Download => self.download_screen(window, cx).into_any_element(),
             Screen::Java => self.java_screen(window, cx).into_any_element(),
             Screen::Music => self.music_screen(window, cx).into_any_element(),
+            Screen::Settings => self.settings_screen(cx).into_any_element(),
         };
 
         let overlay = self.uninstall_overlay(cx);
