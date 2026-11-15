@@ -217,7 +217,7 @@ pub fn spawn_install(
 
             // MDT only resolves metadata and writes the list; nothing is
             // downloaded here. aria2 (or the front-end) consumes the list.
-            let plan = match &loader_version {
+            let mut plan = match &loader_version {
                 None => client
                     .plan_vanilla(&version)
                     .await
@@ -231,6 +231,9 @@ pub fn spawn_install(
                     .await
                     .map_err(|error| describe(&error))?,
             };
+            if crate::fastutil::add_plan_entry(&mut plan, &version) {
+                let _ = sender.send(InstallEvent::Log("1.8.9 依赖：fastutil 8.5.18".to_string()));
+            }
             let files = plan.entries.len();
             let total_bytes = plan.total_bytes();
             let list = plan.path(&list_dir);
@@ -304,6 +307,11 @@ pub fn spawn_install(
                     "去签名 / 去密封：{normalized} 个 jar"
                 )));
             }
+
+            // The modern indexes name fastutil, but the 1.8.9 index does not.
+            // Record it locally now that the file has been downloaded and
+            // verified, so launch/AOT/cleanup see the same class path.
+            crate::fastutil::add_to_version_json(client.root_dir(), &version)?;
 
             // 1.8.9 is not usable without the Celeritas/LWJGL3 patch: it carries
             // the shim and the call-site rewrites, so this is part of install,
