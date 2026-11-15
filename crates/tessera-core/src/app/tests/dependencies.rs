@@ -15,10 +15,10 @@ fn opening_the_page_reports_the_pinned_build_and_no_install() {
 }
 
 #[test]
-fn the_card_downloads_the_pinned_build_with_its_own_proxy() {
+fn the_card_downloads_the_pinned_build_with_the_configured_proxy() {
     let mut app = app();
     app.open_java();
-    app.aria2.proxy = "gh-proxy.com".to_string();
+    app.settings.github_proxy = "gh-proxy.com".to_string();
 
     app.start_aria2_install();
     let (build, proxy) = aria2_effect(&app).expect("a download started");

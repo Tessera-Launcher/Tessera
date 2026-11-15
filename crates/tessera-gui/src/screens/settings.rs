@@ -4,7 +4,29 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
-    pub(crate) fn settings_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Create the GitHub proxy field once, seeded from the saved value.
+    fn ensure_github_proxy(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(state) = &self.github_proxy_input {
+            return state.clone();
+        }
+        let state = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("GitHub Proxy，例如 gh-proxy.com（留空直连）")
+        });
+        let saved = self.state.settings.github_proxy.clone();
+        state.update(cx, |state, cx| state.set_value(saved, window, cx));
+        self.github_proxy_input = Some(state.clone());
+        state
+    }
+
+    pub(crate) fn settings_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let colors = theme::colors(cx);
         let dark = gpui_kit::component::Theme::global(cx).is_dark();
         let current = if dark { "深色" } else { "浅色" };
@@ -18,6 +40,7 @@ impl Launcher {
         } else {
             tessera_core::settings::Theme::Dark
         };
+        let proxy = self.ensure_github_proxy(window, cx);
 
         let appearance = div()
             .h_flex()
@@ -48,6 +71,46 @@ impl Launcher {
                 this.refresh(cx);
             }));
 
+        let download = div()
+            .v_flex()
+            .gap(px(space::SM))
+            .p(px(space::LG))
+            .child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child("Java、aria2 等 GitHub 下载统一使用这个代理；留空则直连。"),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(space::MD))
+                    .child(
+                        div().flex_1().child(
+                            Input::new(&proxy)
+                                .appearance(true)
+                                .text_size(px(font::BODY)),
+                        ),
+                    )
+                    .child(button("保存", cx, |this, cx| {
+                        let value = this
+                            .github_proxy_input
+                            .as_ref()
+                            .map(|input| input.read(cx).value().to_string())
+                            .unwrap_or_default();
+                        let value = value.trim().to_string();
+                        this.state.settings.github_proxy = value.clone();
+                        this.state.status = if value.is_empty() {
+                            "GitHub Proxy：已设为直连".to_string()
+                        } else {
+                            format!("GitHub Proxy 已保存：{value}")
+                        };
+                        this.state.log(this.state.status.clone());
+                        this.refresh(cx);
+                    })),
+            );
+
         div()
             .v_flex()
             .id("settings")
@@ -56,5 +119,6 @@ impl Launcher {
             .gap(px(space::MD))
             .child(screen_title(colors, "设置"))
             .child(panel_fit(colors, "外观", appearance))
+            .child(panel_fit(colors, "下载", download))
     }
 }

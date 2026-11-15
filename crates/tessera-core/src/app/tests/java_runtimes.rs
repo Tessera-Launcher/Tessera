@@ -13,7 +13,10 @@ fn opening_the_java_picker_asks_for_the_list() {
         "the loop fetches Adoptium's list"
     );
     assert!(app.java.runtimes.is_empty());
-    assert!(app.java.proxy.is_empty(), "直连 GitHub，直到用户填代理");
+    assert!(
+        app.settings.github_proxy.is_empty(),
+        "直连 GitHub，直到用户填代理"
+    );
     assert!(app.java.installed.is_empty(), "nothing downloaded yet");
 }
 
@@ -119,15 +122,8 @@ fn the_proxy_decides_the_urls() {
     app.open_java();
     app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(28)]));
 
-    // GitHub is the only source, so the proxy field is usable straight away.
-    app.handle_java_key(Key::Char('p'), Modifiers::NONE);
-    assert!(app.java.editing_proxy);
-    for c in "gh-proxy.com".chars() {
-        app.handle_java_key(Key::Char(c), Modifiers::NONE);
-    }
-    app.handle_java_key(Key::Enter, Modifiers::NONE);
-    assert!(!app.java.editing_proxy, "Enter leaves the field");
-    assert_eq!(app.java.proxy, "gh-proxy.com");
+    // The proxy is a global setting, read when the download starts.
+    app.settings.github_proxy = "gh-proxy.com".to_string();
 
     app.handle_java_key(Key::Enter, Modifiers::NONE);
     let (_, urls) = java_effect(&app).expect("a download started");

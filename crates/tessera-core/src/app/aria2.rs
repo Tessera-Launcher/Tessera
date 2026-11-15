@@ -18,8 +18,6 @@ pub struct Aria2Ui {
     pub path: Option<PathBuf>,
     /// The pinned build for this machine, if there is one.
     pub build: Option<crate::aria2::Build>,
-    /// What the user typed into *this card's* GitHub proxy field.
-    pub proxy: String,
     /// Bytes done, bytes total, and the average speed.
     pub progress: (u64, u64, f64),
     /// A download is in flight.
@@ -34,7 +32,6 @@ impl Default for Aria2Ui {
             installed: None,
             path: None,
             build: crate::aria2::build(),
-            proxy: String::new(),
             progress: (0, 0, 0.0),
             downloading: false,
             message: None,
@@ -92,7 +89,7 @@ impl App {
             self.status = "aria2：当前平台没有固定构建".to_string();
             return;
         };
-        self.settings.aria2_proxy = self.aria2.proxy.trim().to_string();
+        let proxy = self.settings.github_proxy.clone();
         self.aria2.downloading = true;
         self.aria2.progress = (0, 0, 0.0);
         self.aria2.message = None;
@@ -102,10 +99,7 @@ impl App {
             crate::aria2::VERSION,
             build.target.label()
         ));
-        self.request(Effect::InstallAria2 {
-            build,
-            proxy: self.aria2.proxy.clone(),
-        });
+        self.request(Effect::InstallAria2 { build, proxy });
     }
 
     /// Apply a report from the aria2 worker.

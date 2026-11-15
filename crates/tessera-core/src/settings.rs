@@ -2,11 +2,10 @@
 //!
 //! Only things the launcher genuinely owns live here: the heap size, the window
 //! size, the color theme, which saved account was last active (by file name,
-//! never its tokens), and the GitHub proxies the user typed on the dependency
-//! page (one for the Java runtime, one for aria2 — they are separate downloads
-//! and are not always reachable through the same proxy). The download source is
-//! deliberately *not* persisted (a one-off switch should not become the new
-//! normal), and nothing about credentials is written here.
+//! never its tokens), and the single GitHub proxy used by every GitHub download
+//! (Java, aria2, AOT runtime setup). The download source is deliberately *not*
+//! persisted (a one-off switch should not become the new normal), and nothing
+//! about credentials is written here.
 //!
 //! The file is optional: a missing or broken one falls back to the built-in
 //! defaults and says why in the log. The GUI applies the values at startup; a
@@ -42,10 +41,9 @@ pub struct Settings {
     pub window_width: u32,
     /// `--height` passed to the game.
     pub window_height: u32,
-    /// `gh-proxy.com`-style base for the Java download; empty for none.
+    /// `gh-proxy.com`-style base prefixed to every GitHub download URL; empty
+    /// for none.
     pub github_proxy: String,
-    /// The same, for the aria2 download on the dependency page.
-    pub aria2_proxy: String,
     /// The color scheme in use.
     pub theme: Theme,
     /// File name (under the account directory) of the account in use; empty
@@ -61,7 +59,6 @@ impl Default for Settings {
             window_width: 854,
             window_height: 480,
             github_proxy: String::new(),
-            aria2_proxy: String::new(),
             theme: Theme::Light,
             account: String::new(),
         }
@@ -212,7 +209,6 @@ mod tests {
             window_width: 1280,
             window_height: 720,
             github_proxy: "gh-proxy.com".into(),
-            aria2_proxy: "127.0.0.1:8080".into(),
             theme: Theme::Dark,
             account: "Steve (1).json".into(),
         };

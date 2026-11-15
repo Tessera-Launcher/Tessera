@@ -1234,9 +1234,6 @@ fn a_non_ascii_natives_path_gets_an_ascii_symlink() {
     assert!(ascii_natives_mirror(tmp.path()).is_none());
 }
 
-/// What the installer writes for 1.8.9 on LWJGL 3: the LWJGL 3 jars in
-/// `libraries/`, no LWJGL 2 group at all, the marker, and a real client zip.
-
 /// Add the marker Celeritas writes into a patched client jar. Kept in the test
 /// instead of the fixture so unpatched-order tests still exercise the old path.
 fn mark_patched_client(path: &Path) {
@@ -1264,6 +1261,8 @@ fn mark_patched_client(path: &Path) {
     std::fs::rename(tmp, path).unwrap();
 }
 
+/// What the installer writes for 1.8.9 on LWJGL 3: the LWJGL 3 jars in
+/// `libraries/`, no LWJGL 2 group at all, the marker, and a real client zip.
 fn lwjgl3_install(root: &Path) {
     write_version(
         root,

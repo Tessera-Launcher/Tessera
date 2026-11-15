@@ -316,7 +316,8 @@ pub struct App {
     pub source: crate::install::Source,
     /// Launch tuning, applied to the next launch.
     pub launch_options: launch::Options,
-    /// The persisted defaults (`data/配置.toml`): heap, window size, proxy. The
+    /// The persisted defaults (`data/配置.toml`): heap, window size, theme, account,
+    /// GitHub proxy. The
     /// main loop writes this back when it changed.
     pub settings: crate::settings::Settings,
     /// The Java picker's state.
