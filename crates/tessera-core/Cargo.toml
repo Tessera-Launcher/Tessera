@@ -17,6 +17,7 @@ sha2 = "0.11"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+qbsdiff = "1.4.4"
 minecraft-auth = { path = "../../vendor/minecraft-auth" }
 mdt-minecraft = { path = "../../vendor/mdt-minecraft" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }

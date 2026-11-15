@@ -151,6 +151,7 @@ impl Launcher {
                         self.state.dependencies.clone(),
                         self.state.cache.clone(),
                         self.state.source,
+                        self.state.settings.github_proxy.clone(),
                         version,
                         loader,
                     );
