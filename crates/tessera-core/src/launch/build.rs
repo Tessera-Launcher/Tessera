@@ -92,11 +92,11 @@ pub(super) fn prepare_inner(
     let features = features(true);
 
     let libraries_dir = root.join("libraries");
-    let mut classpath: Vec<PathBuf> = Vec::new();
+    let mut libraries: Vec<PathBuf> = Vec::new();
     let mut missing = 0usize;
     for path in merged.classpath_paths(&libraries_dir, &features) {
         if path.is_file() {
-            classpath.push(path);
+            libraries.push(path);
         } else {
             missing += 1;
         }
@@ -106,7 +106,18 @@ pub(super) fn prepare_inner(
             "{missing} 个依赖文件缺失（重新安装这个版本）"
         )));
     }
-    classpath.push(client_jar);
+    // A patched client carries a few rewritten library classes (and the LWJGL3
+    // shim), so it has to win over the ordinary library jars. An unpatched
+    // client keeps the usual "libraries then game jar" order.
+    let patched_client = crate::jar::is_patched_client(&client_jar)?;
+    let mut classpath: Vec<PathBuf> = Vec::new();
+    if patched_client {
+        classpath.push(client_jar.clone());
+    }
+    classpath.extend(libraries);
+    if !patched_client {
+        classpath.push(client_jar.clone());
+    }
     // LaunchWrapper 1.5/1.12 casts the system class loader to `URLClassLoader`,
     // which Java 9+ no longer is. A legacy profile gets one that still is; the
     // jar has to be on the class path for `-Djava.system.class.loader` to find

@@ -4,12 +4,11 @@
 //! downloads moved to aria2, the raw Mojang jar is what lands on disk — signed,
 //! and with some libraries sealed. Both break the launcher:
 //!
-//! - the LWJGL 3 agent rewrites game classes, and the JVM refuses a rewritten
-//!   class from a signed jar: `SecurityException: class "ave"'s signer
-//!   information does not match signer information of other classes in the same
-//!   package`;
-//! - a sealed package (jinput declares one) rejects the shim classes the agent
-//!   adds to it.
+//! - a transformer rewrites game classes, and the JVM refuses a rewritten class
+//!   from a signed jar: `SecurityException: class "ave"'s signer information
+//!   does not match signer information of other classes in the same package`;
+//! - a sealed package (jinput declares one) rejects the shim classes added next
+//!   to it.
 //!
 //! So [`normalize`] runs on every downloaded `.jar` at install time and on the
 //! whole class path at launch time (a version installed before this step existed
@@ -60,6 +59,40 @@ fn needs_normalizing(mut archive: zip::ZipArchive<BufReader<File>>) -> Result<bo
                 return Ok(true);
             }
         }
+    }
+    Ok(false)
+}
+
+/// Whether this client jar carries a launcher patch (currently the Celeritas /
+/// LWJGL3 shim and call-site rewrites).
+///
+/// A patched jar has to come before the ordinary libraries on the class path:
+/// it contains rewritten copies of a few library classes, and Java resolves the
+/// first matching class. The marker is a manifest attribute so a patched jar
+/// stays self-describing even when it is copied between installs.
+pub(crate) fn is_patched_client(path: &Path) -> Result<bool> {
+    let mut archive = zip::ZipArchive::new(BufReader::new(open(path)?))
+        .map_err(|error| Error::invalid(format!("无法解析 {}: {error}", path.display())))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| Error::invalid(format!("无法读取 jar 条目: {error}")))?;
+        let name = entry
+            .name()
+            .map_err(|error| Error::invalid(format!("无法读取 jar 条目名: {error}")))?
+            .into_owned();
+        if !name.eq_ignore_ascii_case("META-INF/MANIFEST.MF") {
+            continue;
+        }
+        let mut text = String::new();
+        entry
+            .read_to_string(&mut text)
+            .map_err(|error| Error::invalid(format!("无法读取 {name}: {error}")))?;
+        return Ok(text.lines().any(|line| {
+            line.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("tessera-client-patch:")
+        }));
     }
     Ok(false)
 }
@@ -353,5 +386,29 @@ mod tests {
 
         assert!(!normalize(&path).unwrap());
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+    #[test]
+    fn a_patched_client_is_recognised_by_its_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("client.jar");
+        jar(
+            &path,
+            &[(
+                "META-INF/MANIFEST.MF",
+                b"Manifest-Version: 1.0\nTessera-Client-Patch: celeritas-lwjgl3\n",
+            )],
+        );
+        assert!(is_patched_client(&path).unwrap());
+    }
+
+    #[test]
+    fn an_ordinary_client_is_not_patched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("client.jar");
+        jar(
+            &path,
+            &[("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")],
+        );
+        assert!(!is_patched_client(&path).unwrap());
     }
 }
