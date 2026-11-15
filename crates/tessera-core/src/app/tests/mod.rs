@@ -35,7 +35,9 @@ fn refresh_effect(app: &App) -> Option<PathBuf> {
 /// The one install the app queued, if any.
 fn install_effect(app: &App) -> Option<(String, Loader)> {
     app.effects().iter().rev().find_map(|effect| match effect {
-        Effect::Install { version, loader } => Some((version.clone(), *loader)),
+        Effect::Install {
+            version, loader, ..
+        } => Some((version.clone(), *loader)),
         _ => None,
     })
 }

@@ -13,6 +13,7 @@ pub mod audio;
 pub mod cleanup;
 pub mod discover;
 pub mod error;
+pub mod fabric_api;
 pub mod fastmenu;
 pub mod fastutil;
 pub mod fsutil;
