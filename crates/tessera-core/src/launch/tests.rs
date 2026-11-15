@@ -1483,3 +1483,93 @@ fn a_version_without_the_marker_keeps_lwjgl2() {
         launch.command.args
     );
 }
+
+/// Outlands pins Java 25 and cannot run on the shims' 28: its bootstrap opens
+/// modules through `java.lang.Module.implAddExportsOrOpens`, which 28 removed.
+/// It also loses the client jar's Mojang signature to normalization, so FML's
+/// certificate check has to be switched off for it.
+#[test]
+fn an_outlands_profile_runs_on_its_pinned_java_with_the_certificate_check_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let id = "1.12.2-outlands-2026.11.14";
+    write_version(
+        root,
+        id,
+        serde_json::json!({
+            "id": id,
+            "type": "release",
+            "mainClass": "top.outlands.foundation.boot.Foundation",
+            "javaVersion": { "majorVersion": 25 },
+            "assetIndex": { "id": "1.12" },
+            "mdtLoader": { "id": "outlands", "version": "2026.11.14" },
+            "arguments": {
+                "jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"],
+                "game": ["--username", "${auth_player_name}", "--tweakClass",
+                         "net.minecraftforge.fml.common.launcher.FMLTweaker"]
+            },
+            "libraries": [
+                { "name": "com.mojang:patchy:1.1",
+                  "downloads": { "artifact": { "path": "com/mojang/patchy/1.1/patchy-1.1.jar" } } }
+            ]
+        }),
+    );
+    let version_dir = root.join("versions").join(id);
+    let library = root.join("libraries/com/mojang/patchy/1.1/patchy-1.1.jar");
+    std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+    std::fs::write(&library, EMPTY_JAR).unwrap();
+    std::fs::write(version_dir.join(format!("{id}.jar")), EMPTY_JAR).unwrap();
+    std::fs::create_dir_all(version_dir.join(format!("{id}-natives"))).unwrap();
+
+    // Both runtimes installed: 28 is the launcher's default and must not win.
+    managed_runtime(root, 28);
+    let options = Options {
+        runtimes: Some(managed_runtime(root, 25)),
+        ..Options::default()
+    };
+    let launch = prepare(root, id, &Credentials::offline("Steve"), &options).unwrap();
+
+    assert_eq!(launch.required_major, 25);
+    assert_eq!(launch.java_major, 25, "the pinned Java runs it");
+    assert!(
+        launch.command.exe.to_string_lossy().contains("25"),
+        "{}",
+        launch.command.exe.display()
+    );
+    assert!(launch
+        .command
+        .args
+        .iter()
+        .any(|arg| arg == "-Dfml.ignoreInvalidMinecraftCertificates=true"));
+
+    // A profile that pins nothing keeps the launcher's runtime and no flag.
+    let fabric_options = Options {
+        runtimes: Some(managed_runtime(root, 28)),
+        ..Options::default()
+    };
+    let id = "26.3";
+    write_version(
+        root,
+        id,
+        serde_json::json!({
+            "id": id,
+            "type": "release",
+            "mainClass": "net.minecraft.client.main.Main",
+            "javaVersion": { "majorVersion": 21 },
+            "assetIndex": { "id": "34" },
+            "libraries": []
+        }),
+    );
+    std::fs::write(
+        root.join("versions").join(id).join(format!("{id}.jar")),
+        EMPTY_JAR,
+    )
+    .unwrap();
+    let launch = prepare(root, id, &Credentials::offline("Steve"), &fabric_options).unwrap();
+    assert_eq!(launch.java_major, 28);
+    assert!(!launch
+        .command
+        .args
+        .iter()
+        .any(|arg| arg == "-Dfml.ignoreInvalidMinecraftCertificates=true"));
+}

@@ -363,6 +363,7 @@ fn a_spawned_game_is_watched_with_its_version_directory() {
         dir,
         credentials,
         app.launch_options.clone(),
+        String::new(),
     ) {
         started |= matches!(event, launch::GameEvent::Started { .. });
         app.handle_game_event(event);
