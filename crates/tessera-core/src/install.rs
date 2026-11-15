@@ -87,6 +87,24 @@ impl Loader {
         }
     }
 
+    /// Why this loader cannot be installed right now, if it cannot.
+    ///
+    /// Outlands is kept in the list so the reason is visible instead of
+    /// silently missing, and its install path stays in place for the day
+    /// upstream adapts. It cannot be installed today because its bootstrap
+    /// reaches into `java.lang.Module` internals that the only runtime this
+    /// launcher offers (Java 28) changed twice over: 26 added a parameter to
+    /// `implAddExportsOrOpens` and 28 removed it again, and
+    /// `implAddEnableNativeAccessToAllUnnamed` was renamed in 26. The player
+    /// would get a client that dies in a static initialiser before it writes a
+    /// log, so the picker refuses instead.
+    pub fn unavailable(self) -> Option<&'static str> {
+        match self {
+            Loader::Outlands => Some("不可用，需等待 Outlands 适配"),
+            Loader::None | Loader::Fabric => None,
+        }
+    }
+
     fn to_mdt(self) -> Option<ModLoader> {
         match self {
             Loader::None => None,
