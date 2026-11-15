@@ -242,7 +242,7 @@ pub fn spawn_install(
                     .await
                     .map_err(|error| describe(&error))?,
             };
-            let mods_added = add_required_mods(&mut plan, loader, &version, &sender).await;
+            let mods_added = add_fabric_api(&mut plan, loader, &version, &sender).await;
             let fastutil_added = crate::fastutil::add_plan_entry(&mut plan, &version);
             if fastutil_added || mods_added {
                 // MDT writes the aria2 list before returning the plan, so the
@@ -361,6 +361,13 @@ pub fn spawn_install(
                 )));
             }
 
+            // Outlands' compatibility mod ships as a CI zip, so it is unpacked
+            // here rather than planned: one entry of `build/libs` is the mod,
+            // and the `-dev` jar next to it would shadow it.
+            if loader == Loader::Outlands {
+                add_mod_of_mending(client.root_dir(), &plan.id, &proxy, &sender).await;
+            }
+
             // The aria2 list only says what to fetch; natives jars also have to
             // be unpacked, or a pre-1.19 launch looks for a `<id>-natives`
             // directory nothing created.
@@ -397,34 +404,27 @@ struct ModFile {
     sha1: Option<String>,
 }
 
-/// Add the mods an install cannot be without.
+/// Add Fabric API to the download list.
 ///
 /// Returns whether the plan grew, because the caller has to write the aria2 list
 /// again when it did: MDT wrote it before this step ran.
 ///
-/// Nothing here can fail the install. Both mods are mandatory in the sense that
-/// every install asks for them, but a metadata or network hiccup must not throw
-/// away the several hundred megabytes that are about to be downloaded, so a
-/// failure is reported loudly and the install continues without it.
-async fn add_required_mods(
+/// Nothing here can fail the install. Fabric API is mandatory in the sense that
+/// every Fabric install asks for it, but a metadata or network hiccup must not
+/// throw away the several hundred megabytes that are about to be downloaded, so
+/// a failure is reported loudly and the install continues without it.
+///
+/// Outlands' forced mod does not come through here: it is published only as a CI
+/// zip, so it is unpacked after the download (see `add_mod_of_mending`).
+async fn add_fabric_api(
     plan: &mut mdt::plan::DownloadPlan,
     loader: Loader,
     mc_version: &str,
     sender: &Sender<InstallEvent>,
 ) -> bool {
-    match loader {
-        Loader::Fabric => add_fabric_api(plan, mc_version, sender).await,
-        Loader::Outlands => add_mod_of_mending(plan, sender).await,
-        Loader::None => false,
+    if loader != Loader::Fabric {
+        return false;
     }
-}
-
-/// Fabric API: nearly every Fabric mod links against it.
-async fn add_fabric_api(
-    plan: &mut mdt::plan::DownloadPlan,
-    mc_version: &str,
-    sender: &Sender<InstallEvent>,
-) -> bool {
     let _ = sender.send(InstallEvent::Log("Fabric API：解析版本…".to_string()));
     let api = match crate::fabric_api::resolve(mc_version).await {
         Ok(Some(api)) => api,
@@ -459,47 +459,46 @@ async fn add_fabric_api(
 }
 
 /// Mod of Mending: upstream marks it required for Outlands.
+///
+/// This runs after the download, not as part of the plan: the only published
+/// artifact is the CI zip of `build/libs`, which has to be unpacked and picked
+/// through before a loadable jar exists. Like Fabric API, a failure is reported
+/// and never fails the install.
 async fn add_mod_of_mending(
-    plan: &mut mdt::plan::DownloadPlan,
+    root: &std::path::Path,
+    version_dir: &str,
+    proxy: &str,
     sender: &Sender<InstallEvent>,
 ) -> bool {
     let _ = sender.send(InstallEvent::Log("Mod of Mending：解析版本…".to_string()));
-    let api = match crate::mod_of_mending::resolve().await {
-        Ok(Some(api)) => api,
+    let dir = root.join("versions").join(version_dir);
+    match crate::mod_of_mending::install(&dir, proxy).await {
+        Ok(Some(installed)) => {
+            let _ = sender.send(InstallEvent::Log(format!(
+                "Mod of Mending {}（{}，{}）",
+                installed.version,
+                installed.origin.label(),
+                if installed.verified {
+                    "含校验"
+                } else {
+                    "无可用校验"
+                }
+            )));
+            true
+        }
         Ok(None) => {
             let _ = sender.send(InstallEvent::Log(
-                "Mod of Mending：没有可下载的制品（Maven 未发布、GitHub 无 release）—— 未安装"
-                    .to_string(),
+                "Mod of Mending：已存在，跳过".to_string(),
             ));
-            return false;
+            false
         }
         Err(error) => {
             let _ = sender.send(InstallEvent::Log(format!(
                 "Mod of Mending：获取失败（{error}）—— 未安装"
             )));
-            return false;
+            false
         }
-    };
-    let verified = if api.sha1.is_some() {
-        "含校验"
-    } else {
-        "无可用校验"
-    };
-    let _ = sender.send(InstallEvent::Log(format!(
-        "Mod of Mending {}（{}，{}，{verified}）",
-        api.version,
-        api.origin.label(),
-        crate::discover::human_size(api.size)
-    )));
-    push_mod(
-        plan,
-        ModFile {
-            name: api.file_name(),
-            url: api.url,
-            size: api.size,
-            sha1: api.sha1,
-        },
-    )
+    }
 }
 
 /// Append a jar to `<install>/mods/`, unless the same path is already planned.
