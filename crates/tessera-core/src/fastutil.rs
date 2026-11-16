@@ -7,14 +7,19 @@
 //! install and to its local version JSON, so the normal classpath builder and
 //! cleanup reference set both see it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 
 pub const VERSION: &str = "8.5.18";
+/// Maven-relative path, as written into the version JSON's `downloads.artifact`.
 pub const PATH: &str = "it/unimi/dsi/fastutil/8.5.18/fastutil-8.5.18.jar";
+/// Where the file goes under the game root. The plan must use this, not [`PATH`]:
+/// every library in an aria2 list is relative to the game root and lives under
+/// `libraries/`, which is also where launch looks for it.
+pub const PLAN_PATH: &str = "libraries/it/unimi/dsi/fastutil/8.5.18/fastutil-8.5.18.jar";
 pub const URL: &str =
     "https://libraries.minecraft.net/it/unimi/dsi/fastutil/8.5.18/fastutil-8.5.18.jar";
 pub const SHA1: &str = "a6cff377eecc19c2037bf31568a6d7106b50ba1f";
@@ -27,17 +32,13 @@ pub fn applies(version: &str) -> bool {
 
 /// Add the download to the aria2 plan, unless the profile already lists it.
 pub fn add_plan_entry(plan: &mut mdt::plan::DownloadPlan, version: &str) -> bool {
-    if !applies(version)
-        || plan
-            .entries
-            .iter()
-            .any(|entry| entry.path == Path::new(PATH))
-    {
+    let path = Path::new(PLAN_PATH);
+    if !applies(version) || plan.entries.iter().any(|entry| entry.path == path) {
         return false;
     }
     plan.entries.push(mdt::plan::PlanEntry {
         url: URL.to_string(),
-        path: PathBuf::from(PATH),
+        path: path.to_path_buf(),
         size: SIZE,
         sha1: Some(SHA1.to_string()),
     });
@@ -92,13 +93,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_plan_entry_is_added_once() {
+    fn the_plan_entry_is_added_once_under_libraries() {
         let mut plan = mdt::plan::DownloadPlan::new("1.8.9", Vec::new());
         assert!(add_plan_entry(&mut plan, "1.8.9"));
         assert!(!add_plan_entry(&mut plan, "1.8.9"));
         assert_eq!(plan.entries.len(), 1);
-        assert_eq!(plan.entries[0].path, Path::new(PATH));
+        assert_eq!(plan.entries[0].path, Path::new(PLAN_PATH));
+        assert_eq!(
+            plan.entries[0].path,
+            Path::new("libraries").join(PATH),
+            "launch reads the jar from <root>/libraries"
+        );
         assert!(!add_plan_entry(&mut plan, "1.12.2"));
+    }
+
+    #[test]
+    fn the_aria2_list_writes_the_jar_into_libraries() {
+        let mut plan = mdt::plan::DownloadPlan::new("1.8.9", Vec::new());
+        add_plan_entry(&mut plan, "1.8.9");
+        let list = plan.to_aria2(Path::new("/mc"));
+        assert!(
+            list.contains("dir=/mc/libraries/it/unimi/dsi/fastutil/8.5.18"),
+            "{list}"
+        );
+        assert!(list.contains("out=fastutil-8.5.18.jar"), "{list}");
     }
 
     #[test]
