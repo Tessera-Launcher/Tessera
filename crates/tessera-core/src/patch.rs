@@ -2,9 +2,14 @@
 //!
 //! The launcher does not offer an unpatched 1.8.9 client: the patch carries the
 //! LWJGL3 shim and call-site rewrites, so a missing patch would leave a client
-//! that cannot run on the libraries the installer sets up. Installation therefore
-//! downloads the patch, verifies it against the published digest, and applies it
-//! to the normalized client jar before reporting success.
+//! that cannot run on the libraries the installer sets up.
+//!
+//! The patch is not pinned in this crate. Celeritas publishes a small TOML index
+//! on its repository; install downloads that index into `data/缓存`, reads the
+//! current asset URL, digest and size, appends the asset to the same aria2 list
+//! the game files use, and only then applies the verified `.tpatch`. That keeps
+//! the launcher working after a new patch release without a rebuild, while still
+//! refusing an artifact the index did not describe.
 //!
 //! The format is the `.tpatch` produced by Celeritas' `patch-tool`: a ZIP with
 //! `patch.toml` and content-addressed `blobs/`. Base verification is over the
@@ -13,7 +18,7 @@
 //! timestamps differ.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,14 +32,55 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use crate::error::{Error, Result};
 
 pub const VERSION: &str = "1.8.9";
-pub const PATCH_URL: &str =
-    "https://github.com/Tessera-Launcher/Celeritas/releases/download/v2.5.0-patch4-1.8.9/celeritas-1.8.9-2.5.0-patch4.tpatch";
-/// SHA-256 of the published patch asset. Bump both constants when a new patch
-/// is released; installing an unexpected file must never proceed silently.
-pub const PATCH_SHA256: &str = "1ceb4b69a82b9ac316c1d710bfbfe42d8bdf39a9c9da859226d5c31ed9e1a52a";
-const PATCH_FILE: &str = "celeritas-1.8.9-2.5.0-patch4.tpatch";
+/// Celeritas' release index, as a person sees it on GitHub.
+///
+/// GitHub serves the file itself for this URL when `?raw=true` is appended; the
+/// index is fetched that way so the configured GitHub proxy applies to it just
+/// like it does to release assets.
+pub const INDEX_URL: &str =
+    "https://github.com/Tessera-Launcher/Celeritas/blob/stonecutter/ReleasesIndex.toml";
+/// Where the index is kept under the install's cache directory.
+pub const INDEX_FILE: &str = "ReleasesIndex.toml";
+const INDEX_FORMAT: u32 = 1;
 const FORMAT: u32 = 1;
 const CANONICALIZATION: u32 = 1;
+
+#[derive(Debug, Clone, Deserialize)]
+struct ReleasesIndex {
+    format: u32,
+    minecraft: String,
+    latest: LatestRelease,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LatestRelease {
+    version: String,
+    asset: ReleaseAsset,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ReleaseAsset {
+    name: String,
+    url: String,
+    sha256: String,
+    #[serde(default)]
+    size: u64,
+}
+
+/// The current 1.8.9 patch, as the published index describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asset {
+    /// Celeritas' release name, e.g. `2.5.0p-patch5`.
+    pub version: String,
+    /// File name under the cache directory (and `out=` in the aria2 list).
+    pub name: String,
+    /// GitHub release asset URL, before the optional proxy is applied.
+    pub url: String,
+    /// Lowercase hex SHA-256 the downloaded file must match.
+    pub sha256: String,
+    /// Published size, or `0` when the index did not state one.
+    pub size: u64,
+}
 
 #[derive(Deserialize)]
 struct PatchManifest {
@@ -60,36 +106,158 @@ struct FileOp {
     base_sha256: Option<String>,
 }
 
-/// Download the 1.8.9 patch into the cache directory, or reuse a verified copy.
+/// Fetch the release index into `cache_dir` and return the current asset.
 ///
-/// GitHub URLs go through [`crate::http::github_candidates`], so the single
-/// configured GitHub proxy applies here exactly as it does to Java and aria2.
-pub async fn download(cache_dir: &Path, proxy: &str) -> Result<PathBuf> {
+/// The index is small metadata, so it is downloaded directly here instead of
+/// through aria2. It is written before parsing, which leaves the last response
+/// on disk for diagnosis when upstream publishes a malformed file. GitHub URLs
+/// go through [`crate::http::github_candidates`], so the configured GitHub proxy
+/// applies exactly as it does to Java and aria2.
+pub async fn fetch_index(cache_dir: &Path, proxy: &str) -> Result<Asset> {
     fs::create_dir_all(cache_dir)
         .map_err(|error| Error::io(format!("无法创建 {}", cache_dir.display()), error))?;
-    let target = cache_dir.join(PATCH_FILE);
-    if target.is_file() && sha256_file(&target).is_ok_and(|hash| hash == PATCH_SHA256) {
-        return Ok(target);
-    }
+    let target = cache_dir.join(INDEX_FILE);
 
     let client = crate::http::async_client()?;
     let mut last_error = String::new();
-    for url in crate::http::github_candidates(PATCH_URL, proxy) {
+    for url in index_candidates(proxy) {
         match download_one(&client, &url).await {
             Ok(bytes) => {
-                let actual = sha256_hex(&bytes);
-                if actual != PATCH_SHA256 {
-                    last_error = format!("补丁哈希不符：{actual}");
-                    continue;
-                }
                 crate::fsutil::write_atomic(&target, &bytes, false)
                     .map_err(|error| Error::io(format!("无法写入 {}", target.display()), error))?;
-                return Ok(target);
+                return parse_index(&bytes);
             }
             Err(error) => last_error = error.to_string(),
         }
     }
-    Err(Error::network(format!("下载 1.8.9 补丁失败：{last_error}")))
+    Err(Error::network(format!(
+        "读取 1.8.9 发布索引失败：{last_error}"
+    )))
+}
+
+/// The index URLs to try, proxy first when one is configured.
+fn index_candidates(proxy: &str) -> Vec<String> {
+    // `blob/...` is the page a person opens; `?raw=true` makes GitHub answer with
+    // the file and not its HTML wrapper. Proxies forward the query unchanged.
+    let url = format!("{INDEX_URL}?raw=true");
+    crate::http::github_candidates(&url, proxy)
+}
+
+/// The first URL a log line should show for the index request.
+pub fn index_log_url(proxy: &str) -> String {
+    index_candidates(proxy)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| format!("{INDEX_URL}?raw=true"))
+}
+
+fn parse_index(bytes: &[u8]) -> Result<Asset> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| Error::invalid(format!("发布索引不是 UTF-8：{error}")))?;
+    let index: ReleasesIndex = toml::from_str(text)
+        .map_err(|error| Error::invalid(format!("发布索引解析失败：{error}")))?;
+    if index.format != INDEX_FORMAT {
+        return Err(Error::invalid(format!(
+            "不支持的发布索引格式：{}（支持 {INDEX_FORMAT}）",
+            index.format
+        )));
+    }
+    if index.minecraft != VERSION {
+        return Err(Error::invalid(format!(
+            "发布索引属于 Minecraft {}，不是 {VERSION}",
+            index.minecraft
+        )));
+    }
+    let asset = index.latest.asset;
+    if index.latest.version.trim().is_empty() {
+        return Err(Error::invalid("发布索引没有版本号".to_string()));
+    }
+    safe_file_name(&asset.name)?;
+    let url = asset.url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) || url.contains(['\n', '\r']) {
+        return Err(Error::invalid(format!(
+            "发布索引里的下载地址不可用：{}",
+            asset.url
+        )));
+    }
+    let sha256 = asset.sha256.trim().to_ascii_lowercase();
+    if !is_sha256(&sha256) {
+        return Err(Error::invalid(format!(
+            "发布索引里的 SHA-256 不可用：{}",
+            asset.sha256
+        )));
+    }
+    Ok(Asset {
+        version: index.latest.version,
+        name: asset.name,
+        url: url.to_string(),
+        sha256,
+        size: asset.size,
+    })
+}
+
+fn safe_file_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':', '\n', '\r'])
+    {
+        return Err(Error::invalid(format!("发布索引里的文件名不安全：{name}")));
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Append the patch asset to the aria2 list and return the URL it will fetch.
+///
+/// The list's `dir` is the cache directory, not the game directory: the patch is
+/// an install helper, not a game file, and [`apply`] is the only place it is
+/// read. The URL uses the proxy candidate when one is configured, so aria2 does
+/// not go around a proxy the user set.
+pub fn queue_aria2(list: &Path, asset: &Asset, cache_dir: &Path, proxy: &str) -> Result<String> {
+    let url = crate::http::github_candidates(&asset.url, proxy)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| asset.url.clone());
+    let mut entry = String::new();
+    entry.push_str(&url);
+    entry.push('\n');
+    entry.push_str(&format!("  dir={}\n", cache_dir.display()));
+    entry.push_str(&format!("  out={}\n", asset.name));
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(list)
+        .map_err(|error| Error::io(format!("无法写入 {}", list.display()), error))?;
+    file.write_all(entry.as_bytes())
+        .map_err(|error| Error::io(format!("无法写入 {}", list.display()), error))?;
+    Ok(url)
+}
+
+/// Check the file aria2 downloaded for `asset`, returning its path.
+///
+/// The index's digest is the only checksum this file has; a mismatch fails the
+/// install before [`apply`] touches the client jar.
+pub fn verify(asset: &Asset, cache_dir: &Path) -> Result<PathBuf> {
+    let path = cache_dir.join(&asset.name);
+    let meta = fs::metadata(&path)
+        .map_err(|error| Error::io(format!("无法读取 {}", path.display()), error))?;
+    if asset.size > 0 && meta.len() != asset.size {
+        return Err(Error::integrity(format!(
+            "1.8.9 补丁大小不符：{} 字节，索引写的是 {}",
+            meta.len(),
+            asset.size
+        )));
+    }
+    let actual = sha256_file(&path)
+        .map_err(|error| Error::io(format!("无法读取 {}", path.display()), error))?;
+    if actual != asset.sha256 {
+        return Err(Error::integrity(format!(
+            "1.8.9 补丁哈希不符：期望 {}，实际 {actual}",
+            asset.sha256
+        )));
+    }
+    Ok(path)
 }
 
 async fn download_one(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
@@ -204,19 +372,6 @@ pub fn apply(root: &Path, patch_path: &Path) -> Result<usize> {
 
     write_jar(&client_jar, &target)?;
     Ok(target.len())
-}
-
-fn download_url_for_log(proxy: &str) -> String {
-    crate::http::github_candidates(PATCH_URL, proxy)
-        .first()
-        .cloned()
-        .unwrap_or_else(|| PATCH_URL.to_string())
-}
-
-/// The first URL a log line should show; kept here so install logging and the
-/// downloader always agree.
-pub fn log_url(proxy: &str) -> String {
-    download_url_for_log(proxy)
 }
 
 fn read_jar(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -527,5 +682,113 @@ mod tests {
         let error = apply(tmp.path(), &patch_path).unwrap_err();
         assert!(error.to_string().contains("基准不匹配"), "{error}");
         assert_eq!(std::fs::read(&base_path).unwrap(), before);
+    }
+
+    fn index_toml(minecraft: &str, name: &str, url: &str, sha256: &str) -> String {
+        format!(
+            "format = 1\nminecraft = \"{minecraft}\"\n\n[latest]\nversion = \"2.5.0p-patch5\"\ntag = \"v2.5.0p-patch5-1.8.9\"\n\n[latest.asset]\nname = \"{name}\"\nurl = \"{url}\"\nsha256 = \"{sha256}\"\nsize = 1947202\n"
+        )
+    }
+
+    #[test]
+    fn the_release_index_names_the_current_patch() {
+        let asset = parse_index(
+            index_toml(
+                "1.8.9",
+                "celeritas-1.8.9-2.5.0p-patch5.tpatch",
+                "https://github.com/Tessera-Launcher/Celeritas/releases/download/v2.5.0p-patch5-1.8.9/celeritas-1.8.9-2.5.0p-patch5.tpatch",
+                "BDF8175F60F07804CE8765AE3F1480677C8A27FD33464C94C28C31FEE4A05E78",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(asset.version, "2.5.0p-patch5");
+        assert_eq!(asset.name, "celeritas-1.8.9-2.5.0p-patch5.tpatch");
+        assert_eq!(asset.sha256.len(), 64);
+        assert!(asset.sha256.chars().all(|c| !c.is_ascii_uppercase()));
+        assert_eq!(asset.size, 1_947_202);
+    }
+
+    #[test]
+    fn an_index_for_another_minecraft_version_is_refused() {
+        let error = parse_index(
+            index_toml(
+                "1.20.1",
+                "x.tpatch",
+                "https://github.com/a/b.tpatch",
+                &"0".repeat(64),
+            )
+            .as_bytes(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("1.20.1"), "{error}");
+    }
+
+    #[test]
+    fn an_unsafe_asset_name_is_refused() {
+        let error = parse_index(
+            index_toml(
+                "1.8.9",
+                "../x.tpatch",
+                "https://github.com/a/b.tpatch",
+                &"0".repeat(64),
+            )
+            .as_bytes(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("不安全"), "{error}");
+    }
+
+    #[test]
+    fn the_patch_is_appended_to_the_aria2_list_in_the_cache_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let list = tmp.path().join("列表/1.8.9.txt");
+        std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+        std::fs::write(
+            &list,
+            "https://example.invalid/a.jar\n  dir=/mc/libraries\n",
+        )
+        .unwrap();
+        let cache = tmp.path().join("缓存");
+        std::fs::create_dir_all(&cache).unwrap();
+        let asset = Asset {
+            version: "2.5.0p-patch5".into(),
+            name: "celeritas.tpatch".into(),
+            url: "https://github.com/a/releases/download/v/celeritas.tpatch".into(),
+            sha256: "0".repeat(64),
+            size: 123,
+        };
+
+        let url = queue_aria2(&list, &asset, &cache, "gh-proxy.com").unwrap();
+        assert_eq!(
+            url,
+            "https://gh-proxy.com/github.com/a/releases/download/v/celeritas.tpatch"
+        );
+        let text = std::fs::read_to_string(&list).unwrap();
+        assert!(text.starts_with("https://example.invalid/a.jar"), "{text}");
+        assert!(text.contains(&format!("dir={}", cache.display())), "{text}");
+        assert!(text.trim_end().ends_with("out=celeritas.tpatch"), "{text}");
+    }
+
+    #[test]
+    fn verify_checks_the_digest_the_index_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = b"patch bytes";
+        std::fs::write(tmp.path().join("x.tpatch"), bytes).unwrap();
+        let asset = Asset {
+            version: "v".into(),
+            name: "x.tpatch".into(),
+            url: "https://github.com/a/x.tpatch".into(),
+            sha256: sha256_hex(bytes),
+            size: bytes.len() as u64,
+        };
+        assert!(verify(&asset, tmp.path()).is_ok());
+
+        let wrong = Asset {
+            sha256: "0".repeat(64),
+            ..asset
+        };
+        let error = verify(&wrong, tmp.path()).unwrap_err();
+        assert!(error.to_string().contains("哈希不符"), "{error}");
     }
 }

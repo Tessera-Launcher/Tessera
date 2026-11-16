@@ -262,6 +262,31 @@ pub fn spawn_install(
             };
             let mods_added = add_fabric_api(&mut plan, loader, &version, &sender).await;
             let fastutil_added = crate::fastutil::add_plan_entry(&mut plan, &version);
+
+            // The 1.8.9 patch is not pinned in the binary: its release index is
+            // fetched now, so a new patch can be installed without rebuilding the
+            // launcher. This is metadata and goes directly to the cache; the
+            // asset it names is added to aria2's list below, with everything else.
+            let mut patch = None;
+            if version == crate::patch::VERSION {
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "1.8.9 补丁：读取发布索引（{}）…",
+                    crate::patch::index_log_url(&proxy)
+                )));
+                let asset = crate::patch::fetch_index(&list_dir, &proxy).await?;
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "1.8.9 补丁：{}（{}，{}）",
+                    asset.version,
+                    asset.name,
+                    if asset.size > 0 {
+                        crate::discover::human_size(asset.size)
+                    } else {
+                        "大小未知".to_string()
+                    }
+                )));
+                patch = Some(asset);
+            }
+
             if fastutil_added || mods_added {
                 // MDT writes the aria2 list before returning the plan, so the
                 // extra entries have to be written back before aria2 reads it.
@@ -275,6 +300,17 @@ pub fn spawn_install(
             let files = plan.entries.len();
             let total_bytes = plan.total_bytes();
             let list = plan.path(&list_dir);
+
+            // The patch lives under `data/缓存`, not the game tree, so its aria2
+            // entry is appended after MDT wrote the game-file entries. aria2
+            // downloads it alongside them; `verify` and `apply` run afterwards.
+            if let Some(asset) = &patch {
+                let url = crate::patch::queue_aria2(&list, asset, &list_dir, &proxy)?;
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "1.8.9 补丁：加入 aria2 清单（{url}）"
+                )));
+            }
+
             let _ = sender.send(InstallEvent::Log(format!(
                 "清单：{files} 个文件 · {}",
                 crate::discover::human_size(total_bytes)
@@ -356,13 +392,11 @@ pub fn spawn_install(
 
             // 1.8.9 is not usable without the Celeritas/LWJGL3 patch: it carries
             // the shim and the call-site rewrites, so this is part of install,
-            // not an optional post-step.
-            if version == crate::patch::VERSION {
-                let _ = sender.send(InstallEvent::Log(format!(
-                    "1.8.9 补丁：下载（{}）…",
-                    crate::patch::log_url(&proxy)
-                )));
-                let patch = crate::patch::download(&list_dir, &proxy).await?;
+            // not an optional post-step. aria2 already fetched the asset named
+            // by the index; check it here, then apply it exactly as before.
+            if let Some(asset) = &patch {
+                let _ = sender.send(InstallEvent::Log("1.8.9 补丁：校验下载…".to_string()));
+                let patch = crate::patch::verify(asset, &list_dir)?;
                 let _ = sender.send(InstallEvent::Log(
                     "1.8.9 补丁：应用到 client.jar…".to_string(),
                 ));
