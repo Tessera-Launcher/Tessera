@@ -65,8 +65,10 @@ pub struct Track {
     pub title: String,
     /// `唱片`, `主世界`, `创造模式`, `下界 · 绯红森林`… — where the track sits.
     pub group: String,
-    /// SHA-1 naming the object.
-    /// Size as the index declares it.
+    /// Bytes the object takes on disk when it is there; the size the index
+    /// declares when it is not. An object can be smaller than its index entry —
+    /// recompressed audio keeps its hash name — so what is counted is the file,
+    /// not the download it came from.
     pub size: u64,
     /// Where the object should be on disk.
     pub path: PathBuf,
@@ -93,7 +95,7 @@ impl Library {
         self.tracks.iter().filter(|track| !track.present).count()
     }
 
-    /// Sum of the declared sizes of the tracks that are actually there.
+    /// Sum of the sizes of the tracks that are actually there.
     pub fn total_size(&self) -> u64 {
         self.tracks
             .iter()
@@ -173,12 +175,18 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library> {
             }
             _ => object_path,
         };
+        let present = path.is_file();
+        let size = if present {
+            std::fs::metadata(&path).map_or(size, |metadata| metadata.len())
+        } else {
+            size
+        };
         tracks.push(Track {
             name: name.clone(),
             title: title(name),
             group: group(kind, name),
             size,
-            present: path.is_file(),
+            present,
             path,
         });
     }
@@ -499,13 +507,19 @@ mod tests {
     }
 
     fn object(game: &Path, hash: &str) -> PathBuf {
+        object_of(game, hash, b"OggS")
+    }
+
+    /// The same, with a chosen number of bytes, so a test can tell the file
+    /// apart from the size the index claims for it.
+    fn object_of(game: &Path, hash: &str, bytes: &[u8]) -> PathBuf {
         let path = game
             .join("assets")
             .join("objects")
             .join(&hash[..2])
             .join(hash);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, b"OggS").unwrap();
+        fs::write(&path, bytes).unwrap();
         path
     }
 
@@ -533,7 +547,9 @@ mod tests {
     fn records_are_the_discs_only() {
         let root = home("34", &sample_index(), "26.3", PROFILE);
         let game = root.path();
-        object(game, HASH_A);
+        // The index claims 1400008 bytes for `cat.ogg`; the object on disk is
+        // what a recompressed download leaves behind, and it is what counts.
+        object_of(game, HASH_A, &[0u8; 1000]);
         object(game, HASH_C);
 
         let library = scan(game, "26.3", Kind::Records).unwrap();
@@ -543,7 +559,7 @@ mod tests {
         assert_eq!(titles, ["13", "Cat"]);
         assert_eq!(library.index, "34");
         assert_eq!(library.kind, Kind::Records);
-        assert_eq!(library.total_size(), 1400008);
+        assert_eq!(library.total_size(), 1000);
         // `13.ogg`'s object was never written.
         assert_eq!(library.missing(), 1);
         assert!(library.tracks[1].present);
