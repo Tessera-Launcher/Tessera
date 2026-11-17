@@ -24,6 +24,7 @@ pub async fn plan_objects(
     _mirror: &Mirror,
     _urls: &ManifestUrls,
     reporter: &dyn ProgressReporter,
+    language: Option<&str>,
 ) -> Result<Vec<crate::plan::PlanEntry>, MdtError> {
     if !is_safe_path_component(&asset_index.id) {
         return Err(MdtError::InvalidManifest(format!(
@@ -59,7 +60,12 @@ pub async fn plan_objects(
         asset_index.id,
         index.objects.len()
     ));
-    let objects: Vec<AssetObject> = index.objects.into_values().collect();
+    let objects: Vec<AssetObject> = index
+        .objects
+        .into_iter()
+        .filter(|(name, _)| keep_asset(name, language))
+        .map(|(_, object)| object)
+        .collect();
     let objects_dir = root.join("assets").join("objects");
     Ok(downloader::build_tasks_from_assets(&objects, &objects_dir)
         .into_iter()
@@ -73,6 +79,29 @@ pub async fn plan_objects(
             })
         })
         .collect())
+}
+
+/// Whether an asset index entry belongs in a plan for `language`.
+///
+/// `None` keeps the full index, preserving the old behaviour. With a language
+/// code only `minecraft/lang/<code>.*` and `realms/lang/<code>.*` survive: the
+/// English strings are already inside `client.jar`, and every other locale is
+/// dead weight unless the player selects it. The comparison is
+/// case-insensitive because legacy indexes spell `zh_CN.lang` and modern ones
+/// `zh_cn.json`.
+fn keep_asset(name: &str, language: Option<&str>) -> bool {
+    let Some(language) = language else {
+        return true;
+    };
+    let parts: Vec<&str> = name.split('/').collect();
+    if parts.len() < 3 || !parts[1].eq_ignore_ascii_case("lang") {
+        return true;
+    }
+    if !(parts[0].eq_ignore_ascii_case("minecraft") || parts[0].eq_ignore_ascii_case("realms")) {
+        return true;
+    }
+    let stem = parts[2].rsplit_once('.').map_or(parts[2], |(stem, _)| stem);
+    stem.eq_ignore_ascii_case(language)
 }
 
 /// Put the asset index JSON on disk (metadata only) and verify its SHA-1.
@@ -115,4 +144,33 @@ pub(crate) fn sha1_of_file(path: &Path) -> Option<String> {
         hasher.update(&buffer[..read]);
     }
     Some(hex::encode(hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_asset;
+
+    #[test]
+    fn a_language_filter_keeps_only_the_chosen_locale() {
+        assert!(keep_asset("minecraft/lang/zh_cn.json", Some("zh_cn")));
+        assert!(keep_asset("minecraft/lang/zh_CN.lang", Some("zh_cn")));
+        assert!(keep_asset("realms/lang/zh_cn.json", Some("zh_cn")));
+        assert!(!keep_asset("minecraft/lang/en_us.json", Some("zh_cn")));
+        assert!(!keep_asset("realms/lang/en_us.json", Some("zh_cn")));
+        assert!(!keep_asset("minecraft/lang/zh_tw.json", Some("zh_cn")));
+    }
+
+    #[test]
+    fn non_language_assets_are_never_filtered() {
+        assert!(keep_asset(
+            "minecraft/sounds/random/click.ogg",
+            Some("zh_cn")
+        ));
+        assert!(keep_asset(
+            "minecraft/textures/block/stone.png",
+            Some("zh_cn")
+        ));
+        assert!(keep_asset("minecraft/lang/zh_cn.json", None));
+        assert!(keep_asset("minecraft/lang/en_us.json", None));
+    }
 }

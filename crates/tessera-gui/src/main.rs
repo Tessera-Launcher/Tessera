@@ -5,8 +5,10 @@
 //! login, downloads, the game process) report through channels, and the state
 //! machine turns those reports into the next status line.
 
+use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::StyledExt;
@@ -17,7 +19,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue}
 use gpui_kit::component::{TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
-use crate::platform::{copy_to_clipboard, gui_key, open_browser};
+use crate::platform::{copy_to_clipboard, gui_key, open_browser, open_folder};
 use crate::widgets::LogView;
 use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
@@ -29,8 +31,8 @@ use tessera_core::launch;
 use tessera_core::login::{self, LoginEvent};
 use tessera_core::version::VersionKind;
 use tessera_core::{
-    accounts, aot, aria2, audio, cleanup, discover, instance, java, logfile, music, paths::Paths,
-    session, version_tree::RowKind,
+    accounts, aot, aria2, audio, cleanup, discover, instance, java, logfile, modrinth, music,
+    paths::Paths, session, version_tree::RowKind,
 };
 
 use crate::design_tokens::{color, font, layout, radius, space, stroke, weight};
@@ -70,6 +72,19 @@ struct Launcher {
     log: LogView,
     /// The download screen's scrollbar.
     download_scroll: ScrollHandle,
+    /// Modrinth's results, detail and installed lists.
+    mods_scroll: ScrollHandle,
+    mods_detail_scroll: ScrollHandle,
+    mods_installed_scroll: ScrollHandle,
+    mods_log: LogView,
+    /// Decoded Modrinth icons, keyed by CDN URL. `None` means the fetch failed;
+    /// the row then keeps its letter tile instead of retrying every frame.
+    mod_icons: HashMap<String, Option<Arc<Image>>>,
+    /// URLs whose icon is currently being fetched.
+    mod_icons_loading: std::collections::HashSet<String>,
+    /// Blocking client for icon fetches: GPUI's executor is not a Tokio
+    /// runtime, so reqwest's async client cannot be awaited there.
+    icon_client: reqwest::blocking::Client,
     /// The install screen's activity pane.
     install_log: LogView,
     /// The download cursor last seen, so keyboard movement can scroll it into
@@ -88,6 +103,9 @@ struct Launcher {
     /// Text fields, created on first use because `InputState::new` needs a window.
     search: Option<Entity<InputState>>,
     search_sub: Option<Subscription>,
+    /// The Modrinth search box, created on first use like the download one.
+    mods_search: Option<Entity<InputState>>,
+    mods_search_sub: Option<Subscription>,
     app_id_input: Option<Entity<InputState>>,
     app_id_sub: Option<Subscription>,
     offline_input: Option<Entity<InputState>>,
@@ -169,6 +187,9 @@ impl Launcher {
         state.launch_options.width = settings.window_width;
         state.launch_options.height = settings.window_height;
         let theme = settings.theme;
+        // The picker opens on the kind filter last used; the list itself is
+        // fetched later, and `apply_filter` honours this value when it arrives.
+        state.download.filter = settings.download_filter;
         state.settings = settings;
         // Apply the persisted scheme before the first frame, then bring back the
         // account the user last switched to.
@@ -214,6 +235,13 @@ impl Launcher {
                 reqwest::Client::new()
             }
         };
+        let icon_client = match tessera_core::http::blocking_client(Duration::from_secs(20)) {
+            Ok(client) => client,
+            Err(error) => {
+                state.log(format!("{error}，图标注下载改用默认 HTTP 配置"));
+                reqwest::blocking::Client::new()
+            }
+        };
         if blocked {
             state.status = "另一个 Tessera 正在使用这个数据目录".to_string();
         }
@@ -228,6 +256,13 @@ impl Launcher {
             loading_wake: None,
             log: LogView::default(),
             download_scroll: ScrollHandle::default(),
+            mods_scroll: ScrollHandle::default(),
+            mods_detail_scroll: ScrollHandle::default(),
+            mods_installed_scroll: ScrollHandle::default(),
+            mods_log: LogView::default(),
+            mod_icons: HashMap::new(),
+            mod_icons_loading: std::collections::HashSet::new(),
+            icon_client,
             install_log: LogView::default(),
             download_cursor_seen: 0,
             log_file,
@@ -235,6 +270,8 @@ impl Launcher {
             focus_scheduled: false,
             search: None,
             search_sub: None,
+            mods_search: None,
+            mods_search_sub: None,
             app_id_input: None,
             app_id_sub: None,
             offline_input: None,
@@ -315,14 +352,19 @@ impl Render for Launcher {
                 window.focus(&this.focus_handle, cx);
             });
         }
-        let body = match self.state.screen {
-            Screen::Main => self.main_screen(cx).into_any_element(),
-            Screen::Accounts => self.accounts_screen(cx).into_any_element(),
-            Screen::Login => self.login_screen(window, cx).into_any_element(),
-            Screen::Download => self.download_screen(window, cx).into_any_element(),
-            Screen::Java => self.java_screen(window, cx).into_any_element(),
-            Screen::Music => self.music_screen(window, cx).into_any_element(),
-            Screen::Settings => self.settings_screen(window, cx).into_any_element(),
+        let body = if self.blocked {
+            self.blocked_screen(cx).into_any_element()
+        } else {
+            match self.state.screen {
+                Screen::Main => self.main_screen(cx).into_any_element(),
+                Screen::Accounts => self.accounts_screen(cx).into_any_element(),
+                Screen::Login => self.login_screen(window, cx).into_any_element(),
+                Screen::Download => self.download_screen(window, cx).into_any_element(),
+                Screen::Java => self.java_screen(window, cx).into_any_element(),
+                Screen::Music => self.music_screen(window, cx).into_any_element(),
+                Screen::Mods => self.mods_screen(window, cx).into_any_element(),
+                Screen::Settings => self.settings_screen(window, cx).into_any_element(),
+            }
         };
 
         let overlay = self.uninstall_overlay(cx);
@@ -335,7 +377,8 @@ impl Render for Launcher {
             .child(body);
         // Login is a flow of its own: the sidebar would invite navigating away
         // mid-login, so it only frames the four pages.
-        let sidebar = (self.state.screen != Screen::Login).then(|| self.sidebar(cx));
+        let sidebar =
+            (!self.blocked && self.state.screen != Screen::Login).then(|| self.sidebar(cx));
         div()
             .v_flex()
             .relative()

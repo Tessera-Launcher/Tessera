@@ -2,6 +2,8 @@
 
 use super::*;
 
+use std::path::Path;
+
 /// Translate one GPUI keystroke into the state machine's vocabulary.
 pub(crate) fn gui_key(keystroke: &Keystroke) -> Option<Key> {
     Some(match keystroke.key.as_str() {
@@ -73,6 +75,21 @@ pub(crate) fn copy_to_clipboard(text: &str) -> Result<String, String> {
         }
     }
     Err("没有可用的剪贴板工具（wl-copy / xclip / xsel / pbcopy）".to_string())
+}
+
+pub(crate) fn open_folder(path: &Path) -> Result<(), String> {
+    // `open` picks the platform's own opener: LaunchServices on macOS, and on
+    // Linux the first working entry from xdg-open / gio / the desktop's file
+    // manager, so XFCE, GNOME and KDE all use the file manager the user
+    // actually runs. Windows gets `explorer.exe` explicitly: the crate's
+    // default `that_detached` may resolve to a shell call that only highlights
+    // the folder in its parent, while the menu promises to open the folder.
+    #[cfg(windows)]
+    let opened = open::with_detached(path, "explorer.exe");
+    #[cfg(not(windows))]
+    let opened = open::that_detached(path);
+
+    opened.map_err(|error| error.to_string())
 }
 
 pub(crate) fn open_browser(url: &str) -> Result<(), String> {

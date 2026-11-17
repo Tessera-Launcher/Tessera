@@ -214,6 +214,42 @@ pub enum GameEvent {
     },
 }
 
+/// Detach the game from the launcher's process group and session.
+///
+/// Closing the launcher (or the terminal it was started from) must not take a
+/// running game down with it. A plain `spawn` leaves the JVM in the launcher's
+/// process group, where a hangup or a group-wide signal aimed at the launcher —
+/// and a terminal closing its session — also reaches the game. `setsid` gives
+/// the JVM its own session, and a null stdin keeps it from ever reading the
+/// launcher's terminal.
+fn detach(command: &mut std::process::Command) {
+    command.stdin(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // `pre_exec` runs between fork and exec, where only async-signal-safe
+        // calls are allowed; `setsid` is one. The child is not a process-group
+        // leader at this point, so this always succeeds.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console to close and no shared Ctrl+C group: the game is a GUI
+        // process of its own and survives the launcher exiting.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
 /// Prepare, spawn and reap one version on a worker thread.
 ///
 /// The whole sequence is here so the UI thread never pays for [`prepare`] (which
@@ -254,6 +290,7 @@ pub fn spawn_game(
             // scribble over whatever the front-end is showing.
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        detach(&mut command);
         match command.spawn() {
             Ok(mut child) => {
                 let _ = sender.send(GameEvent::Started {

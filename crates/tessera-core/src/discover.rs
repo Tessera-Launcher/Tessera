@@ -53,14 +53,35 @@ pub struct LocalVersion {
 
 impl LocalVersion {
     /// The vanilla version this profile belongs to.
+    ///
+    /// A thin loader profile names its parent directly. A self-contained one
+    /// has no parent, so the version has to come out of its id: the legacy
+    /// spelling is `1.20.1+Fabric0.15.11`, while the self-contained installer
+    /// writes `1.20.1-fabric-0.15.11`. Reading the latter as a game version
+    /// would ask every metadata service for a version that does not exist.
     pub fn base_version(&self) -> &str {
-        match &self.inherits {
-            Some(parent) => parent,
-            None => self
-                .id
-                .split_once('+')
-                .map_or(self.id.as_str(), |(mc, _)| mc),
+        if let Some(parent) = &self.inherits {
+            return parent;
         }
+        if let Some((mc, _)) = self.id.split_once('+') {
+            return mc;
+        }
+        // The loader's display name is not part of the marker, but the id's
+        // middle segment is the loader id the installer used.
+        const MARKERS: [&str; 6] = [
+            "-fabric-",
+            "-forge-",
+            "-neoforge-",
+            "-quilt-",
+            "-outlands-",
+            "-liteloader-",
+        ];
+        for marker in MARKERS {
+            if let Some((mc, _)) = self.id.split_once(marker) {
+                return mc;
+            }
+        }
+        self.id.as_str()
     }
 }
 
@@ -247,6 +268,7 @@ mod tests {
 
         let versions = scan(root);
         let by_id = |id: &str| versions.iter().find(|v| v.id == id).unwrap();
+        assert_eq!(by_id("1.20.1-forge-47.2.0").base_version(), "1.20.1");
         assert!(by_id("1.20.1-fabric-0.15.11").loader);
         assert!(by_id("1.20.1-forge-47.2.0").loader);
         assert!(by_id("1.20.1-forge-47.2.0").has_jar);

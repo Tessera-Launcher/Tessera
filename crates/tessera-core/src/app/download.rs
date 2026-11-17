@@ -7,6 +7,8 @@
 
 use super::*;
 
+use serde::{Deserialize, Serialize};
+
 /// Which pane of the download picker has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerFocus {
@@ -27,8 +29,14 @@ impl PickerFocus {
 }
 
 /// The kind-of-release filter above the version list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Persisted in `配置.toml`, so the spelling of each variant is part of the
+/// file format: renaming one would silently reset the picker for existing
+/// installations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum VersionFilter {
+    #[default]
     All,
     Release,
     Snapshot,
@@ -452,11 +460,7 @@ impl App {
                     Key::Tab => self.download.focus = self.download.focus.next(),
                     Key::Char('/') => self.download.focus = PickerFocus::Search,
                     Key::Char('s') => self.toggle_source(),
-                    Key::Char('f') => {
-                        self.download.filter = self.download.filter.next();
-                        self.download.apply_filter();
-                        self.status = format!("下载：{} 版本", self.download.filter.label());
-                    }
+                    Key::Char('f') => self.set_download_filter(self.download.filter.next()),
                     Key::Up | Key::Char('k') => self.picker_step(-1, true),
                     Key::Down | Key::Char('j') => self.picker_step(1, true),
                     // Tree controls: `←` closes, `→` opens, `Space` flips whichever
@@ -541,6 +545,9 @@ impl App {
             return;
         }
         self.download.filter = filter;
+        // Remember the choice in `配置.toml`: the next start opens on the same
+        // kind the user left the picker on.
+        self.settings.download_filter = filter;
         self.download.apply_filter();
         self.status = format!("下载：{} 版本", filter.label());
     }

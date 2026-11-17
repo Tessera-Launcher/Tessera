@@ -105,6 +105,14 @@ impl Launcher {
                     Ok(()) => self.state.log(format!("已在浏览器打开 {url}")),
                     Err(error) => self.state.log(format!("打开浏览器失败：{error}")),
                 },
+                UiRequest::OpenFolder(path) => match open_folder(&path) {
+                    Ok(()) => self
+                        .state
+                        .log(format!("已在文件管理器打开 {}", path.display())),
+                    Err(error) => self
+                        .state
+                        .log(format!("打开文件夹 {} 失败：{error}", path.display())),
+                },
                 UiRequest::Audio(command) => self.send_audio(command, cx),
             }
         }
@@ -192,6 +200,56 @@ impl Launcher {
                     );
                     self.tasks
                         .watch(TaskKind::Sweep, rx, deliver_sweep, sweep_done);
+                }
+                Effect::SearchMods {
+                    game_version,
+                    query,
+                } => {
+                    let rx = modrinth::spawn_search(game_version, query);
+                    self.tasks
+                        .watch(TaskKind::ModSearch, rx, deliver_mod_search, mod_search_done);
+                }
+                Effect::FetchModVersions {
+                    project_id,
+                    game_version,
+                } => {
+                    let rx = modrinth::spawn_versions(project_id, game_version);
+                    self.tasks.watch(
+                        TaskKind::ModVersions,
+                        rx,
+                        deliver_mod_versions,
+                        mod_versions_done,
+                    );
+                }
+                Effect::InstallMod {
+                    version_dir,
+                    game_version,
+                    version,
+                    title,
+                } => {
+                    // A page switch may have reset the visible state while an
+                    // install still runs; never start a second writer over the
+                    // same sidecar and mods directory.
+                    if self.tasks.running(TaskKind::ModInstall) {
+                        self.state.mods.installing = false;
+                        self.state.log("已有模组安装在进行，忽略新的安装请求");
+                        continue;
+                    }
+                    let rx = modrinth::spawn_install(version_dir, game_version, version, title);
+                    self.tasks.watch(
+                        TaskKind::ModInstall,
+                        rx,
+                        deliver_mod_install,
+                        mod_install_done,
+                    );
+                }
+                Effect::RemoveMod {
+                    version_dir,
+                    filename,
+                } => {
+                    let rx = modrinth::spawn_remove(version_dir, filename);
+                    self.tasks
+                        .watch(TaskKind::ModRemove, rx, deliver_mod_remove, mod_remove_done);
                 }
                 Effect::TrainAot(version) => {
                     let cancel = self.tasks.stop_flag();
@@ -412,6 +470,34 @@ fn aot_done(event: &aot::Event) -> bool {
     )
 }
 
+fn mod_search_done(event: &modrinth::SearchEvent) -> bool {
+    matches!(
+        event,
+        modrinth::SearchEvent::Loaded { .. } | modrinth::SearchEvent::Failed(_)
+    )
+}
+
+fn mod_versions_done(event: &modrinth::VersionsEvent) -> bool {
+    matches!(
+        event,
+        modrinth::VersionsEvent::Loaded { .. } | modrinth::VersionsEvent::Failed(_)
+    )
+}
+
+fn mod_install_done(event: &modrinth::InstallEvent) -> bool {
+    matches!(
+        event,
+        modrinth::InstallEvent::Finished { .. } | modrinth::InstallEvent::Failed(_)
+    )
+}
+
+fn mod_remove_done(event: &modrinth::RemoveEvent) -> bool {
+    matches!(
+        event,
+        modrinth::RemoveEvent::Removed { .. } | modrinth::RemoveEvent::Failed(_)
+    )
+}
+
 fn game_done(event: &launch::GameEvent) -> bool {
     matches!(
         event,
@@ -454,6 +540,22 @@ fn deliver_sweep(launcher: &mut Launcher, sweep: cleanup::Sweep) {
 
 fn deliver_aot(launcher: &mut Launcher, event: aot::Event) {
     launcher.state.handle_aot_event(event);
+}
+
+fn deliver_mod_search(launcher: &mut Launcher, event: modrinth::SearchEvent) {
+    launcher.state.handle_mod_search_event(event);
+}
+
+fn deliver_mod_versions(launcher: &mut Launcher, event: modrinth::VersionsEvent) {
+    launcher.state.handle_mod_versions_event(event);
+}
+
+fn deliver_mod_install(launcher: &mut Launcher, event: modrinth::InstallEvent) {
+    launcher.state.handle_mod_install_event(event);
+}
+
+fn deliver_mod_remove(launcher: &mut Launcher, event: modrinth::RemoveEvent) {
+    launcher.state.handle_mod_remove_event(event);
 }
 
 fn deliver_game(launcher: &mut Launcher, event: launch::GameEvent) {

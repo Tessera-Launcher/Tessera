@@ -16,8 +16,13 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 
 /// Adoptium's API sits behind Cloudflare and answers 403 to clients that look
-/// like a script, so the agent is not optional.
-const USER_AGENT: &str = concat!("tessera-launcher/", env!("CARGO_PKG_VERSION"));
+/// like a script, so the agent is not optional. Modrinth also requires a
+/// uniquely-identifying agent and asks that it name the project.
+const USER_AGENT: &str = concat!(
+    "tessera-launcher/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/Tessera-Launcher/Tessera)"
+);
 
 /// A stalled login poll or version-list request must not hold a worker forever.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -82,6 +87,14 @@ pub fn github_candidates(url: &str, proxy: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_user_agent_names_the_project_for_modrinth() {
+        assert!(
+            USER_AGENT.contains("https://github.com/Tessera-Launcher/Tessera"),
+            "{USER_AGENT}"
+        );
+    }
 
     #[test]
     fn both_clients_build() {

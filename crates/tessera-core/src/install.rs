@@ -429,6 +429,16 @@ pub fn spawn_install(
                 )));
             }
 
+            // The game writes its language choice in `options.txt` under its
+            // own game directory, which for Tessera is the version directory.
+            // Setting it here means a fresh install opens in Simplified Chinese
+            // without a first-launch trip through the language menu.
+            let language = language_code(client.root_dir(), &plan.id, &version);
+            set_language(client.root_dir(), &plan.id, language)?;
+            let _ = sender.send(InstallEvent::Log(format!(
+                "游戏语言：简体中文（lang:{language}）"
+            )));
+
             let _ = sender.send(InstallEvent::Finished {
                 version,
                 loader: loader_version.map(|v| format!("{} {v}", loader.label())),
@@ -546,6 +556,78 @@ async fn add_mod_of_mending(
     }
 }
 
+/// The language code this client version expects in `options.txt`.
+///
+/// The spelling changed with the JSON language files: 1.8 and friends use
+/// `zh_CN`, modern versions use `zh_cn`. Reading the client jar is more robust
+/// than guessing a cutoff from the version id, and it also covers snapshots and
+/// loader profiles whose id is not a plain Minecraft version. The version id is
+/// only the fallback when the jar cannot be opened.
+fn language_code(root: &std::path::Path, dir: &str, mc_version: &str) -> &'static str {
+    let jar = root.join("versions").join(dir).join(format!("{dir}.jar"));
+    if let Ok(file) = std::fs::File::open(&jar) {
+        if let Ok(mut archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) {
+            for index in 0..archive.len() {
+                let Ok(entry) = archive.by_index(index) else {
+                    continue;
+                };
+                let Ok(name) = entry.name() else {
+                    continue;
+                };
+                if name.eq_ignore_ascii_case("assets/minecraft/lang/en_us.json") {
+                    return "zh_cn";
+                }
+                if name.eq_ignore_ascii_case("assets/minecraft/lang/en_US.lang") {
+                    return "zh_CN";
+                }
+            }
+        }
+    }
+    if crate::version::McVersion::parse(mc_version)
+        .is_some_and(|version| version.at_least(1, 13, 0))
+    {
+        "zh_cn"
+    } else {
+        "zh_CN"
+    }
+}
+
+/// Set `lang:` in the instance's `options.txt`, preserving every other option.
+fn set_language(root: &std::path::Path, dir: &str, language: &str) -> Result<()> {
+    let path = root.join("versions").join(dir).join("options.txt");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(Error::io(format!("无法读取 {}", path.display()), error));
+        }
+    };
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    let wanted = format!("lang:{language}");
+    let mut replaced = false;
+    for line in &mut lines {
+        if line.starts_with("lang:") {
+            if !replaced {
+                *line = wanted.clone();
+                replaced = true;
+            } else {
+                // A duplicated key is not something the game writes, but keeping
+                // the first and appending no second one is safer than leaving two
+                // contradictory values.
+                line.clear();
+            }
+        }
+    }
+    lines.retain(|line| !line.is_empty());
+    if !replaced {
+        lines.push(wanted);
+    }
+    let mut body = lines.join("\n");
+    body.push('\n');
+    crate::fsutil::write_atomic(&path, body.as_bytes(), false)
+        .map_err(|error| Error::io(format!("无法写入 {}", path.display()), error))
+}
+
 /// Append a jar to `<install>/mods/`, unless the same path is already planned.
 ///
 /// The install's own game directory is its version directory, so `mods/` sits
@@ -634,6 +716,10 @@ fn build_client(
         .mirror(source.to_mdt())
         .root_dir(root)
         .list_dir(list_dir)
+        // English is in `client.jar`; every other locale is a separate asset.
+        // Tessera's UI is Chinese and a fresh install should not pull ~89 MiB
+        // of translations the player never selected.
+        .asset_language("zh_cn")
         .progress_reporter(Reporter {
             sender,
             transferred,
@@ -958,6 +1044,60 @@ mod tests {
             assert!(profile["mainClass"].as_str().unwrap().contains("outlands"));
         });
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn setting_the_language_preserves_the_rest_of_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("versions/1.20.1")).unwrap();
+        let options = root.join("versions/1.20.1/options.txt");
+        std::fs::write(&options, "version:3465\nlang:en_us\nfov:0.5\n").unwrap();
+
+        set_language(root, "1.20.1", "zh_cn").unwrap();
+
+        let text = std::fs::read_to_string(&options).unwrap();
+        assert!(text.contains("lang:zh_cn\n"), "{text}");
+        assert!(!text.contains("lang:en_us"), "{text}");
+        assert!(text.contains("fov:0.5\n"), "{text}");
+        assert_eq!(text.matches("lang:").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn setting_the_language_creates_options_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("versions/1.8.9")).unwrap();
+
+        set_language(root, "1.8.9", "zh_CN").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("versions/1.8.9/options.txt")).unwrap(),
+            "lang:zh_CN\n"
+        );
+    }
+
+    #[test]
+    fn the_language_spelling_comes_from_the_client_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("versions/old")).unwrap();
+        let mut zip =
+            zip::ZipWriter::new(std::fs::File::create(root.join("versions/old/old.jar")).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("assets/minecraft/lang/en_US.lang", options)
+            .unwrap();
+        zip.finish().unwrap();
+
+        assert_eq!(language_code(root, "old", "1.8.9"), "zh_CN");
+
+        std::fs::create_dir_all(root.join("versions/new")).unwrap();
+        let mut zip =
+            zip::ZipWriter::new(std::fs::File::create(root.join("versions/new/new.jar")).unwrap());
+        zip.start_file("assets/minecraft/lang/en_us.json", options)
+            .unwrap();
+        zip.finish().unwrap();
+        assert_eq!(language_code(root, "new", "26.3"), "zh_cn");
     }
 
     #[test]

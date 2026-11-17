@@ -32,6 +32,43 @@ fn uninstall_asks_once_then_removes_the_directory() {
 }
 
 #[test]
+fn open_folder_targets_the_version_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_version(root, "my-instance", r#"{"id":"1.20.1"}"#);
+    let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+    app.selected = 0;
+
+    app.request_open_folder();
+
+    // The folder on disk is what the file manager must show, not the JSON id.
+    assert_eq!(
+        app.ui_requests(),
+        &[UiRequest::OpenFolder(root.join("versions/my-instance"))]
+    );
+    assert!(!app.status.contains("失败"), "{}", app.status);
+}
+
+#[test]
+fn open_folder_refuses_a_directory_that_vanished() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_version(root, "1.20.1", r#"{"id":"1.20.1"}"#);
+    let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
+    app.selected = 0;
+    std::fs::remove_dir_all(root.join("versions/1.20.1")).unwrap();
+
+    app.request_open_folder();
+
+    assert!(app.ui_requests().is_empty(), "nothing to open");
+    assert!(
+        app.log.iter().any(|line| line.contains("不存在")),
+        "{:?}",
+        app.log
+    );
+}
+
+#[test]
 fn uninstall_targets_the_directory_not_the_profile_id() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

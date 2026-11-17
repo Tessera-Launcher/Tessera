@@ -216,6 +216,7 @@ mod dependencies;
 mod java_runtimes;
 mod loader_bases;
 mod login_overlay;
+mod mods;
 mod music;
 mod page_state;
 mod picker;

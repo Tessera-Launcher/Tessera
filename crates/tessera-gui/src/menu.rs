@@ -60,6 +60,20 @@ pub(crate) fn refresh_menu_item(weak: WeakEntity<Launcher>) -> PopupMenuItem {
     item("刷新", weak, |this| this.state.reload())
 }
 
+/// Show the instance folder in the desktop's file manager.
+///
+/// Unlike launch and uninstall there is nothing to select and nothing to
+/// confirm: the menu already opened on one row, and the answer is a window the
+/// launcher does not own.
+pub(crate) fn open_folder_menu_item(weak: WeakEntity<Launcher>, dir: String) -> PopupMenuItem {
+    item("打开文件夹", weak, move |this| {
+        if !select_row(this, &dir, "打开文件夹") {
+            return;
+        }
+        this.state.request_open_folder();
+    })
+}
+
 pub(crate) fn uninstall_menu_item(weak: WeakEntity<Launcher>, dir: String) -> PopupMenuItem {
     item("卸载", weak, move |this| {
         if !select_row(this, &dir, "卸载") {

@@ -1,8 +1,9 @@
 //! `data/配置.toml` — state that should outlive a run.
 //!
 //! Only things the launcher genuinely owns live here: the heap size, the window
-//! size, the color theme, which saved account was last active (by file name,
-//! never its tokens), and the single GitHub proxy used by every GitHub download
+//! size, the color theme, the download screen's kind filter, which saved account
+//! was last active (by file name, never its tokens), and the single GitHub proxy
+//! used by every GitHub download
 //! (Java, aria2, AOT runtime setup). The download source is deliberately *not*
 //! persisted (a one-off switch should not become the new normal), and nothing
 //! about credentials is written here.
@@ -46,6 +47,10 @@ pub struct Settings {
     pub github_proxy: String,
     /// The color scheme in use.
     pub theme: Theme,
+    /// The kind filter last chosen on the download screen (全部 / 正式版 /
+    /// 快照 / 旧版). The search text is deliberately not persisted: a leftover
+    /// query would make the next visit look like an empty version list.
+    pub download_filter: crate::app::VersionFilter,
     /// File name (under the account directory) of the account in use; empty
     /// when signed out. The tokens stay in the account file.
     pub account: String,
@@ -60,6 +65,7 @@ impl Default for Settings {
             window_height: 480,
             github_proxy: String::new(),
             theme: Theme::Light,
+            download_filter: crate::app::VersionFilter::All,
             account: String::new(),
         }
     }
@@ -210,12 +216,14 @@ mod tests {
             window_height: 720,
             github_proxy: "gh-proxy.com".into(),
             theme: Theme::Dark,
+            download_filter: crate::app::VersionFilter::Snapshot,
             account: "Steve (1).json".into(),
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("memory_mb = 4096"), "{text}");
+        assert!(text.contains("download_filter = \"snapshot\""), "{text}");
         assert!(!path.with_extension("toml.tmp").exists());
     }
 
@@ -289,7 +297,18 @@ mod tests {
         let (settings, note) = load(&path);
         assert!(note.is_none(), "{note:?}");
         assert_eq!(settings.theme, Theme::Light);
+        assert_eq!(settings.download_filter, crate::app::VersionFilter::All);
         assert!(settings.account.is_empty());
+    }
+
+    #[test]
+    fn a_bad_download_filter_is_a_parse_error_not_a_silent_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Settings::path(tmp.path());
+        std::fs::write(&path, "download_filter = \"beta\"\n").unwrap();
+        let (settings, note) = load(&path);
+        assert_eq!(settings, Settings::default());
+        assert!(note.unwrap().contains("解析失败"));
     }
 
     #[test]

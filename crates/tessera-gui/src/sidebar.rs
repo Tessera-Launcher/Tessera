@@ -10,16 +10,18 @@ enum Page {
     Download,
     Runtimes,
     Music,
+    Mods,
     Settings,
 }
 
 impl Page {
-    const ALL: [Page; 5] = [
+    const ALL: [Page; 6] = [
         Page::Home,
         Page::Accounts,
         Page::Download,
         Page::Runtimes,
         Page::Music,
+        Page::Mods,
     ];
 
     fn label(self) -> &'static str {
@@ -29,6 +31,7 @@ impl Page {
             Page::Download => "下载",
             Page::Runtimes => "依赖",
             Page::Music => "音乐",
+            Page::Mods => "Modrinth",
             Page::Settings => "设置",
         }
     }
@@ -40,6 +43,7 @@ impl Page {
             Page::Download => "page-download",
             Page::Runtimes => "page-runtimes",
             Page::Music => "page-music",
+            Page::Mods => "page-mods",
             Page::Settings => "page-settings",
         }
     }
@@ -52,6 +56,7 @@ impl Page {
             Screen::Download => Page::Download,
             Screen::Java => Page::Runtimes,
             Screen::Music => Page::Music,
+            Screen::Mods => Page::Mods,
             Screen::Settings => Page::Settings,
         }
     }
@@ -123,6 +128,7 @@ impl Launcher {
             Page::Download => self.state.open_download(),
             Page::Runtimes => self.state.open_java(),
             Page::Music => self.state.open_music(),
+            Page::Mods => self.state.open_mods(),
             Page::Settings => self.state.open_settings(),
         }
         self.refresh(cx);

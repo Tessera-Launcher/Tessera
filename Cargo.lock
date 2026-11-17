@@ -7085,6 +7085,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "gpui-kit",
+ "open",
  "reqwest",
  "tessera-core",
 ]

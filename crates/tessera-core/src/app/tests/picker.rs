@@ -232,6 +232,7 @@ fn f_cycles_the_kind_filter() {
 
     app.handle_download_key(Key::Char('f'), Modifiers::NONE);
     assert_eq!(app.download.filter, VersionFilter::Release);
+    assert_eq!(app.settings.download_filter, VersionFilter::Release);
     assert_eq!(app.download.matched(), 2);
     assert!(app
         .download
@@ -248,6 +249,7 @@ fn f_cycles_the_kind_filter() {
 
     app.handle_download_key(Key::Char('f'), Modifiers::NONE);
     assert_eq!(app.download.filter, VersionFilter::All);
+    assert_eq!(app.settings.download_filter, VersionFilter::All);
     assert_eq!(app.download.matched(), 4);
 }
 

@@ -40,6 +40,8 @@ pub enum Screen {
     Java,
     /// Discs and background music read straight from an installed version.
     Music,
+    /// Modrinth: Fabric mods for the selected instance.
+    Mods,
     /// Settings. The page exists so the sidebar has somewhere to go; the body
     /// is still empty.
     Settings,
@@ -83,6 +85,25 @@ pub enum Effect {
     },
     /// Train the AOT cache for the vanilla version the player asked for.
     TrainAot(String),
+    /// Search Modrinth for Fabric mods matching one game version.
+    SearchMods { game_version: String, query: String },
+    /// Read one Modrinth project's versions for this game version.
+    FetchModVersions {
+        project_id: String,
+        game_version: String,
+    },
+    /// Install one chosen version plus its required dependencies.
+    InstallMod {
+        version_dir: PathBuf,
+        game_version: String,
+        version: crate::modrinth::Version,
+        title: String,
+    },
+    /// Remove one launcher-owned jar from an instance.
+    RemoveMod {
+        version_dir: PathBuf,
+        filename: String,
+    },
 }
 
 /// Something only the window can do: the clipboard, the browser, the audio
@@ -97,6 +118,8 @@ pub enum Effect {
 pub enum UiRequest {
     Copy(String),
     OpenBrowser(String),
+    /// Show a directory in the desktop's file manager.
+    OpenFolder(PathBuf),
     Audio(crate::audio::Command),
 }
 
@@ -163,6 +186,14 @@ pub enum TaskKind {
     Music,
     /// Walking one version directory to report its size.
     Measure,
+    /// Modrinth search request.
+    ModSearch,
+    /// One Modrinth project's version list.
+    ModVersions,
+    /// One Modrinth mod (and its dependencies) being installed.
+    ModInstall,
+    /// Removing one launcher-owned mod jar.
+    ModRemove,
 }
 
 impl TaskKind {
@@ -182,6 +213,10 @@ impl TaskKind {
             TaskKind::Clipboard => "剪贴板",
             TaskKind::Music => "音频",
             TaskKind::Measure => "目录大小",
+            TaskKind::ModSearch => "Modrinth 搜索",
+            TaskKind::ModVersions => "Mod 版本",
+            TaskKind::ModInstall => "Mod 安装",
+            TaskKind::ModRemove => "Mod 移除",
         }
     }
 }
@@ -263,6 +298,7 @@ mod aria2;
 mod download;
 mod java;
 mod login;
+mod mods;
 mod music;
 
 pub use self::account_manager::AccountsUi;
@@ -270,6 +306,7 @@ pub use self::aria2::Aria2Ui;
 pub use self::download::{DownloadStage, DownloadUi, InstallSummary, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
+pub use self::mods::ModsUi;
 pub use self::music::{MusicFocus, MusicKind, MusicUi, PlayOrder};
 
 /// The whole application state.
@@ -328,6 +365,8 @@ pub struct App {
     pub aria2: Aria2Ui,
     /// The music page's state.
     pub music: MusicUi,
+    /// The Modrinth page's state.
+    pub mods: ModsUi,
     /// The AOT training run started from the main page. One at a time: the
     /// training launches a game, and two JVMs fighting over one version
     /// directory is not a state the rest of this code knows how to describe.
@@ -389,6 +428,7 @@ impl App {
             java: JavaUi::default(),
             aria2: Aria2Ui::default(),
             music: MusicUi::default(),
+            mods: ModsUi::default(),
             aot: AotProgress::default(),
             installed_java: Vec::new(),
             uninstall_confirm: None,
@@ -603,6 +643,10 @@ impl App {
                 self.handle_music_key(code, modifiers);
                 return;
             }
+            Screen::Mods => {
+                self.handle_mods_key(code, modifiers);
+                return;
+            }
             Screen::Settings => {
                 // Nothing on the page is interactive yet; Esc leaves it like the
                 // music page, q quits.
@@ -788,6 +832,23 @@ impl App {
         }
     }
 
+    /// Show the selected version's folder in the system file manager.
+    ///
+    /// Only `versions/<dir>` is opened: libraries, assets and the JVM are
+    /// shared, so "this instance's folder" never means the data root.
+    pub fn request_open_folder(&mut self) {
+        let Some(version) = self.selected_version() else {
+            self.log("没有可打开的版本");
+            return;
+        };
+        let dir = self.root.join("versions").join(&version.dir);
+        if !dir.is_dir() {
+            self.log(format!("versions/{} 不存在，无法打开", version.dir));
+            return;
+        }
+        self.request_ui(UiRequest::OpenFolder(dir));
+    }
+
     /// `x`: ask, then delete on the second press.
     ///
     /// Only `versions/<dir>` goes away. Assets, libraries and the JVM are shared
@@ -963,11 +1024,27 @@ impl App {
                     self.status = format!("{label}：后台任务意外结束");
                 }
             }
+            TaskKind::ModSearch => {
+                self.mods.searching = false;
+                self.mods.error = Some(format!("{label}线程意外结束"));
+                self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::ModVersions => {
+                self.mods.loading_versions = false;
+                self.mods.error = Some(format!("{label}线程意外结束"));
+                self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::ModInstall => {
+                self.mods.installing = false;
+                self.mods.error = Some(format!("{label}线程意外结束"));
+                self.status = format!("{label}：后台任务意外结束");
+            }
             TaskKind::Versions
             | TaskKind::Sweep
             | TaskKind::Clipboard
             | TaskKind::Music
-            | TaskKind::Measure => {}
+            | TaskKind::Measure
+            | TaskKind::ModRemove => {}
         }
     }
 

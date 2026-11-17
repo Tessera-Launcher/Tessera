@@ -32,12 +32,14 @@ async fn main() -> ExitCode {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::Path::new(&root).join(mdt::plan::LIST_DIR));
 
-    let client = match MdtClient::builder()
+    let mut builder = MdtClient::builder()
         .mirror(mirror)
         .root_dir(&root)
-        .list_dir(&list_dir)
-        .build()
-    {
+        .list_dir(&list_dir);
+    if let Ok(language) = std::env::var("MDT_LANG") {
+        builder = builder.asset_language(language);
+    }
+    let client = match builder.build() {
         Ok(client) => client,
         Err(error) => {
             eprintln!("client: {error}");

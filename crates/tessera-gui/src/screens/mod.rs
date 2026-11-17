@@ -6,5 +6,6 @@ pub(crate) mod download;
 pub(crate) mod home;
 pub(crate) mod java;
 pub(crate) mod login;
+pub(crate) mod mods;
 pub(crate) mod music;
 pub(crate) mod settings;

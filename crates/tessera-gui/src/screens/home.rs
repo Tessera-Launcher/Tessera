@@ -5,6 +5,59 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
+    /// The only page a second instance may see.
+    ///
+    /// Its state machine refuses to drain effects while another launcher owns
+    /// the data directory, so the normal pages would look alive but stay empty
+    /// (no version list, no downloads). Say that up front instead.
+    pub(crate) fn blocked_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
+        let data_root = self
+            .settings_path
+            .parent()
+            .map(|root| root.display().to_string())
+            .unwrap_or_else(|| self.settings_path.display().to_string());
+        div()
+            .v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .p(px(space::XL))
+            .child(
+                div().w_full().max_w(px(520.0)).child(panel_fit(
+                    colors,
+                    "另一个 Tessera 正在运行",
+                    div()
+                        .v_flex()
+                        .gap(px(space::MD))
+                        .p(px(space::LG))
+                        .child(
+                            div()
+                                .text_size(px(font::BODY))
+                                .text_color(rgb(colors.text_primary))
+                                .child("这个窗口没有拿到数据目录的锁，因此不会读取版本列表，也不会下载、安装或启动游戏。"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child(format!("数据目录 {data_root}")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child("关闭另一个 Tessera 窗口，然后重新启动这个程序。"),
+                        )
+                        .child(
+                            div().h_flex().justify_end().child(button("退出", cx, |this, cx| {
+                                this.shutdown(cx);
+                            })),
+                        ),
+                )),
+            )
+    }
+
     pub(crate) fn kind_color(colors: &'static color::Palette, kind: VersionKind) -> u32 {
         match kind {
             VersionKind::Snapshot => colors.fill_neutral,
@@ -181,6 +234,7 @@ impl Launcher {
                             move |menu, _, _| {
                                 let dir = dir.clone();
                                 menu.item(launch_menu_item(weak.clone(), dir.clone()))
+                                    .item(open_folder_menu_item(weak.clone(), dir.clone()))
                                     .item(uninstall_menu_item(weak.clone(), dir))
                                     .separator()
                                     .item(refresh_menu_item(weak.clone()))

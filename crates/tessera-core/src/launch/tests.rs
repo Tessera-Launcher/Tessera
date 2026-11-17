@@ -1484,6 +1484,32 @@ fn a_version_without_the_marker_keeps_lwjgl2() {
     );
 }
 
+/// Closing the launcher must leave a running game alone, not just "survive by
+/// luck because nobody signalled the group". The JVM is its own session.
+#[cfg(unix)]
+#[test]
+fn a_spawned_game_is_detached_from_the_launchers_session() {
+    let mut command = std::process::Command::new("sleep");
+    command.arg("30");
+    detach(&mut command);
+    let mut child = command.spawn().unwrap();
+
+    let sid = unsafe { libc::getsid(child.id() as i32) };
+    assert_eq!(
+        sid,
+        child.id() as i32,
+        "child session {sid} must be its own, not the launcher's"
+    );
+    assert_ne!(
+        unsafe { libc::getpgrp() },
+        child.id() as i32,
+        "child must not share the launcher's process group"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Every jar this launcher owns is normalized, and `mods/` is not an exception.
 ///
 /// The loader reads mods itself rather than off the class path, so a signed mod

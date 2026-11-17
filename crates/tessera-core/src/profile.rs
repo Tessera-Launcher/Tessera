@@ -27,6 +27,10 @@ pub struct Profile {
     /// installs) or it carries the [`LOADER_MARKER`](crate::profile::LOADER_MARKER)
     /// field a self-contained install writes.
     pub loader: bool,
+    /// The marker's `id` (`fabric`, `outlands`, …), when the installer wrote one.
+    /// An older `inheritsFrom`-only profile has none; its `mainClass` is then the
+    /// only way to tell which loader it belongs to.
+    pub loader_id: Option<String>,
     pub main_class: Option<String>,
     /// `releaseTime` as written; only used for ordering.
     pub release_time: Option<String>,
@@ -76,6 +80,11 @@ pub fn from_json(text: &str) -> Option<Profile> {
             .and_then(serde_json::Value::as_u64)
             .map(|major| major as u32),
         loader: inherits.is_some() || json.get(LOADER_MARKER).is_some(),
+        loader_id: json
+            .get(LOADER_MARKER)
+            .and_then(|marker| marker.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
         inherits,
         main_class: string("mainClass"),
         release_time: string("releaseTime"),
@@ -111,6 +120,15 @@ mod tests {
         assert_eq!(profile.kind, None);
         assert_eq!(profile.java, None);
         assert_eq!(profile.inherits, None);
+        assert_eq!(profile.loader_id, None);
+    }
+
+    #[test]
+    fn the_loader_marker_names_the_loader() {
+        let profile =
+            from_json(r#"{"id":"1.20.1+fabric","mdtLoader":{"id":"fabric","version":"0.16.10"}}"#)
+                .unwrap();
+        assert_eq!(profile.loader_id.as_deref(), Some("fabric"));
     }
 
     #[test]

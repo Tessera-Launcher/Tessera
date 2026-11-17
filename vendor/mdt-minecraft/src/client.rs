@@ -52,6 +52,9 @@ pub struct MdtClient {
     list_dir: PathBuf,
     http1_only: bool,
     reporter: Arc<dyn ProgressReporter>,
+    /// Keep only this locale's files from the asset index. `None` keeps every
+    /// language, which is what callers that do not set it expect.
+    asset_language: Option<String>,
 }
 
 impl MdtClient {
@@ -161,6 +164,7 @@ impl MdtClient {
                     &self.mirror,
                     &urls,
                     self.reporter.as_ref(),
+                    self.asset_language.as_deref(),
                 )
                 .await?,
             );
@@ -276,6 +280,7 @@ impl MdtClient {
                     &self.mirror,
                     &urls,
                     self.reporter.as_ref(),
+                    self.asset_language.as_deref(),
                 )
                 .await?,
             );
@@ -362,6 +367,7 @@ impl MdtClient {
                     &self.mirror,
                     &urls,
                     self.reporter.as_ref(),
+                    self.asset_language.as_deref(),
                 )
                 .await?,
             );
@@ -390,6 +396,7 @@ pub struct MdtClientBuilder {
     proxy: Option<String>,
     connect_timeout: Duration,
     read_timeout: Duration,
+    asset_language: Option<String>,
 }
 
 impl MdtClientBuilder {
@@ -406,6 +413,7 @@ impl MdtClientBuilder {
             proxy: None,
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(30),
+            asset_language: None,
         }
     }
 
@@ -430,6 +438,18 @@ impl MdtClientBuilder {
     #[must_use]
     pub fn list_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.list_dir = Some(dir.into());
+        self
+    }
+
+    /// Keep only one locale's language files from the asset index.
+    ///
+    /// `client.jar` already carries English; all other locales are separate
+    /// assets. A launcher that knows the game runs in `zh_cn`, for example,
+    /// can avoid downloading the other ~89 MiB of translations:
+    /// `.asset_language("zh_cn")`.
+    #[must_use]
+    pub fn asset_language(mut self, language: impl Into<String>) -> Self {
+        self.asset_language = Some(language.into());
         self
     }
 
@@ -533,6 +553,7 @@ impl MdtClientBuilder {
             reporter: self
                 .reporter
                 .unwrap_or_else(|| Arc::new(StderrReporter::new())),
+            asset_language: self.asset_language,
         })
     }
 }
