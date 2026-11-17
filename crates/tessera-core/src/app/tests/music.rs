@@ -196,17 +196,13 @@ fn play_hands_the_track_to_the_audio_worker() {
         matches!(commands.first(), Some(crate::audio::Command::Volume(_))),
         "{commands:?}"
     );
-    let Some(crate::audio::Command::Play {
-        path,
-        byte_len,
-        start,
-    }) = last_music_command(&app)
-    else {
+    let Some(crate::audio::Command::Play { path, start }) = last_music_command(&app) else {
         panic!("expected a play command");
     };
     assert!(path.ends_with("abababababababababababababababababababab"));
-    // The sorted list opens on "13", whose index entry says 604751 bytes.
-    assert_eq!(byte_len, 604751, "the index size is what rodio needs");
+    // The sorted list opens on "13". Its length is read from the object itself,
+    // not from the index entry (604751 bytes): a shrunk file would otherwise be
+    // handed a length past its end.
     assert_eq!(start, std::time::Duration::ZERO);
 }
 

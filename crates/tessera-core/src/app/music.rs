@@ -335,9 +335,6 @@ impl App {
         };
         let command = crate::audio::Command::Play {
             path: track.path.clone(),
-            // Vorbis has no timing information in the stream; the index's size is
-            // what lets rodio know the length and seek.
-            byte_len: track.size,
             start: self.music.position,
         };
         let volume = self.music.volume;

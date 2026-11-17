@@ -24,12 +24,14 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 /// What the state machine asks the worker to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Decode `path` from `start` and play it. `byte_len` is the object's size
-    /// from the asset index: Vorbis carries no timing information, so rodio needs
-    /// it to know the length and to seek.
+    /// Decode `path` from `start` and play it.
+    ///
+    /// The length rodio wants is read from the file itself, not from the asset
+    /// index: the index describes what was downloaded, and a shrunk object — an
+    /// optimised or replaced audio file with the same name — would hand rodio a
+    /// length past the end of the stream and every seek or read would fail.
     Play {
         path: PathBuf,
-        byte_len: u64,
         start: Duration,
     },
     Pause,
@@ -158,11 +160,7 @@ fn run(commands: Receiver<Command>, events: Sender<Event>) {
 
     loop {
         match commands.recv_timeout(TICK) {
-            Ok(Command::Play {
-                path,
-                byte_len,
-                start,
-            }) => {
+            Ok(Command::Play { path, start }) => {
                 if device.is_none() {
                     match open_device(&events) {
                         Ok(opened) => {
@@ -188,11 +186,12 @@ fn run(commands: Receiver<Command>, events: Sender<Event>) {
                         continue;
                     }
                 };
-                let decoder = match Decoder::builder()
-                    .with_data(std::io::BufReader::new(file))
-                    .with_byte_len(byte_len)
-                    .build()
-                {
+                let byte_len = file.metadata().ok().map(|metadata| metadata.len());
+                let mut builder = Decoder::builder().with_data(std::io::BufReader::new(file));
+                if let Some(byte_len) = byte_len {
+                    builder = builder.with_byte_len(byte_len);
+                }
+                let decoder = match builder.build() {
                     Ok(decoder) => decoder,
                     Err(error) => {
                         playing = false;
