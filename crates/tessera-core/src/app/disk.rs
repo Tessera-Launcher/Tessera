@@ -34,6 +34,19 @@ impl App {
         self.request(Effect::CleanLanguages(installed));
     }
 
+    /// Delete logs and crash reports everywhere under `data/`.
+    pub fn clear_logs(&mut self) {
+        if self.disk.busy {
+            self.status = "磁盘清理正在进行，请稍候".to_string();
+            return;
+        }
+        self.disk.busy = true;
+        self.disk.note.clear();
+        self.status = "正在清除日志…".to_string();
+        self.log("磁盘清理：清除日志和崩溃报告（正在使用的文件会跳过）");
+        self.request(Effect::ClearLogs);
+    }
+
     /// Empty `data/缓存`; the next install recreates what it needs.
     pub fn clear_download_cache(&mut self) {
         if self.disk.busy {

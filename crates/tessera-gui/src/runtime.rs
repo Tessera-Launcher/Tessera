@@ -215,6 +215,16 @@ impl Launcher {
                     self.tasks
                         .watch(TaskKind::Disk, rx, deliver_cache_sweep, cache_sweep_done);
                 }
+                Effect::ClearLogs => {
+                    let data_root = self
+                        .settings_path
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_else(|| self.state.root.clone());
+                    let rx = cleanup::spawn_log_sweep(data_root);
+                    self.tasks
+                        .watch(TaskKind::Disk, rx, deliver_log_sweep, log_sweep_done);
+                }
                 Effect::SearchMods {
                     game_version,
                     query,
@@ -485,6 +495,10 @@ fn cache_sweep_done(_: &cleanup::CacheSweep) -> bool {
     true
 }
 
+fn log_sweep_done(_: &cleanup::LogSweep) -> bool {
+    true
+}
+
 fn aot_done(event: &aot::Event) -> bool {
     matches!(
         event,
@@ -570,6 +584,12 @@ fn deliver_cache_sweep(launcher: &mut Launcher, sweep: cleanup::CacheSweep) {
     launcher
         .state
         .handle_disk_report(cleanup::DiskReport::Cache(sweep));
+}
+
+fn deliver_log_sweep(launcher: &mut Launcher, sweep: cleanup::LogSweep) {
+    launcher
+        .state
+        .handle_disk_report(cleanup::DiskReport::Logs(sweep));
 }
 
 fn deliver_aot(launcher: &mut Launcher, event: aot::Event) {

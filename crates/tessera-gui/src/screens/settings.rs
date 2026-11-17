@@ -126,7 +126,7 @@ impl Launcher {
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
                     .child(
-                        "删除语言文件只会移除各实例当前语言之外的资源，资源索引仍保留；清空缓存会删除下载清单、MDT 注册表和辅助文件，下次安装会重新生成。",
+                        "删除语言文件只会移除各实例当前语言之外的资源，资源索引仍保留；清除日志会处理整个 data 目录中的游戏日志、崩溃报告和错误日志，正在使用的文件会跳过；清空缓存会删除下载清单、MDT 注册表和辅助文件，下次安装会重新生成。",
                     ),
             )
             .child(
@@ -140,6 +140,15 @@ impl Launcher {
                         cx,
                         |this: &mut Launcher, cx| {
                             this.state.clean_language_files();
+                            this.refresh(cx);
+                        },
+                    ))
+                    .child(button_when(
+                        "清除日志",
+                        !disk_busy,
+                        cx,
+                        |this: &mut Launcher, cx| {
+                            this.state.clear_logs();
                             this.refresh(cx);
                         },
                     ))

@@ -175,11 +175,43 @@ impl CacheSweep {
     }
 }
 
+/// What clearing log and crash files did.
+#[derive(Debug, Default)]
+pub struct LogSweep {
+    /// Files removed.
+    pub files: usize,
+    /// Bytes removed.
+    pub bytes: u64,
+    /// Files skipped because another process still has them open.
+    pub skipped: usize,
+    /// Files that could not be removed for another reason.
+    pub failed: usize,
+}
+
+impl LogSweep {
+    /// One line for the settings page and the log.
+    pub fn note(&self) -> String {
+        if self.files == 0 && self.skipped == 0 && self.failed == 0 {
+            return "没有可删除的日志文件".to_string();
+        }
+        let size = human_size(self.bytes);
+        let mut note = format!("已清除日志 {} 个（{size}）", self.files);
+        if self.skipped > 0 {
+            note.push_str(&format!("，跳过 {} 个正在使用", self.skipped));
+        }
+        if self.failed > 0 {
+            note.push_str(&format!("，{} 个删除失败", self.failed));
+        }
+        note
+    }
+}
+
 /// Result of one disk-cleaning button.
 #[derive(Debug)]
 pub enum DiskReport {
     Languages(LanguageSweep),
     Cache(CacheSweep),
+    Logs(LogSweep),
 }
 
 impl DiskReport {
@@ -187,6 +219,7 @@ impl DiskReport {
         match self {
             DiskReport::Languages(sweep) => sweep.note(),
             DiskReport::Cache(sweep) => sweep.note(),
+            DiskReport::Logs(sweep) => sweep.note(),
         }
     }
 }
@@ -362,6 +395,194 @@ pub fn spawn_cache_clear(cache: PathBuf) -> Receiver<CacheSweep> {
         let _ = sender.send(clear_cache(&cache));
     });
     receiver
+}
+
+/// Delete log, crash-report and hs_err files anywhere under the data root.
+///
+/// A file another process still has open is skipped: the game may be writing
+/// `latest.log`, and the launcher keeps its own `日志/tessera.log` open for the
+/// whole session. Detection is platform-specific (see [`BusyFiles`]); the
+/// launcher's active log is also protected explicitly so a platform without a
+/// reliable check cannot unlink the file it is writing to.
+pub fn log_sweep(data_root: &Path) -> LogSweep {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    collect_logs(data_root, false, &mut candidates, &mut seen);
+    // Scan after the walk, so the window in which a game can open `latest.log`
+    // between detection and deletion is as small as the walk itself.
+    let busy = BusyFiles::scan();
+
+    let launcher_log = data_root.join(crate::paths::LOGS).join("tessera.log");
+    let mut sweep = LogSweep::default();
+    for path in candidates {
+        if path == launcher_log {
+            // The launcher owns this file for the whole session; even if the
+            // platform check misses it, this one is never a safe deletion.
+            sweep.skipped += 1;
+            continue;
+        }
+        if busy.contains(&path) {
+            sweep.skipped += 1;
+            continue;
+        }
+        let size = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                sweep.files += 1;
+                sweep.bytes += size;
+            }
+            Err(_) => sweep.failed += 1,
+        }
+    }
+    sweep
+}
+
+/// Run [`log_sweep`] on its own thread.
+pub fn spawn_log_sweep(data_root: PathBuf) -> Receiver<LogSweep> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(log_sweep(&data_root));
+    });
+    receiver
+}
+
+fn collect_logs(
+    dir: &Path,
+    inside_log_dir: bool,
+    out: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {
+                let nested = inside_log_dir || is_log_dir(&path);
+                collect_logs(&path, nested, out, seen);
+            }
+            Ok(kind)
+                if kind.is_file()
+                    && (inside_log_dir || is_log_file(&path))
+                    && seen.insert(path.clone()) =>
+            {
+                out.push(path);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_log_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("logs")
+                || name.eq_ignore_ascii_case("crash-reports")
+                || name == crate::paths::LOGS
+        })
+}
+
+fn is_log_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name.starts_with("hs_err_pid")
+        || name.ends_with(".log")
+        || name.ends_with(".log.gz")
+        || name.contains(".log.")
+}
+
+/// Open-file detection for the current platform.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct BusyFiles {
+    inodes: HashSet<(u64, u64)>,
+}
+
+#[cfg(target_os = "linux")]
+impl BusyFiles {
+    fn scan() -> Self {
+        use std::os::unix::fs::MetadataExt;
+
+        let mut busy = Self::default();
+        let Ok(processes) = std::fs::read_dir("/proc") else {
+            return busy;
+        };
+        for process in processes.flatten() {
+            let name = process.file_name();
+            if !name
+                .to_string_lossy()
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            {
+                continue;
+            }
+            let Ok(fds) = std::fs::read_dir(process.path().join("fd")) else {
+                continue;
+            };
+            for fd in fds.flatten() {
+                if let Ok(metadata) = std::fs::metadata(fd.path()) {
+                    busy.inodes.insert((metadata.dev(), metadata.ino()));
+                }
+            }
+        }
+        busy
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+
+        path.metadata()
+            .ok()
+            .is_some_and(|metadata| self.inodes.contains(&(metadata.dev(), metadata.ino())))
+    }
+}
+
+#[cfg(windows)]
+struct BusyFiles;
+
+#[cfg(windows)]
+impl BusyFiles {
+    fn scan() -> Self {
+        Self
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // No sharing means any existing handle makes this open fail. A
+        // permission error also keeps the file, which is the safe direction.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .is_err()
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+struct BusyFiles;
+
+#[cfg(not(any(target_os = "linux", windows)))]
+impl BusyFiles {
+    fn scan() -> Self {
+        Self
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        // macOS has no /proc; lsof is the portable best effort. If it is not
+        // installed the launcher's own log is still protected by path.
+        std::process::Command::new("lsof")
+            .arg("-t")
+            .arg("--")
+            .arg(path)
+            .output()
+            .map(|output| output.status.success() && !output.stdout.is_empty())
+            .unwrap_or(false)
+    }
 }
 
 fn object_path(objects_dir: &Path, hash: &str) -> PathBuf {
@@ -1530,5 +1751,55 @@ mod tests {
         assert_eq!(sweep.bytes, 23);
         assert!(cache.is_dir(), "the cache directory itself stays");
         assert!(std::fs::read_dir(&cache).unwrap().next().is_none());
+    }
+    #[test]
+    fn log_sweep_clears_logs_and_crash_reports_but_not_other_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let logs = root.join("游戏/versions/1.20.1/logs");
+        let crash = root.join("游戏/versions/1.20.1/crash-reports");
+        let data_logs = root.join("日志");
+        touch(&logs.join("latest.log"), 11);
+        touch(&logs.join("2020-01-01.log.gz"), 7);
+        touch(&crash.join("crash-2020.txt"), 13);
+        touch(&root.join("游戏/versions/1.20.1/hs_err_pid42.log"), 17);
+        touch(&root.join("游戏/notes.txt"), 19);
+        touch(&data_logs.join("tessera.log"), 23);
+
+        let sweep = log_sweep(root);
+
+        assert!(!logs.join("latest.log").exists());
+        assert!(!logs.join("2020-01-01.log.gz").exists());
+        assert!(!crash.join("crash-2020.txt").exists());
+        assert!(!root.join("游戏/versions/1.20.1/hs_err_pid42.log").exists());
+        assert!(root.join("游戏/notes.txt").is_file(), "non-log data stays");
+        assert!(
+            data_logs.join("tessera.log").is_file(),
+            "the launcher's active log is protected"
+        );
+        assert_eq!(sweep.files, 4);
+        assert_eq!(sweep.bytes, 48);
+        assert_eq!(sweep.skipped, 1);
+        assert_eq!(sweep.failed, 0);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn log_sweep_skips_a_log_still_open_by_a_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let path = root.join("游戏/versions/1.20.1/logs/live.log");
+        touch(&path, 10);
+        let held = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+
+        let sweep = log_sweep(root);
+
+        assert!(path.is_file(), "an open log must not be unlinked");
+        assert_eq!(sweep.files, 0);
+        assert_eq!(sweep.skipped, 1);
+        drop(held);
     }
 }

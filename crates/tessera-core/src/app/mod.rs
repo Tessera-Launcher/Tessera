@@ -82,6 +82,8 @@ pub enum Effect {
     CleanLanguages(Vec<String>),
     /// Empty `data/缓存`.
     ClearCache,
+    /// Delete logs, crash reports and hs_err files under the data root.
+    ClearLogs,
     /// Prepare and start one version, and wait for it, on a worker thread.
     Launch {
         dir: String,
