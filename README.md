@@ -1,6 +1,6 @@
 # Tessera
 
-Minecraft: Java Edition 启动器。
+**胆大心细、敢想敢做的 Minecraft: Java Edition 启动器。**
 
 ## 许可
 
