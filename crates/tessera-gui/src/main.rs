@@ -131,6 +131,8 @@ struct Launcher {
     music_progress_seen: f32,
     /// `data/配置.toml`; edits to the persisted fields are written back here.
     settings_path: std::path::PathBuf,
+    /// `data/缓存`, the directory the settings page's cache button clears.
+    cache_dir: std::path::PathBuf,
     /// The settings last written to disk, so a repaint that changes nothing does
     /// not rewrite the file.
     settings_saved: tessera_core::settings::Settings,
@@ -180,6 +182,7 @@ impl Launcher {
         state.launch_options.fastmenu_agent =
             Some(data.root().join("缓存").join("fastmenu-agent.jar"));
         let settings_path = tessera_core::settings::Settings::path(data.root());
+        let cache_dir = data.cache();
         let (settings, error) = tessera_core::settings::load(&settings_path);
         // The state machine starts from the built-in launch defaults; the file
         // is what the user keeps their heap and window size in, so apply it here.
@@ -285,6 +288,7 @@ impl Launcher {
             music_seeking: false,
             music_progress_seen: 0.0,
             settings_path,
+            cache_dir,
             settings_saved,
         }
     }

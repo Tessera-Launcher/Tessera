@@ -399,6 +399,16 @@ pub(crate) fn button(
     action_button(label, ButtonKind::Neutral, true, cx, action)
 }
 
+/// A neutral button that greys out instead of disappearing.
+pub(crate) fn button_when(
+    label: &str,
+    enabled: bool,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    action_button(label, ButtonKind::Neutral, enabled, cx, action)
+}
+
 pub(crate) fn primary_button(
     label: &str,
     cx: &mut Context<Launcher>,

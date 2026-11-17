@@ -213,6 +213,7 @@ fn select(app: &mut App, id: &str) {
 
 mod account_manager;
 mod dependencies;
+mod disk;
 mod java_runtimes;
 mod loader_bases;
 mod login_overlay;

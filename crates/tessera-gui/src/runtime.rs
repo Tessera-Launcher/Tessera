@@ -201,6 +201,20 @@ impl Launcher {
                     self.tasks
                         .watch(TaskKind::Sweep, rx, deliver_sweep, sweep_done);
                 }
+                Effect::CleanLanguages(installed) => {
+                    let rx = cleanup::spawn_language_sweep(self.state.root.clone(), installed);
+                    self.tasks.watch(
+                        TaskKind::Disk,
+                        rx,
+                        deliver_language_sweep,
+                        language_sweep_done,
+                    );
+                }
+                Effect::ClearCache => {
+                    let rx = cleanup::spawn_cache_clear(self.cache_dir.clone());
+                    self.tasks
+                        .watch(TaskKind::Disk, rx, deliver_cache_sweep, cache_sweep_done);
+                }
                 Effect::SearchMods {
                     game_version,
                     query,
@@ -463,6 +477,14 @@ fn sweep_done(_: &cleanup::Sweep) -> bool {
     true
 }
 
+fn language_sweep_done(_: &cleanup::LanguageSweep) -> bool {
+    true
+}
+
+fn cache_sweep_done(_: &cleanup::CacheSweep) -> bool {
+    true
+}
+
 fn aot_done(event: &aot::Event) -> bool {
     matches!(
         event,
@@ -536,6 +558,18 @@ fn deliver_aria2(launcher: &mut Launcher, event: aria2::Event) {
 
 fn deliver_sweep(launcher: &mut Launcher, sweep: cleanup::Sweep) {
     launcher.state.handle_sweep(sweep);
+}
+
+fn deliver_language_sweep(launcher: &mut Launcher, sweep: cleanup::LanguageSweep) {
+    launcher
+        .state
+        .handle_disk_report(cleanup::DiskReport::Languages(sweep));
+}
+
+fn deliver_cache_sweep(launcher: &mut Launcher, sweep: cleanup::CacheSweep) {
+    launcher
+        .state
+        .handle_disk_report(cleanup::DiskReport::Cache(sweep));
 }
 
 fn deliver_aot(launcher: &mut Launcher, event: aot::Event) {

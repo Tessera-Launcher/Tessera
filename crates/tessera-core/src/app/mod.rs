@@ -78,6 +78,10 @@ pub enum Effect {
     },
     /// Reclaim shared libraries/assets no remaining version references.
     Sweep(Vec<String>),
+    /// Delete language objects no installed instance selects.
+    CleanLanguages(Vec<String>),
+    /// Empty `data/缓存`.
+    ClearCache,
     /// Prepare and start one version, and wait for it, on a worker thread.
     Launch {
         dir: String,
@@ -176,6 +180,8 @@ pub enum TaskKind {
     Aria2Install,
     /// Reclaiming unreferenced files after an uninstall.
     Sweep,
+    /// The settings page's language sweep or cache clear.
+    Disk,
     /// AOT cache training started from the version list.
     Aot,
     /// A launched game process, until it exits.
@@ -208,6 +214,7 @@ impl TaskKind {
             TaskKind::JavaInstall => "依赖下载",
             TaskKind::Aria2Install => "aria2 下载",
             TaskKind::Sweep => "清理",
+            TaskKind::Disk => "磁盘清理",
             TaskKind::Aot => "AOT 训练",
             TaskKind::Game => "游戏进程",
             TaskKind::Clipboard => "剪贴板",
@@ -295,6 +302,7 @@ impl Account {
 
 mod account_manager;
 mod aria2;
+mod disk;
 mod download;
 mod java;
 mod login;
@@ -303,6 +311,7 @@ mod music;
 
 pub use self::account_manager::AccountsUi;
 pub use self::aria2::Aria2Ui;
+pub use self::disk::DiskUi;
 pub use self::download::{DownloadStage, DownloadUi, InstallSummary, PickerFocus, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
@@ -367,6 +376,8 @@ pub struct App {
     pub music: MusicUi,
     /// The Modrinth page's state.
     pub mods: ModsUi,
+    /// The settings page's disk-cleaning block.
+    pub disk: DiskUi,
     /// The AOT training run started from the main page. One at a time: the
     /// training launches a game, and two JVMs fighting over one version
     /// directory is not a state the rest of this code knows how to describe.
@@ -429,6 +440,7 @@ impl App {
             aria2: Aria2Ui::default(),
             music: MusicUi::default(),
             mods: ModsUi::default(),
+            disk: DiskUi::default(),
             aot: AotProgress::default(),
             installed_java: Vec::new(),
             uninstall_confirm: None,
@@ -1012,6 +1024,10 @@ impl App {
                 // The card would otherwise keep its button disabled forever.
                 self.aria2.downloading = false;
                 self.status = format!("{label}：后台任务意外结束");
+            }
+            TaskKind::Disk => {
+                self.disk.busy = false;
+                self.status = "磁盘清理：后台任务意外结束".to_string();
             }
             TaskKind::Game => {
                 self.status = "游戏进程：等待线程意外结束".to_string();

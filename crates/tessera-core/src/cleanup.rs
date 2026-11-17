@@ -27,9 +27,7 @@
 //! name of that inode is going away, otherwise the data survives under the other
 //! name and nothing is reclaimed.
 
-#[cfg(unix)]
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -106,6 +104,302 @@ impl Sweep {
             human_size(self.linked_bytes)
         ))
     }
+}
+
+/// What a language-only sweep did.
+#[derive(Debug, Default)]
+pub struct LanguageSweep {
+    /// Files removed.
+    pub files: usize,
+    /// Bytes freed from the asset store.
+    pub bytes: u64,
+    /// Files that could not be removed.
+    pub failed: usize,
+    /// Why nothing may be deleted, when the sweep has to stand down.
+    pub skipped: Option<String>,
+}
+
+impl LanguageSweep {
+    /// One line for the settings page and the log.
+    pub fn note(&self) -> String {
+        if let Some(reason) = &self.skipped {
+            return format!("语言清理跳过：{reason}");
+        }
+        if self.files == 0 && self.failed == 0 {
+            return "没有可删除的语言文件".to_string();
+        }
+        let size = human_size(self.bytes);
+        if self.failed > 0 {
+            format!(
+                "已删除未使用语言文件 {} 个（{size}），{} 个删除失败",
+                self.files, self.failed
+            )
+        } else {
+            format!("已删除未使用语言文件 {} 个（{size}）", self.files)
+        }
+    }
+}
+
+/// What clearing `data/缓存` did.
+#[derive(Debug, Default)]
+pub struct CacheSweep {
+    /// Files removed.
+    pub files: usize,
+    /// Bytes removed. Hardlinks may keep the data alive elsewhere, so this is
+    /// the size of the removed names, not a promise about free space.
+    pub bytes: u64,
+    /// Entries that could not be removed.
+    pub failed: usize,
+    /// Why nothing may be deleted, when the directory is missing or unreadable.
+    pub skipped: Option<String>,
+}
+
+impl CacheSweep {
+    /// One line for the settings page and the log.
+    pub fn note(&self) -> String {
+        if let Some(reason) = &self.skipped {
+            return format!("缓存清理跳过：{reason}");
+        }
+        if self.files == 0 && self.failed == 0 {
+            return "缓存已经是空的".to_string();
+        }
+        let size = human_size(self.bytes);
+        if self.failed > 0 {
+            format!(
+                "已清空缓存 {} 个文件（{size}），{} 个删除失败",
+                self.files, self.failed
+            )
+        } else {
+            format!("已清空缓存 {} 个文件（{size}）", self.files)
+        }
+    }
+}
+
+/// Result of one disk-cleaning button.
+#[derive(Debug)]
+pub enum DiskReport {
+    Languages(LanguageSweep),
+    Cache(CacheSweep),
+}
+
+impl DiskReport {
+    pub fn note(&self) -> String {
+        match self {
+            DiskReport::Languages(sweep) => sweep.note(),
+            DiskReport::Cache(sweep) => sweep.note(),
+        }
+    }
+}
+
+/// Delete language objects not selected by any installed instance.
+///
+/// The asset index is deliberately left intact: the game reads it to enumerate
+/// languages, and a missing object only means that locale cannot be selected
+/// until it is downloaded again. A version with no readable `options.txt` keeps
+/// every language, because guessing its selection could delete the one it uses.
+pub fn language_sweep(root: &Path, installed: &[String]) -> LanguageSweep {
+    let _maintenance = crate::task::write();
+    let mut installed = installed.to_vec();
+    for version in crate::discover::scan(root) {
+        if !installed.contains(&version.dir) {
+            installed.push(version.dir);
+        }
+    }
+
+    // index id -> languages still needed, or `None` for "unknown, keep all".
+    let mut wanted: HashMap<String, Option<HashSet<String>>> = HashMap::new();
+    for id in &installed {
+        let references = match launch::references(root, id) {
+            Ok(references) => references,
+            Err(reason) => {
+                return LanguageSweep {
+                    skipped: Some(format!(
+                        "无法读取 {id} 的版本信息（{reason}），保留全部语言"
+                    )),
+                    ..LanguageSweep::default()
+                };
+            }
+        };
+        let Some(index) = references.asset_index else {
+            continue;
+        };
+        let slot = wanted.entry(index).or_insert_with(|| Some(HashSet::new()));
+        match version_language(root, id) {
+            Some(language) => {
+                if let Some(set) = slot {
+                    set.insert(language.to_ascii_lowercase());
+                }
+            }
+            None => *slot = None,
+        }
+    }
+
+    let indexes_dir = root.join("assets").join("indexes");
+    let objects_dir = root.join("assets").join("objects");
+    let mut keep_hashes: HashSet<String> = HashSet::new();
+    let mut drop_hashes: HashSet<String> = HashSet::new();
+    for (index, languages) in &wanted {
+        let path = indexes_dir.join(format!("{index}.json"));
+        let parsed = match read_index(&path) {
+            Ok(Some(parsed)) => parsed,
+            Ok(None) => {
+                return LanguageSweep {
+                    skipped: Some(format!("资源索引 {index} 不在磁盘上，保留全部语言")),
+                    ..LanguageSweep::default()
+                };
+            }
+            Err(reason) => {
+                return LanguageSweep {
+                    skipped: Some(format!(
+                        "资源索引 {index} 无法解析（{reason}），保留全部语言"
+                    )),
+                    ..LanguageSweep::default()
+                };
+            }
+        };
+        for (name, hash) in &parsed.objects {
+            let stale = asset_language(name).is_some_and(|language| {
+                languages
+                    .as_ref()
+                    .is_some_and(|set| !set.contains(&language))
+            });
+            if stale {
+                drop_hashes.insert(hash.clone());
+            } else {
+                keep_hashes.insert(hash.clone());
+            }
+        }
+    }
+    // A hash can be a language in one index and a texture in another; preserving
+    // every non-language use keeps the sweep from breaking a shared object.
+    drop_hashes.retain(|hash| !keep_hashes.contains(hash));
+
+    let candidates: Vec<PathBuf> = drop_hashes
+        .iter()
+        .map(|hash| object_path(&objects_dir, hash))
+        .filter(|path| path.is_file())
+        .collect();
+    let (entries, _) = weigh(candidates);
+    let mut sweep = LanguageSweep::default();
+    for entry in &entries {
+        match std::fs::remove_file(&entry.path) {
+            Ok(()) => {
+                sweep.files += 1;
+                sweep.bytes += entry.frees;
+            }
+            Err(_) => sweep.failed += 1,
+        }
+    }
+    prune_empty_dirs(&[objects_dir]);
+    sweep
+}
+
+/// Run [`language_sweep`] on its own thread.
+pub fn spawn_language_sweep(root: PathBuf, installed: Vec<String>) -> Receiver<LanguageSweep> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(language_sweep(&root, &installed));
+    });
+    receiver
+}
+
+/// Clear everything inside `data/缓存`, keeping the directory itself.
+///
+/// The download plans, the MDT registry and the helper jars all live here; none
+/// of them is required to launch an installed game. The next install recreates
+/// what it needs.
+pub fn clear_cache(cache: &Path) -> CacheSweep {
+    let _maintenance = crate::task::write();
+    let entries = match std::fs::read_dir(cache) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return CacheSweep {
+                skipped: Some("缓存目录不存在".to_string()),
+                ..CacheSweep::default()
+            };
+        }
+        Err(error) => {
+            return CacheSweep {
+                skipped: Some(format!("无法读取缓存目录（{error}）")),
+                ..CacheSweep::default()
+            };
+        }
+    };
+
+    let mut sweep = CacheSweep::default();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        let files = if is_dir {
+            files_under(&path)
+        } else {
+            vec![path.clone()]
+        };
+        let bytes: u64 = files
+            .iter()
+            .filter_map(|file| file.metadata().ok().map(|metadata| metadata.len()))
+            .sum();
+        let removed = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match removed {
+            Ok(()) => {
+                sweep.files += files.len();
+                sweep.bytes += bytes;
+            }
+            Err(_) => sweep.failed += 1,
+        }
+    }
+    sweep
+}
+
+/// Run [`clear_cache`] on its own thread.
+pub fn spawn_cache_clear(cache: PathBuf) -> Receiver<CacheSweep> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(clear_cache(&cache));
+    });
+    receiver
+}
+
+fn object_path(objects_dir: &Path, hash: &str) -> PathBuf {
+    objects_dir.join(&hash[..2]).join(hash)
+}
+
+/// The `lang:` value in an instance's options, or `None` when unknown.
+fn version_language(root: &Path, version_dir_name: &str) -> Option<String> {
+    let path = root
+        .join("versions")
+        .join(version_dir_name)
+        .join("options.txt");
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("lang:"))
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+        .map(str::to_string)
+}
+
+/// The locale an asset index key names, e.g. `minecraft/lang/zh_cn.json`.
+fn asset_language(name: &str) -> Option<String> {
+    let mut parts = name.split('/');
+    let source = parts.next()?;
+    if !source.eq_ignore_ascii_case("minecraft") && !source.eq_ignore_ascii_case("realms") {
+        return None;
+    }
+    if !parts.next()?.eq_ignore_ascii_case("lang") {
+        return None;
+    }
+    let file = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    // `deprecated.json` lives next to real locales but is not one. Every real
+    // locale key has a language_region separator.
+    stem.contains('_').then(|| stem.to_ascii_lowercase())
 }
 
 /// Collect, then delete, everything the `installed` versions cannot need.
@@ -512,6 +806,8 @@ fn sha1_hex(bytes: &[u8]) -> String {
 /// What an asset index says, or `None` when the index is not on disk.
 struct Index {
     hashes: HashSet<String>,
+    /// Key/hash pairs, retained for the language-only sweep.
+    objects: Vec<(String, String)>,
     /// `map_to_resources`: the legacy layout that also mirrors into
     /// `<root>/resources`, which is what keeps those inodes alive.
     maps_to_resources: bool,
@@ -526,10 +822,12 @@ fn read_index(path: &Path) -> Result<Option<Index>, String> {
     };
     let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     let mut hashes = HashSet::new();
+    let mut named = Vec::new();
     if let Some(objects) = json.get("objects").and_then(|value| value.as_object()) {
-        for object in objects.values() {
+        for (name, object) in objects {
             if let Some(hash) = object.get("hash").and_then(|value| value.as_str()) {
                 hashes.insert(hash.to_string());
+                named.push((name.clone(), hash.to_string()));
             }
         }
     }
@@ -539,6 +837,7 @@ fn read_index(path: &Path) -> Result<Option<Index>, String> {
         .unwrap_or(false);
     Ok(Some(Index {
         hashes,
+        objects: named,
         maps_to_resources,
     }))
 }
@@ -1131,5 +1430,105 @@ mod tests {
         sweep(&root, None, &["1.20.1".to_string()]);
 
         assert!(registry.is_file(), "no cache means no registry pruning");
+    }
+    /// An index with named objects, for language tests.
+    fn write_named_index(root: &Path, id: &str, objects: &[(&str, &str)]) -> PathBuf {
+        let path = root.join("assets/indexes").join(format!("{id}.json"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let entries: Vec<String> = objects
+            .iter()
+            .map(|(name, hash)| format!(r#""{name}":{{"hash":"{hash}","size":10}}"#))
+            .collect();
+        std::fs::write(&path, format!(r#"{{"objects":{{{}}}}}"#, entries.join(","))).unwrap();
+        path
+    }
+
+    #[test]
+    fn language_sweep_keeps_the_selected_locale_and_non_language_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        install(root, "1.20.1", &profile("", Some("lang")));
+        std::fs::write(
+            root.join("versions/1.20.1/options.txt"),
+            "lang:zh_cn\nfov:0.5\n",
+        )
+        .unwrap();
+        let index = write_named_index(
+            root,
+            "lang",
+            &[
+                ("minecraft/lang/zh_cn.json", HASH),
+                ("minecraft/lang/en_us.json", OTHER),
+                (
+                    "minecraft/sounds/click.ogg",
+                    "cc30000000000000000000000000000000000000",
+                ),
+            ],
+        );
+        touch(&object(root, HASH), 10);
+        touch(&object(root, OTHER), 20);
+        touch(
+            &object(root, "cc30000000000000000000000000000000000000"),
+            30,
+        );
+
+        let sweep = language_sweep(root, &["1.20.1".to_string()]);
+
+        assert_eq!(sweep.files, 1);
+        assert_eq!(sweep.bytes, 20);
+        assert!(object(root, HASH).is_file(), "selected locale must stay");
+        assert!(!object(root, OTHER).exists(), "unselected locale must go");
+        assert!(
+            object(root, "cc30000000000000000000000000000000000000").is_file(),
+            "non-language assets must never be touched"
+        );
+        assert!(index.is_file(), "the asset index is not a language file");
+        assert!(sweep.skipped.is_none());
+    }
+
+    #[test]
+    fn language_sweep_keeps_everything_when_the_instance_language_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        install(root, "1.20.1", &profile("", Some("lang")));
+        write_named_index(root, "lang", &[("minecraft/lang/en_us.json", OTHER)]);
+        touch(&object(root, OTHER), 20);
+
+        let sweep = language_sweep(root, &["1.20.1".to_string()]);
+
+        assert_eq!(sweep.files, 0);
+        assert!(object(root, OTHER).is_file());
+    }
+
+    #[test]
+    fn language_sweep_handles_legacy_case_insensitive_codes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        install(root, "1.8.9", &profile("", Some("1.8")));
+        std::fs::write(root.join("versions/1.8.9/options.txt"), "lang:zh_CN\n").unwrap();
+        write_named_index(root, "1.8", &[("minecraft/lang/zh_CN.lang", HASH)]);
+        touch(&object(root, HASH), 10);
+
+        let sweep = language_sweep(root, &["1.8.9".to_string()]);
+
+        assert_eq!(sweep.files, 0, "zh_CN must match zh_cn");
+        assert!(object(root, HASH).is_file());
+    }
+
+    #[test]
+    fn clear_cache_removes_contents_but_keeps_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("缓存");
+        std::fs::create_dir_all(cache.join("plans")).unwrap();
+        touch(&cache.join("plans/one.txt"), 11);
+        touch(&cache.join("two.txt"), 5);
+        touch(&cache.join("nested/three.txt"), 7);
+
+        let sweep = clear_cache(&cache);
+
+        assert_eq!(sweep.files, 3);
+        assert_eq!(sweep.bytes, 23);
+        assert!(cache.is_dir(), "the cache directory itself stays");
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none());
     }
 }
