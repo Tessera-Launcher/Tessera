@@ -227,7 +227,7 @@ impl App {
         self.request(Effect::InstallMod {
             version_dir: self.root.join("versions").join(&dir),
             game_version: self.mods.game_version.clone(),
-            version,
+            version: Box::new(version),
             title,
         });
     }

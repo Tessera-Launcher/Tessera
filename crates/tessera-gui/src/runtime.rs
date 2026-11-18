@@ -30,13 +30,9 @@ impl Launcher {
                     cx.notify();
                 }
             }
-            Key::Left => {
-                if focus::adjust(cx, -1, self, window) {
-                    cx.notify();
-                }
-            }
-            Key::Right => {
-                if focus::adjust(cx, 1, self, window) {
+            Key::Left | Key::Right => {
+                let delta = if code == Key::Left { -1 } else { 1 };
+                if focus::adjust(cx, delta, self, window) {
                     cx.notify();
                 }
             }
@@ -243,7 +239,7 @@ impl Launcher {
                         self.state.log("已有模组安装在进行，忽略新的安装请求");
                         continue;
                     }
-                    let rx = modrinth::spawn_install(version_dir, game_version, version, title);
+                    let rx = modrinth::spawn_install(version_dir, game_version, *version, title);
                     self.tasks.watch(
                         TaskKind::ModInstall,
                         rx,

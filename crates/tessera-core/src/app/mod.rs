@@ -102,7 +102,7 @@ pub enum Effect {
     InstallMod {
         version_dir: PathBuf,
         game_version: String,
-        version: crate::modrinth::Version,
+        version: Box<crate::modrinth::Version>,
         title: String,
     },
     /// Remove one launcher-owned jar from an instance.
