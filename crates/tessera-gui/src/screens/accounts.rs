@@ -13,6 +13,7 @@ impl Launcher {
             .id("accounts")
             .v_flex()
             .p(px(space::XS))
+            .track_scroll(&self.accounts_scroll)
             .overflow_y_scroll();
         if self.state.accounts.is_empty() {
             list = list.child(
@@ -29,12 +30,17 @@ impl Launcher {
             let name = account.name();
             // `application` is `Offline` for an account file with no session.
             let application = account.application.clone();
-            let focused = focus::register_row(cx, move |this, cx| {
-                this.state.accounts_ui.selected = index;
-                this.state.accounts_ui.confirm_delete = false;
-                this.state.activate_selected_account();
-                this.refresh(cx);
-            });
+            let focused = focus::register_scrolled_row(
+                cx,
+                move |this, cx| {
+                    this.state.accounts_ui.selected = index;
+                    this.state.accounts_ui.confirm_delete = false;
+                    this.state.activate_selected_account();
+                    this.refresh(cx);
+                },
+                self.accounts_scroll.clone(),
+                index,
+            );
             list = list.child(
                 div()
                     .id(format!("account-{index}"))

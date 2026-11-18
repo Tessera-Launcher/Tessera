@@ -115,6 +115,7 @@ impl Launcher {
             // hits this list, not the panel behind it.
             .size_full()
             .min_h(px(0.0))
+            .track_scroll(&self.home_scroll)
             .overflow_y_scroll();
         // A backdrop sibling, not a parent, of the rows: right-clicking empty
         // space gets only refresh, while a row's own menu can add uninstall.
@@ -164,11 +165,17 @@ impl Launcher {
                     .map(|major| format!("Java {major}"))
                     .unwrap_or_else(|| "Java —".to_string());
                 let dir = version.dir.clone();
-                let focused = focus::register_row(cx, move |this, cx| {
-                    this.state.selected = index;
-                    this.state.request_launch();
-                    this.refresh(cx);
-                });
+                let focused = focus::register_scrolled_row(
+                    cx,
+                    move |this, cx| {
+                        this.state.selected = index;
+                        this.state.request_launch();
+                        this.refresh(cx);
+                    },
+                    self.home_scroll.clone(),
+                    // The absolute right-click backdrop is the first child.
+                    1 + index - start,
+                );
                 list = list.child(
                     div()
                         .id(format!("version-{index}"))

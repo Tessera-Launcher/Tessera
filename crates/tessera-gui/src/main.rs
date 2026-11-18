@@ -71,6 +71,12 @@ struct Launcher {
     loading_wake: Option<Instant>,
     /// The home screen's log pane (scroll handle, follow state).
     log: LogView,
+    /// The home and account lists' scroll handles, owned here so keyboard focus
+    /// can scroll the highlighted row into view.
+    home_scroll: ScrollHandle,
+    accounts_scroll: ScrollHandle,
+    music_versions_scroll: ScrollHandle,
+    music_tracks_scroll: ScrollHandle,
     /// The download screen's scrollbar.
     download_scroll: ScrollHandle,
     /// Modrinth's results, detail and installed lists.
@@ -266,6 +272,10 @@ impl Launcher {
             loading: loading::LoadingGates::new(),
             loading_wake: None,
             log: LogView::default(),
+            home_scroll: ScrollHandle::default(),
+            accounts_scroll: ScrollHandle::default(),
+            music_versions_scroll: ScrollHandle::default(),
+            music_tracks_scroll: ScrollHandle::default(),
             download_scroll: ScrollHandle::default(),
             mods_scroll: ScrollHandle::default(),
             mods_detail_scroll: ScrollHandle::default(),

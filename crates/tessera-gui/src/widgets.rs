@@ -370,6 +370,7 @@ fn action_button(
                 Rc::new(move |this, _window, cx| action(this, cx))
             },
             None,
+            None,
         );
     let (background, border, foreground, hover) = match (kind, enabled) {
         (_, false) => (

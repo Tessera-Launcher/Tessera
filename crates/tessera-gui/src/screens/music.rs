@@ -28,6 +28,7 @@ impl Launcher {
             .p(px(space::XS))
             .size_full()
             .min_h(px(0.0))
+            .track_scroll(&self.music_versions_scroll)
             .overflow_y_scroll();
         if music.versions.is_empty() {
             versions = versions.child(
@@ -43,10 +44,15 @@ impl Launcher {
             let cursor_focused = selected && music.focus == MusicFocus::Versions;
             let id = format!("music-version-{index}");
             let name = dir.clone();
-            let focused = focus::register_row(cx, move |this, cx| {
-                this.state.select_music_version(index);
-                this.refresh(cx);
-            });
+            let focused = focus::register_scrolled_row(
+                cx,
+                move |this, cx| {
+                    this.state.select_music_version(index);
+                    this.refresh(cx);
+                },
+                self.music_versions_scroll.clone(),
+                index,
+            );
             versions = versions.child(
                 div()
                     .id(id)
@@ -91,6 +97,7 @@ impl Launcher {
             .p(px(space::XS))
             .size_full()
             .min_h(px(0.0))
+            .track_scroll(&self.music_tracks_scroll)
             .overflow_y_scroll();
         let library = music.library.as_ref();
         if let Some(library) = library {
@@ -100,12 +107,17 @@ impl Launcher {
                 let size = discover::human_size(track.size);
                 let present = track.present;
                 let row_id = format!("music-track-{index}");
-                let focused = focus::register_row(cx, move |this, cx| {
-                    this.state.music.focus = MusicFocus::Tracks;
-                    this.state.select_music_track(index);
-                    this.state.music_play_selected();
-                    this.refresh(cx);
-                });
+                let focused = focus::register_scrolled_row(
+                    cx,
+                    move |this, cx| {
+                        this.state.music.focus = MusicFocus::Tracks;
+                        this.state.select_music_track(index);
+                        this.state.music_play_selected();
+                        this.refresh(cx);
+                    },
+                    self.music_tracks_scroll.clone(),
+                    index,
+                );
                 tracks = tracks.child(
                     div()
                         .id(row_id)

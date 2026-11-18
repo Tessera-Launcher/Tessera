@@ -108,10 +108,15 @@ impl Launcher {
             let title = hit.title.clone();
             let description = hit.description.clone();
             let downloads = hit.downloads;
-            let focused = focus::register_row(cx, move |this, cx| {
-                this.state.select_mods_hit(index);
-                this.refresh(cx);
-            });
+            let focused = focus::register_scrolled_row(
+                cx,
+                move |this, cx| {
+                    this.state.select_mods_hit(index);
+                    this.refresh(cx);
+                },
+                self.mods_scroll.clone(),
+                index,
+            );
             // Modrinth icons are PNG/JPEG URLs. GPUI's image element fetches the
             // URI through the application's HTTP client and caches the decoded
             // frame, so no launcher-side download is needed. The letter box is

@@ -141,17 +141,25 @@ impl Launcher {
             for drawn in start..end {
                 let row = &download.rows[drawn];
                 let indent = f32::from(row.depth) * layout::TREE_INDENT;
+                // Children of the scroll container: optional leading spacer,
+                // then the rendered rows.
+                let row_index = usize::from(start > 0) + (drawn - start);
                 match row.kind.clone() {
                     RowKind::Version(index) => {
                         let version = download.version(index);
                         let picked = index == download.picked;
                         let id = version.id.clone();
                         let kind = version.kind;
-                        let focused = focus::register_row(cx, move |this, cx| {
-                            this.state.download.picked = index;
-                            this.state.download.refresh_loaders();
-                            this.refresh(cx);
-                        });
+                        let focused = focus::register_scrolled_row(
+                            cx,
+                            move |this, cx| {
+                                this.state.download.picked = index;
+                                this.state.download.refresh_loaders();
+                                this.refresh(cx);
+                            },
+                            self.download_scroll.clone(),
+                            row_index,
+                        );
                         versions = versions.child(
                             div()
                                 .id(format!("dl-{drawn}"))
@@ -218,11 +226,16 @@ impl Launcher {
                         } else {
                             format!("▸ {key}")
                         };
-                        let focused = focus::register_row(cx, move |this, cx| {
-                            this.state.download.picked = first;
-                            this.state.toggle_row(drawn);
-                            this.refresh(cx);
-                        });
+                        let focused = focus::register_scrolled_row(
+                            cx,
+                            move |this, cx| {
+                                this.state.download.picked = first;
+                                this.state.toggle_row(drawn);
+                                this.refresh(cx);
+                            },
+                            self.download_scroll.clone(),
+                            row_index,
+                        );
                         versions = versions.child(
                             div()
                                 .id(format!("dl-{drawn}"))

@@ -14,9 +14,16 @@ use crate::Launcher;
 type FocusAction = Rc<dyn Fn(&mut Launcher, &mut Window, &mut Context<Launcher>)>;
 type FocusAdjust = Rc<dyn Fn(i32, &mut Launcher, &mut Window, &mut Context<Launcher>)>;
 
+#[derive(Clone)]
+pub(crate) struct ScrollTarget {
+    handle: ScrollHandle,
+    index: usize,
+}
+
 struct Item {
     activate: FocusAction,
     adjust: Option<FocusAdjust>,
+    scroll: Option<ScrollTarget>,
 }
 
 #[derive(Default)]
@@ -49,11 +56,16 @@ pub(crate) fn register(
     cx: &mut Context<Launcher>,
     activate: FocusAction,
     adjust: Option<FocusAdjust>,
+    scroll: Option<ScrollTarget>,
 ) -> bool {
     let queue = cx.global_mut::<Queue>();
     let index = queue.cursor;
     queue.cursor += 1;
-    queue.items.push(Item { activate, adjust });
+    queue.items.push(Item {
+        activate,
+        adjust,
+        scroll,
+    });
     queue.active == Some(index)
 }
 
@@ -62,28 +74,55 @@ pub(crate) fn register_row(
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> bool {
-    register(cx, Rc::new(move |this, _window, cx| action(this, cx)), None)
+    register(
+        cx,
+        Rc::new(move |this, _window, cx| action(this, cx)),
+        None,
+        None,
+    )
+}
+
+/// Register a row inside a scrolling list; Tab scrolls it into view.
+pub(crate) fn register_scrolled_row(
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+    handle: ScrollHandle,
+    index: usize,
+) -> bool {
+    register(
+        cx,
+        Rc::new(move |this, _window, cx| action(this, cx)),
+        None,
+        Some(ScrollTarget { handle, index }),
+    )
 }
 
 /// Register a slider whose Left/Right keys are handled by `adjust`.
 pub(crate) fn register_slider(cx: &mut Context<Launcher>, adjust: FocusAdjust) -> bool {
-    register(cx, Rc::new(|_, _, _| {}), Some(adjust))
+    register(cx, Rc::new(|_, _, _| {}), Some(adjust), None)
 }
 
 /// Move the highlight. Returns false when there is nothing to focus.
 pub(crate) fn move_next(cx: &mut Context<Launcher>, backwards: bool) -> bool {
-    let queue = cx.global_mut::<Queue>();
-    let len = queue.items.len();
-    if len == 0 {
-        queue.active = None;
-        return false;
+    let scroll = {
+        let queue = cx.global_mut::<Queue>();
+        let len = queue.items.len();
+        if len == 0 {
+            queue.active = None;
+            return false;
+        }
+        let active = match queue.active {
+            Some(index) if backwards => (index + len - 1) % len,
+            Some(index) => (index + 1) % len,
+            None if backwards => len - 1,
+            None => 0,
+        };
+        queue.active = Some(active);
+        queue.items.get(active).and_then(|item| item.scroll.clone())
+    };
+    if let Some(target) = scroll {
+        target.handle.scroll_to_item(target.index);
     }
-    queue.active = Some(match queue.active {
-        Some(index) if backwards => (index + len - 1) % len,
-        Some(index) => (index + 1) % len,
-        None if backwards => len - 1,
-        None => 0,
-    });
     true
 }
 
