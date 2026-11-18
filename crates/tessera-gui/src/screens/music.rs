@@ -105,6 +105,10 @@ impl Launcher {
                 let selected = index == music.cursor;
                 let cursor_focused = selected && music.focus == MusicFocus::Tracks;
                 let size = discover::human_size(track.size);
+                let length = track
+                    .duration
+                    .map(music::clock)
+                    .unwrap_or_else(|| "--:--".to_string());
                 let present = track.present;
                 let row_id = format!("music-track-{index}");
                 let focused = focus::register_scrolled_row(
@@ -164,13 +168,6 @@ impl Launcher {
                         )
                         .child(
                             div()
-                                .w(px(layout::TRACK_GROUP))
-                                .text_size(px(font::CAPTION))
-                                .text_color(rgb(colors.text_secondary))
-                                .child(track.group.clone()),
-                        )
-                        .child(
-                            div()
                                 .flex_1()
                                 .text_size(px(font::BODY))
                                 .text_color(rgb(if selected {
@@ -186,6 +183,13 @@ impl Launcher {
                                 .text_size(px(font::CAPTION))
                                 .text_color(rgb(colors.text_secondary))
                                 .child(size),
+                        )
+                        .child(
+                            div()
+                                .w(px(layout::CLOCK_WIDTH))
+                                .text_size(px(font::CAPTION))
+                                .text_color(rgb(colors.text_secondary))
+                                .child(length),
                         )
                         .children((!present).then(|| chip(colors, "缺失", colors.status_danger))),
                 );

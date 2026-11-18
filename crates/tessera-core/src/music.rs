@@ -75,6 +75,8 @@ pub struct Track {
     /// Whether `path` exists. A listed-but-missing track means an interrupted
     /// download, which the UI says out loud instead of hiding.
     pub present: bool,
+    /// Length read from the Ogg granule, when the file is present and readable.
+    pub duration: Option<Duration>,
 }
 
 /// What one version's index says about one half of the soundtrack.
@@ -181,6 +183,7 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library> {
         } else {
             size
         };
+        let duration = present.then(|| duration(&path)).flatten();
         tracks.push(Track {
             name: name.clone(),
             title: title(name),
@@ -188,6 +191,7 @@ pub fn scan(game: &Path, version: &str, kind: Kind) -> Result<Library> {
             size,
             present,
             path,
+            duration,
         });
     }
 
