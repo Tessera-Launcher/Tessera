@@ -305,6 +305,17 @@ enum TitlebarIcon {
     Close,
 }
 
+/// What a custom title-bar button does when clicked.
+///
+/// `window_control_area` is only advisory on Linux — the X11/Wayland backends
+/// ignore their hit-test callback — so the buttons must run the window action
+/// themselves instead of leaving it to the platform.
+#[derive(Clone, Copy)]
+enum TitlebarAction {
+    Minimize,
+    Close,
+}
+
 fn titlebar_icon(icon: TitlebarIcon, color: u32) -> impl IntoElement {
     canvas(
         |bounds, _, _| bounds,
@@ -334,10 +345,11 @@ fn titlebar_icon(icon: TitlebarIcon, color: u32) -> impl IntoElement {
 
 fn titlebar_button(
     id: &'static str,
-    area: WindowControlArea,
+    action: TitlebarAction,
     icon: TitlebarIcon,
     color: u32,
     hover_background: u32,
+    cx: &mut Context<Launcher>,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -348,7 +360,15 @@ fn titlebar_button(
         .justify_center()
         .cursor_pointer()
         .hover(move |style| style.bg(rgb(hover_background)))
-        .window_control_area(area)
+        .on_click(cx.listener(
+            move |this: &mut Launcher, _event, window, cx| match action {
+                // Minimizing keeps the launcher alive; closing goes through the
+                // same shutdown path as the blocked screen, so the log and the
+                // settings are written before the process ends.
+                TitlebarAction::Minimize => window.minimize_window(),
+                TitlebarAction::Close => this.shutdown(cx),
+            },
+        ))
         .child(titlebar_icon(icon, color))
 }
 
@@ -429,7 +449,12 @@ impl Render for Launcher {
                             .items_center()
                             .gap(px(space::SM))
                             .pl(px(space::MD))
-                            .window_control_area(WindowControlArea::Drag)
+                            // X11 and Wayland ignore `window_control_area` for
+                            // dragging, so move the window on the mouse-down
+                            // like gpui-component's own title bar does.
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.start_window_move();
+                            })
                             .child(
                                 div()
                                     .text_size(px(font::TITLE))
@@ -441,17 +466,19 @@ impl Render for Launcher {
                     )
                     .child(titlebar_button(
                         "titlebar-minimize",
-                        WindowControlArea::Min,
+                        TitlebarAction::Minimize,
                         TitlebarIcon::Minimize,
                         colors.text_primary,
                         colors.hover,
+                        cx,
                     ))
                     .child(titlebar_button(
                         "titlebar-close",
-                        WindowControlArea::Close,
+                        TitlebarAction::Close,
                         TitlebarIcon::Close,
                         colors.text_primary,
                         colors.hover,
+                        cx,
                     )),
             )
             .child(workspace.child(content))
