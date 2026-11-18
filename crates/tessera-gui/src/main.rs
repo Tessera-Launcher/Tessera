@@ -16,7 +16,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::component::{TitleBar, WindowBorder, TITLE_BAR_HEIGHT};
+use gpui_kit::component::{TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, gui_key, open_browser, open_folder};
@@ -452,110 +452,184 @@ impl Render for Launcher {
         } else {
             workspace
         };
-        WindowBorder::new().child(
+        // Linux uses client-side decorations and the FramePlugin below to drop
+        // component's shadow wrapper. Other platforms keep the normal root,
+        // which already has no client border there.
+        let root = div()
+            .v_flex()
+            .relative()
+            .size_full()
+            .bg(rgb(colors.canvas))
+            .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
+            .text_size(px(font::BODY))
+            .line_height(relative(font::LINE_HEIGHT))
+            .text_color(rgb(colors.text_primary))
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_key(event, window, cx);
+            }));
+        #[cfg(target_os = "linux")]
+        let root = root.on_mouse_down(MouseButton::Left, |_, window, _| {
+            // There is no native frame to start a resize from, so treat a press
+            // on the outer few pixels as an edge drag.
+            if window.is_maximized() {
+                return;
+            }
+            let size = window.window_bounds().get_bounds().size;
+            if let Some(edge) = resize_edge(window.mouse_position(), size) {
+                window.start_window_resize(edge);
+            }
+        });
+        root.child(
             div()
-                .v_flex()
-                .relative()
-                .size_full()
+                .h_flex()
+                .h(TITLE_BAR_HEIGHT)
+                .flex_shrink_0()
+                .items_center()
                 .bg(rgb(colors.canvas))
-                .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
-                .text_size(px(font::BODY))
-                .line_height(relative(font::LINE_HEIGHT))
-                .text_color(rgb(colors.text_primary))
-                .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    this.on_key(event, window, cx);
-                }))
+                .border_b(px(stroke::THIN))
+                .border_color(rgb(colors.border_default))
                 .child(
                     div()
                         .h_flex()
-                        .h(TITLE_BAR_HEIGHT)
-                        .flex_shrink_0()
+                        .flex_1()
+                        .h_full()
                         .items_center()
-                        .bg(rgb(colors.canvas))
-                        .border_b(px(stroke::THIN))
-                        .border_color(rgb(colors.border_default))
+                        .gap(px(space::SM))
+                        .pl(px(space::MD))
+                        // X11 and Wayland ignore `window_control_area` for
+                        // dragging, so move the window on the mouse-down
+                        // like gpui-component's own title bar does. Windows
+                        // uses the hit-test area below; its
+                        // `start_window_move` is a no-op, so keeping both
+                        // paths is safe.
+                        .window_control_area(WindowControlArea::Drag)
+                        .on_mouse_down(MouseButton::Left, |_, window, _| {
+                            window.start_window_move();
+                        })
                         .child(
                             div()
-                                .h_flex()
-                                .flex_1()
-                                .h_full()
-                                .items_center()
-                                .gap(px(space::SM))
-                                .pl(px(space::MD))
-                                // X11 and Wayland ignore `window_control_area` for
-                                // dragging, so move the window on the mouse-down
-                                // like gpui-component's own title bar does. Windows
-                                // uses the hit-test area below; its
-                                // `start_window_move` is a no-op, so keeping both
-                                // paths is safe.
-                                .window_control_area(WindowControlArea::Drag)
-                                .on_mouse_down(MouseButton::Left, |_, window, _| {
-                                    window.start_window_move();
-                                })
-                                .child(
-                                    div()
-                                        .text_size(px(font::TITLE))
-                                        .line_height(relative(font::LINE_HEIGHT_TITLE))
-                                        .font_weight(FontWeight(weight::BOLD))
-                                        .text_color(rgb(colors.text_accent))
-                                        .child("Tessera"),
-                                ),
-                        )
-                        .child(titlebar_button(
-                            "titlebar-minimize",
-                            TitlebarAction::Minimize,
-                            WindowControlArea::Min,
-                            TitlebarIcon::Minimize,
-                            colors.text_primary,
-                            colors.hover,
-                            cx,
-                        ))
-                        .child(titlebar_button(
-                            "titlebar-maximize",
-                            TitlebarAction::Maximize,
-                            WindowControlArea::Max,
-                            if window.is_maximized() {
-                                TitlebarIcon::Restore
-                            } else {
-                                TitlebarIcon::Maximize
-                            },
-                            colors.text_primary,
-                            colors.hover,
-                            cx,
-                        ))
-                        .child(titlebar_button(
-                            "titlebar-close",
-                            TitlebarAction::Close,
-                            WindowControlArea::Close,
-                            TitlebarIcon::Close,
-                            colors.text_primary,
-                            colors.hover,
-                            cx,
-                        )),
+                                .text_size(px(font::TITLE))
+                                .line_height(relative(font::LINE_HEIGHT_TITLE))
+                                .font_weight(FontWeight(weight::BOLD))
+                                .text_color(rgb(colors.text_accent))
+                                .child("Tessera"),
+                        ),
                 )
-                .child(workspace.child(content))
-                .children(overlay),
+                .child(titlebar_button(
+                    "titlebar-minimize",
+                    TitlebarAction::Minimize,
+                    WindowControlArea::Min,
+                    TitlebarIcon::Minimize,
+                    colors.text_primary,
+                    colors.hover,
+                    cx,
+                ))
+                .child(titlebar_button(
+                    "titlebar-maximize",
+                    TitlebarAction::Maximize,
+                    WindowControlArea::Max,
+                    if window.is_maximized() {
+                        TitlebarIcon::Restore
+                    } else {
+                        TitlebarIcon::Maximize
+                    },
+                    colors.text_primary,
+                    colors.hover,
+                    cx,
+                ))
+                .child(titlebar_button(
+                    "titlebar-close",
+                    TitlebarAction::Close,
+                    WindowControlArea::Close,
+                    TitlebarIcon::Close,
+                    colors.text_primary,
+                    colors.hover,
+                    cx,
+                )),
         )
+        .child(workspace.child(content))
+        .children(overlay)
     }
 }
+
+/// Drops the presentation wrapper that gpui-component's root plugin installs.
+///
+/// That plugin wraps every window in `WindowBorder`, whose 20 px shadow margin
+/// is painted solid black on X11 surfaces that do not blend ARGB. The app draws
+/// its own frame (title bar, border and resize edges), so this plugin renders
+/// the application view directly instead. The overlays that come with that
+/// plugin (tooltips, notification and dialog layers) are unused by Tessera;
+/// inline context menus live in the app view and are unaffected.
+#[cfg(target_os = "linux")]
+struct FramePlugin;
+
+#[cfg(target_os = "linux")]
+impl Render for FramePlugin {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl gpui_kit::base::RootPlugin for FramePlugin {
+    fn decorate(
+        &self,
+        _surface: AnyElement,
+        root: &gpui_kit::base::Root,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> impl IntoElement {
+        div().size_full().child(root.view().clone())
+    }
+}
+
+/// Which edge or corner the pointer is on, for a 5 px borderless resize band.
+#[cfg(target_os = "linux")]
+fn resize_edge(position: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
+    const BAND: f32 = 5.0;
+    let x = position.x.as_f32();
+    let y = position.y.as_f32();
+    let width = size.width.as_f32();
+    let height = size.height.as_f32();
+    let left = x <= BAND;
+    let right = x >= width - BAND;
+    let top = y <= BAND;
+    let bottom = y >= height - BAND;
+    match (top, bottom, left, right) {
+        (true, _, true, _) => Some(ResizeEdge::TopLeft),
+        (true, _, _, true) => Some(ResizeEdge::TopRight),
+        (_, true, true, _) => Some(ResizeEdge::BottomLeft),
+        (_, true, _, true) => Some(ResizeEdge::BottomRight),
+        (true, _, _, _) => Some(ResizeEdge::Top),
+        (_, true, _, _) => Some(ResizeEdge::Bottom),
+        (_, _, true, _) => Some(ResizeEdge::Left),
+        (_, _, _, true) => Some(ResizeEdge::Right),
+        _ => None,
+    }
+}
+
 fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        // Must be registered after gpui-component, so it wraps (and replaces)
+        // the WindowBorder that component's root plugin would install. Linux is
+        // where that border adds the unusable shadow margin.
+        #[cfg(target_os = "linux")]
+        gpui_kit::base::Root::register_plugin::<FramePlugin>(cx, |_, _| FramePlugin);
         let launcher = cx.new(|cx| {
             let mut launcher = Launcher::new(cx);
             launcher.start(cx);
             launcher
         });
         let view = launcher.clone();
-        // The Linux client-side frame draws a shadow into transparent window
-        // margins. Windows and macOS use their own frame behaviour, so keep
-        // their window background opaque instead of enabling per-pixel alpha
-        // where nothing needs it.
-        let window_background = if cfg!(target_os = "linux") {
-            WindowBackgroundAppearance::Transparent
+        // Client decorations on Linux remove the WM frame; the FramePlugin below
+        // keeps component's shadow border from wrapping the app. The surface is
+        // opaque, so no compositor alpha is required.
+        let window_decorations = if cfg!(target_os = "linux") {
+            Some(WindowDecorations::Client)
         } else {
-            WindowBackgroundAppearance::Opaque
+            None
         };
         gpui_kit::open_window(
             WindowOptions {
@@ -567,12 +641,8 @@ fn main() {
                     origin: point(px(120.0), px(90.0)),
                     size: size(px(layout::MIN_WIDTH), px(layout::MIN_HEIGHT)),
                 })),
-                // Draw the title bar and the frame ourselves. On Linux this asks
-                // the window manager for client-side decorations; WindowBorder
-                // supplies the shadow, resize edges and rounded frame that the
-                // server-side title bar used to provide.
-                window_decorations: Some(WindowDecorations::Client),
-                window_background,
+                window_decorations,
+                window_background: WindowBackgroundAppearance::Opaque,
                 ..TitleBar::window_options()
             },
             cx,
