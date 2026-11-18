@@ -1274,7 +1274,7 @@ impl App {
                 self.status = "需要重新登录".to_string();
                 self.log(format!("登录已失效（{reason}）"));
                 if !username.is_empty() {
-                    self.log("按 l 重新登录；现在用离线身份启动".to_string());
+                    self.log("到账户页重新登录；现在用离线身份启动".to_string());
                 }
                 self.launch_offline_or_login(username);
             }

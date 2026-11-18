@@ -131,6 +131,16 @@ impl Launcher {
                 this.refresh(cx);
             }));
 
+        let heap_slider = heap.clone();
+        let heap_focused = focus::register_slider(
+            cx,
+            std::rc::Rc::new(move |delta, _this, window, cx| {
+                heap_slider.update(cx, |state, cx| {
+                    let step = state.step_value();
+                    state.step_thumb(false, delta as f32 * step, window, cx);
+                });
+            }),
+        );
         let memory = div()
             .v_flex()
             .gap(px(space::SM))
@@ -152,6 +162,12 @@ impl Launcher {
                         div()
                             .flex_1()
                             .min_w(px(layout::SLIDER_MIN))
+                            .border(px(stroke::THIN))
+                            .border_color(rgb(if heap_focused {
+                                colors.border_focus
+                            } else {
+                                colors.canvas
+                            }))
                             .child(Slider::new(&heap).horizontal().bg(rgb(colors.fill_primary))),
                     )
                     .child(

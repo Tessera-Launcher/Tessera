@@ -164,6 +164,11 @@ impl Launcher {
                     .map(|major| format!("Java {major}"))
                     .unwrap_or_else(|| "Java —".to_string());
                 let dir = version.dir.clone();
+                let focused = focus::register_row(cx, move |this, cx| {
+                    this.state.selected = index;
+                    this.state.request_launch();
+                    this.refresh(cx);
+                });
                 list = list.child(
                     div()
                         .id(format!("version-{index}"))
@@ -173,9 +178,15 @@ impl Launcher {
                         .px(px(space::MD))
                         .py(px(space::SM))
                         .border_b(px(stroke::THIN))
-                        .border_color(rgb(colors.border_default))
+                        .border_color(rgb(if focused {
+                            colors.border_focus
+                        } else {
+                            colors.border_default
+                        }))
                         .bg(if selected {
                             rgb(colors.selected)
+                        } else if focused {
+                            rgb(colors.hover)
                         } else {
                             rgb(colors.canvas)
                         })
@@ -355,6 +366,8 @@ impl Launcher {
             return None;
         }
         let (dir, dependents, size) = self.state.uninstall_plan()?;
+        // The confirmation owns the keyboard while it is open.
+        focus::reset(cx);
         let mut body = div()
             .v_flex()
             .gap(px(space::MD))

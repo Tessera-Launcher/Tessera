@@ -158,7 +158,7 @@ fn an_expired_session_falls_back_to_offline_with_a_clear_message() {
     );
     assert!(app.log.iter().any(|line| line.contains("登录已失效")));
     // The follow-up line tells the user what to do about it.
-    assert!(app.log.iter().any(|line| line.contains("按 l 重新登录")));
+    assert!(app.log.iter().any(|line| line.contains("到账户页重新登录")));
 }
 
 #[test]

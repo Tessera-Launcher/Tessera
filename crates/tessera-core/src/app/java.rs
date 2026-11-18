@@ -204,7 +204,7 @@ impl App {
     }
 
     /// Ask the loop to download the runtime under the cursor.
-    fn start_java_download(&mut self) {
+    pub fn start_java_download(&mut self) {
         if self.java.stage == JavaStage::Downloading {
             return;
         }
@@ -215,7 +215,7 @@ impl App {
     }
 
     /// `u`: update every feature whose installed build is older than the API's.
-    fn start_java_updates(&mut self) {
+    pub fn start_java_updates(&mut self) {
         if self.java.stage == JavaStage::Downloading {
             return;
         }

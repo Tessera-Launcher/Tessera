@@ -20,7 +20,7 @@ impl Launcher {
                     .p(px(space::LG))
                     .text_size(px(font::BODY))
                     .text_color(rgb(colors.text_secondary))
-                    .child("还没有账户：按 l 登录"),
+                    .child("还没有账户"),
             );
         }
         for (index, account) in self.state.accounts.iter().enumerate() {
@@ -29,6 +29,12 @@ impl Launcher {
             let name = account.name();
             // `application` is `Offline` for an account file with no session.
             let application = account.application.clone();
+            let focused = focus::register_row(cx, move |this, cx| {
+                this.state.accounts_ui.selected = index;
+                this.state.accounts_ui.confirm_delete = false;
+                this.state.activate_selected_account();
+                this.refresh(cx);
+            });
             list = list.child(
                 div()
                     .id(format!("account-{index}"))
@@ -38,9 +44,15 @@ impl Launcher {
                     .px(px(space::MD))
                     .py(px(space::SM))
                     .border_b(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
                     .bg(if selected {
                         rgb(colors.selected)
+                    } else if focused {
+                        rgb(colors.hover)
                     } else {
                         rgb(colors.canvas)
                     })
@@ -92,7 +104,7 @@ impl Launcher {
         let confirm = if self.state.accounts_ui.confirm_delete {
             "再点一次「移除」确认删除"
         } else {
-            "Enter 切换 · 双击账户也可切换 · 移除需要点两次"
+            "双击账户也可切换 · 移除需要点两次"
         };
 
         div()

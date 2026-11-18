@@ -68,6 +68,7 @@ impl Page {
         colors: &'static crate::design_tokens::color::Palette,
         cx: &mut Context<Launcher>,
     ) -> impl IntoElement {
+        let focused = crate::focus::register_row(cx, move |this, cx| this.navigate(self, cx));
         div()
             .id(self.id())
             .h_flex()
@@ -77,6 +78,7 @@ impl Page {
             .py(px(space::SM))
             .min_h(px(34.0))
             .cursor_pointer()
+            .bg(rgb(if focused { colors.hover } else { colors.canvas }))
             .hover(move |style| style.bg(rgb(colors.hover)))
             .child(
                 div()

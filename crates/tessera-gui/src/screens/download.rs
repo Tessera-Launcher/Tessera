@@ -27,6 +27,10 @@ impl Launcher {
             VersionFilter::Old,
         ] {
             let picked = self.state.download.filter == filter;
+            let focused = focus::register_row(cx, move |this, cx| {
+                this.state.set_download_filter(filter);
+                this.refresh(cx);
+            });
             bar = bar.child(
                 div()
                     .id(format!("filter-{}", filter.label()))
@@ -34,6 +38,8 @@ impl Launcher {
                     .py(px(space::SM))
                     .bg(rgb(if picked {
                         colors.fill_primary
+                    } else if focused {
+                        colors.hover
                     } else {
                         colors.canvas
                     }))
@@ -141,6 +147,11 @@ impl Launcher {
                         let picked = index == download.picked;
                         let id = version.id.clone();
                         let kind = version.kind;
+                        let focused = focus::register_row(cx, move |this, cx| {
+                            this.state.download.picked = index;
+                            this.state.download.refresh_loaders();
+                            this.refresh(cx);
+                        });
                         versions = versions.child(
                             div()
                                 .id(format!("dl-{drawn}"))
@@ -152,9 +163,15 @@ impl Launcher {
                                 .h(px(ROW_HEIGHT))
                                 .flex_shrink_0()
                                 .border_b(px(stroke::THIN))
-                                .border_color(rgb(colors.border_default))
+                                .border_color(rgb(if focused {
+                                    colors.border_focus
+                                } else {
+                                    colors.border_default
+                                }))
                                 .bg(if picked {
                                     rgb(colors.selected)
+                                } else if focused {
+                                    rgb(colors.hover)
                                 } else {
                                     rgb(colors.canvas)
                                 })
@@ -201,6 +218,11 @@ impl Launcher {
                         } else {
                             format!("▸ {key}")
                         };
+                        let focused = focus::register_row(cx, move |this, cx| {
+                            this.state.download.picked = first;
+                            this.state.toggle_row(drawn);
+                            this.refresh(cx);
+                        });
                         versions = versions.child(
                             div()
                                 .id(format!("dl-{drawn}"))
@@ -212,8 +234,12 @@ impl Launcher {
                                 .h(px(ROW_HEIGHT))
                                 .flex_shrink_0()
                                 .border_b(px(stroke::THIN))
-                                .border_color(rgb(colors.border_default))
-                                .bg(rgb(colors.canvas))
+                                .border_color(rgb(if focused {
+                                    colors.border_focus
+                                } else {
+                                    colors.border_default
+                                }))
+                                .bg(rgb(if focused { colors.hover } else { colors.canvas }))
                                 .on_click(cx.listener(
                                     move |this: &mut Launcher, _event, _window, cx| {
                                         this.state.download.picked = first;
@@ -275,6 +301,10 @@ impl Launcher {
             // the reason next to it: hiding the row would leave a version that
             // silently has one option fewer.
             let unavailable = loader.unavailable();
+            let focused = focus::register_row(cx, move |this, cx| {
+                this.state.download.loader_pick = index;
+                this.refresh(cx);
+            });
             loaders = loaders.child(
                 div()
                     .id(format!("loader-{index}"))
@@ -284,9 +314,15 @@ impl Launcher {
                     .px(px(space::MD))
                     .py(px(space::SM))
                     .border_b(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
                     .bg(if picked {
                         rgb(colors.selected)
+                    } else if focused {
+                        rgb(colors.hover)
                     } else {
                         rgb(colors.canvas)
                     })
@@ -485,7 +521,6 @@ impl Launcher {
                         let text = state.read(cx).value().to_string();
                         this.state.set_download_query(&text);
                     }
-                    InputEvent::PressEnter { .. } => this.state.start_install(),
                     _ => return,
                 }
                 this.refresh(cx);

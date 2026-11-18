@@ -95,7 +95,7 @@ impl Launcher {
                         },
                     )))
                     .child(list);
-                hint = "输入 id 后 Enter，或用 ↑↓ 选现有凭据".to_string();
+                hint = "选择一份现有凭据，或输入 id".to_string();
             }
             LoginStep::OfflineName => {
                 let input = self.ensure_offline_name(window, cx);
@@ -139,7 +139,7 @@ impl Launcher {
                         this.refresh(cx);
                     },
                 )));
-                hint = "Tab 切换「任意用户名」· Enter 登录".to_string();
+                hint = "勾选后点击登录".to_string();
             }
             LoginStep::Waiting { user_code, url } => {
                 let ready = !user_code.is_empty() && !url.is_empty();
@@ -271,7 +271,6 @@ impl Launcher {
                         let text = state.read(cx).value().to_string();
                         this.state.set_login_offline_name(&text);
                     }
-                    InputEvent::PressEnter { .. } => this.state.confirm_offline_login(),
                     _ => return,
                 }
                 this.refresh(cx);
@@ -297,7 +296,6 @@ impl Launcher {
                         let text = state.read(cx).value().to_string();
                         this.state.set_login_app_id(&text);
                     }
-                    InputEvent::PressEnter { .. } => this.state.confirm_login_app_id(),
                     _ => return,
                 }
                 this.refresh(cx);

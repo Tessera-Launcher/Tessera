@@ -30,13 +30,14 @@ impl Launcher {
 
         // One button, three states: nothing installed → download; installed and
         // current → a greyed-out update; installed and behind → an update.
-        let (label, can_click, key) = match (runtime.is_some(), installed, update) {
-            (false, _, _) => ("下载", false, Key::Enter),
-            (true, false, _) => ("下载", true, Key::Enter),
-            (true, true, true) => ("更新", true, Key::Char('u')),
-            (true, true, false) => ("更新", false, Key::Char('u')),
+        let (label, can_click) = match (runtime.is_some(), installed, update) {
+            (false, _, _) => ("下载", false),
+            (true, false, _) => ("下载", true),
+            (true, true, true) => ("更新", true),
+            (true, true, false) => ("更新", false),
         };
         let can_click = can_click && !busy;
+        let update_action = installed;
 
         let mut card = div().v_flex().gap(px(space::SM)).p(px(space::LG));
         let summary = div()
@@ -127,7 +128,11 @@ impl Launcher {
                     can_click,
                     cx,
                     move |this, cx| {
-                        this.state.handle_java_key(key, Modifiers::NONE);
+                        if update_action {
+                            this.state.start_java_updates();
+                        } else {
+                            this.state.start_java_download();
+                        }
                         this.refresh(cx);
                     },
                 )),

@@ -108,6 +108,10 @@ impl Launcher {
             let title = hit.title.clone();
             let description = hit.description.clone();
             let downloads = hit.downloads;
+            let focused = focus::register_row(cx, move |this, cx| {
+                this.state.select_mods_hit(index);
+                this.refresh(cx);
+            });
             // Modrinth icons are PNG/JPEG URLs. GPUI's image element fetches the
             // URI through the application's HTTP client and caches the decoded
             // frame, so no launcher-side download is needed. The letter box is
@@ -135,9 +139,15 @@ impl Launcher {
                     .px(px(space::MD))
                     .py(px(space::SM))
                     .border_b(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
                     .bg(rgb(if picked {
                         colors.selected
+                    } else if focused {
+                        colors.hover
                     } else {
                         colors.canvas
                     }))
@@ -349,6 +359,10 @@ impl Launcher {
                 let number = version.version_number.clone();
                 let kind = release_label(&version.version_type).to_string();
                 let size = discover::human_size(version.file_size());
+                let focused = focus::register_row(cx, move |this, cx| {
+                    this.state.select_mod_version(index);
+                    this.refresh(cx);
+                });
                 body = body.child(
                     div()
                         .id(format!("mod-version-{index}"))
@@ -358,9 +372,15 @@ impl Launcher {
                         .px(px(space::MD))
                         .py(px(space::SM))
                         .border_b(px(stroke::THIN))
-                        .border_color(rgb(colors.border_default))
+                        .border_color(rgb(if focused {
+                            colors.border_focus
+                        } else {
+                            colors.border_default
+                        }))
                         .bg(rgb(if picked {
                             colors.selected
+                        } else if focused {
+                            colors.hover
                         } else {
                             colors.canvas
                         }))
@@ -560,7 +580,6 @@ impl Launcher {
                         let text = state.read(cx).value().to_string();
                         this.state.set_mods_query(&text);
                     }
-                    InputEvent::PressEnter { .. } => this.state.search_mods(),
                     _ => return,
                 }
                 this.refresh(cx);

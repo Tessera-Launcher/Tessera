@@ -1,6 +1,7 @@
 //! Small shared widgets used by every screen.
 
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use super::*;
 
@@ -50,14 +51,6 @@ impl LogView {
             // frame late.
             self.scroll.scroll_to_bottom();
         }
-    }
-
-    /// Move the viewport by `delta` pixels, clamped to the pane (PageUp/Down).
-    pub(crate) fn page(&self, delta: f32) {
-        let current = self.scroll.offset().y;
-        let max = self.scroll.max_offset().y;
-        self.scroll
-            .set_offset(point(px(0.0), (current + px(delta)).clamp(-max, px(0.0))));
     }
 }
 
@@ -239,6 +232,11 @@ pub(crate) fn choice_row(
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
     let colors = theme::colors(cx);
+    let action = Rc::new(action);
+    let focused = crate::focus::register_row(cx, {
+        let action = action.clone();
+        move |this, cx| action(this, cx)
+    });
     div()
         .id(format!("choice-{title}"))
         .cursor_pointer()
@@ -248,8 +246,14 @@ pub(crate) fn choice_row(
         .px(px(space::SM))
         .py(px(space::SM))
         .border_b(px(stroke::THIN))
-        .border_color(rgb(colors.border_default))
-        .bg(rgb(if selected {
+        .border_color(rgb(if focused {
+            colors.border_focus
+        } else {
+            colors.border_default
+        }))
+        .bg(rgb(if focused {
+            colors.hover
+        } else if selected {
             colors.selected
         } else {
             colors.canvas
@@ -289,6 +293,11 @@ pub(crate) fn checkbox(
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
     let colors = theme::colors(cx);
+    let action = Rc::new(action);
+    let focused = crate::focus::register_row(cx, {
+        let action = action.clone();
+        move |this, cx| action(this, cx)
+    });
     div()
         .id(format!("checkbox-{label}"))
         .h_flex()
@@ -296,6 +305,11 @@ pub(crate) fn checkbox(
         .gap(px(space::MD))
         .py(px(space::SM))
         .cursor_pointer()
+        .bg(rgb(if focused {
+            colors.selected
+        } else {
+            colors.canvas
+        }))
         .on_click(
             cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                 action(this, cx);
@@ -347,6 +361,16 @@ fn action_button(
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
     let colors = theme::colors(cx);
+    let action = Rc::new(action);
+    let focused = enabled
+        && crate::focus::register(
+            cx,
+            {
+                let action = action.clone();
+                Rc::new(move |this, _window, cx| action(this, cx))
+            },
+            None,
+        );
     let (background, border, foreground, hover) = match (kind, enabled) {
         (_, false) => (
             colors.canvas,
@@ -383,8 +407,8 @@ fn action_button(
         .py(px(space::SM))
         .rounded(px(radius::SM))
         .border(px(stroke::THIN))
-        .border_color(rgb(border))
-        .bg(rgb(background))
+        .border_color(rgb(if focused { colors.border_focus } else { border }))
+        .bg(rgb(if focused { hover } else { background }))
         .text_size(px(font::BODY))
         .text_color(rgb(foreground))
         .font_weight(FontWeight(weight::MEDIUM));

@@ -39,6 +39,7 @@ use crate::design_tokens::{color, font, layout, radius, space, stroke, weight};
 
 #[rustfmt::skip]
 mod design_tokens;
+mod focus;
 mod theme;
 
 mod loading;
@@ -93,8 +94,8 @@ struct Launcher {
     /// `data/日志/tessera.log`; `None` once a write failed, so a full disk does
     /// not fail again on every frame.
     log_file: Option<logfile::LogFile>,
-    /// Who receives key events. Focused unless a text field takes it, which is
-    /// what keeps typing into the search box from triggering shortcuts.
+    /// Who receives navigation keys. Tab returns focus here so text fields
+    /// cannot swallow the next key; typing still goes to a clicked field.
     focus_handle: FocusHandle,
     /// Focusing in `open_window`'s callback is too early: the div does not exist
     /// yet and the first draw drops the focus again, so it is retried once the
@@ -139,6 +140,9 @@ struct Launcher {
     /// The settings last written to disk, so a repaint that changes nothing does
     /// not rewrite the file.
     settings_saved: tessera_core::settings::Settings,
+    /// The screen the keyboard focus queue was last built for. A change clears
+    /// the highlighted element instead of carrying an index into a new screen.
+    focus_screen: Screen,
 }
 
 impl Launcher {
@@ -252,6 +256,7 @@ impl Launcher {
             state.status = "另一个 Tessera 正在使用这个数据目录".to_string();
         }
         let settings_saved = state.settings.clone();
+        let focus_screen = state.screen;
         Self {
             state,
             client,
@@ -295,6 +300,7 @@ impl Launcher {
             settings_path,
             cache_dir,
             settings_saved,
+            focus_screen,
         }
     }
 }
@@ -408,12 +414,19 @@ fn titlebar_button(
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
+        focus::begin(cx, self.state.screen != self.focus_screen);
+        self.focus_screen = self.state.screen;
         if !self.focus_scheduled {
             self.focus_scheduled = true;
             cx.on_next_frame(window, |this, window, cx| {
                 window.focus(&this.focus_handle, cx);
             });
         }
+        // Login is a flow of its own: the sidebar would invite navigating away
+        // mid-login, so it only frames the four pages. Render it before the page
+        // so its rows come first in the Tab order.
+        let sidebar = (!self.blocked && self.state.screen != Screen::Login)
+            .then(|| self.sidebar(cx).into_any_element());
         let body = if self.blocked {
             self.blocked_screen(cx).into_any_element()
         } else {
@@ -437,10 +450,6 @@ impl Render for Launcher {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .child(body);
-        // Login is a flow of its own: the sidebar would invite navigating away
-        // mid-login, so it only frames the four pages.
-        let sidebar = (!self.blocked && self.state.screen != Screen::Login)
-            .then(|| self.sidebar(cx).into_any_element());
         let workspace = div()
             .h_flex()
             .flex_1()
@@ -471,7 +480,14 @@ impl Render for Launcher {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_key(event, window, cx);
-            }));
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| {
+                    // A mouse click leaves keyboard mode; the pointer stays visible.
+                    focus::clear(cx);
+                }),
+            );
         root.child(
             div()
                 .h_flex()

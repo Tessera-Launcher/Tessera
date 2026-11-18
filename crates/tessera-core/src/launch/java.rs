@@ -135,11 +135,11 @@ pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32)> {
     match probe_java(path) {
         Some(probed) if probed == *major => Ok((path.clone(), probed)),
         Some(probed) => Err(Error::invalid(format!(
-            "{} 报告自己是 Java {probed}，但目录写着 Java {major}（按 v 重新下载）",
+            "{} 报告自己是 Java {probed}，但目录写着 Java {major}（到依赖页重新下载）",
             path.display()
         ))),
         None => Err(Error::invalid(format!(
-            "{} 跑不起来（按 v 重新下载 Java {major}）",
+            "{} 跑不起来（到依赖页重新下载 Java {major}）",
             path.display()
         ))),
     }

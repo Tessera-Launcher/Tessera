@@ -40,9 +40,13 @@ impl Launcher {
         }
         for (index, dir) in music.versions.iter().enumerate() {
             let selected = index == music.selected;
-            let focused = selected && music.focus == MusicFocus::Versions;
+            let cursor_focused = selected && music.focus == MusicFocus::Versions;
             let id = format!("music-version-{index}");
             let name = dir.clone();
+            let focused = focus::register_row(cx, move |this, cx| {
+                this.state.select_music_version(index);
+                this.refresh(cx);
+            });
             versions = versions.child(
                 div()
                     .id(id)
@@ -52,8 +56,12 @@ impl Launcher {
                     .px(px(space::MD))
                     .py(px(space::SM))
                     .border_b(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
-                    .bg(rgb(if focused {
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
+                    .bg(rgb(if focused || cursor_focused {
                         colors.selected
                     } else {
                         colors.canvas
@@ -88,10 +96,16 @@ impl Launcher {
         if let Some(library) = library {
             for (index, track) in library.tracks.iter().enumerate() {
                 let selected = index == music.cursor;
-                let focused = selected && music.focus == MusicFocus::Tracks;
+                let cursor_focused = selected && music.focus == MusicFocus::Tracks;
                 let size = discover::human_size(track.size);
                 let present = track.present;
                 let row_id = format!("music-track-{index}");
+                let focused = focus::register_row(cx, move |this, cx| {
+                    this.state.music.focus = MusicFocus::Tracks;
+                    this.state.select_music_track(index);
+                    this.state.music_play_selected();
+                    this.refresh(cx);
+                });
                 tracks = tracks.child(
                     div()
                         .id(row_id)
@@ -101,8 +115,12 @@ impl Launcher {
                         .px(px(space::MD))
                         .py(px(space::SM))
                         .border_b(px(stroke::THIN))
-                        .border_color(rgb(colors.border_default))
-                        .bg(rgb(if focused {
+                        .border_color(rgb(if focused {
+                            colors.border_focus
+                        } else {
+                            colors.border_default
+                        }))
+                        .bg(rgb(if focused || cursor_focused {
                             colors.selected
                         } else {
                             colors.canvas
@@ -272,6 +290,37 @@ impl Launcher {
             });
         }
 
+        let kind_switch = self.music_kind_switch(kind, cx);
+        let play_focused = focus::register_row(cx, |this, cx| {
+            this.state.music_play_pause();
+            this.refresh(cx);
+        });
+        let progress_slider = progress.clone();
+        let progress_focused = focus::register_slider(
+            cx,
+            std::rc::Rc::new(move |delta, _this, window, cx| {
+                progress_slider.update(cx, |state, cx| {
+                    let step = state.step_value();
+                    state.step_thumb(false, delta as f32 * step, window, cx);
+                    let value = state.value();
+                    cx.emit(SliderEvent::Release(value));
+                });
+            }),
+        );
+        let volume_slider = volume.clone();
+        let volume_focused = focus::register_slider(
+            cx,
+            std::rc::Rc::new(move |delta, _this, window, cx| {
+                volume_slider.update(cx, |state, cx| {
+                    let step = state.step_value();
+                    state.step_thumb(false, delta as f32 * step, window, cx);
+                });
+            }),
+        );
+        let order_focused = focus::register_row(cx, |this, cx| {
+            this.state.music_toggle_order();
+            this.refresh(cx);
+        });
         div()
             .h_flex()
             .items_center()
@@ -279,7 +328,7 @@ impl Launcher {
             .pt(px(space::SM))
             .border_t(px(stroke::THIN))
             .border_color(rgb(colors.border_default))
-            .child(self.music_kind_switch(kind, cx))
+            .child(kind_switch)
             .child(
                 div()
                     .id("music-play")
@@ -289,7 +338,16 @@ impl Launcher {
                     .items_center()
                     .justify_center()
                     .border(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
+                    .border_color(rgb(if play_focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
+                    .bg(rgb(if play_focused {
+                        colors.hover
+                    } else {
+                        colors.canvas
+                    }))
                     .text_color(rgb(colors.text_accent))
                     .child(if playing { "⏸" } else { "▶" })
                     .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
@@ -305,11 +363,20 @@ impl Launcher {
                     .child(position),
             )
             .child(
-                div().flex_1().min_w(px(layout::SLIDER_MIN)).child(
-                    Slider::new(&progress)
-                        .horizontal()
-                        .bg(rgb(colors.fill_primary)),
-                ),
+                div()
+                    .flex_1()
+                    .min_w(px(layout::SLIDER_MIN))
+                    .border(px(stroke::THIN))
+                    .border_color(rgb(if progress_focused {
+                        colors.border_focus
+                    } else {
+                        colors.canvas
+                    }))
+                    .child(
+                        Slider::new(&progress)
+                            .horizontal()
+                            .bg(rgb(colors.fill_primary)),
+                    ),
             )
             .child(
                 div()
@@ -326,11 +393,20 @@ impl Launcher {
                     .child("音量"),
             )
             .child(
-                div().w(px(layout::VOLUME_WIDTH)).flex_shrink_0().child(
-                    Slider::new(&volume)
-                        .horizontal()
-                        .bg(rgb(colors.fill_primary)),
-                ),
+                div()
+                    .w(px(layout::VOLUME_WIDTH))
+                    .flex_shrink_0()
+                    .border(px(stroke::THIN))
+                    .border_color(rgb(if volume_focused {
+                        colors.border_focus
+                    } else {
+                        colors.canvas
+                    }))
+                    .child(
+                        Slider::new(&volume)
+                            .horizontal()
+                            .bg(rgb(colors.fill_primary)),
+                    ),
             )
             .child(
                 div()
@@ -338,7 +414,11 @@ impl Launcher {
                     .px(px(space::MD))
                     .py(px(space::SM))
                     .border(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
+                    .border_color(rgb(if order_focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_accent))
                     .child(order)
@@ -359,12 +439,18 @@ impl Launcher {
             .gap(px(space::XS));
         for kind in [MusicKind::Records, MusicKind::Bgm] {
             let picked = kind == active;
+            let focused = focus::register_row(cx, move |this, cx| {
+                this.state.set_music_kind(kind);
+                this.refresh(cx);
+            });
             switch = switch.child(
                 div()
                     .id(format!("music-kind-{kind:?}"))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .bg(rgb(if picked {
+                    .bg(rgb(if focused {
+                        colors.hover
+                    } else if picked {
                         colors.selected
                     } else {
                         colors.canvas
@@ -373,7 +459,9 @@ impl Launcher {
                     .cursor_pointer()
                     .hover(move |style| style.bg(rgb(colors.hover)))
                     .border_b(px(stroke::THIN))
-                    .border_color(rgb(if picked {
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else if picked {
                         colors.fill_primary
                     } else {
                         colors.border_default

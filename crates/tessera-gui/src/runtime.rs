@@ -3,61 +3,45 @@
 use super::*;
 
 impl Launcher {
-    /// Hand one keystroke to the state machine, then run whatever it queued.
+    /// Keyboard navigation for the custom-drawn UI.
     ///
-    /// Everything the keyboard can do already lives in `App::handle_key`, so the
-    /// front-end only translates: a second key map here would drift from the state
-    /// machine.
+    /// Tab walks the focus queue, Enter runs the highlighted element, and
+    /// Left/Right step a highlighted slider. Typing still belongs to a focused
+    /// text field; Tab returns focus to the window root first so the next key
+    /// cannot be swallowed by an input.
     pub(crate) fn on_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.focus_handle.is_focused(window) {
-            return;
-        }
         let Some(code) = gui_key(&event.keystroke) else {
             return;
         };
-        // A pending uninstall owns Escape: answering "no" must not also quit.
-        // Scoped to the main screen, where the dialog lives: on other screens the
-        // key belongs to that screen (closing the picker, the login overlay…).
-        if self.state.screen == Screen::Main
-            && self.state.uninstall_confirm().is_some()
-            && code == Key::Esc
-        {
-            self.state.cancel_uninstall();
-            cx.notify();
-            return;
-        }
-        if self.state.screen == Screen::Main && matches!(code, Key::PageUp | Key::PageDown) {
-            // The log pane scrolls in the front-end (it owns the ScrollHandle),
-            // so these keys are translated here instead of in the state machine.
-            self.log
-                .page(if code == Key::PageUp { 80.0 } else { -80.0 });
-            cx.notify();
-            return;
-        }
-        if self.blocked {
-            // Only quitting is safe: another launcher owns the data directory.
-            let quit = matches!(code, Key::Char('q') | Key::Esc)
-                || (event.keystroke.modifiers.control && code == Key::Char('c'));
-            if quit {
-                self.state.should_quit = true;
+        match code {
+            Key::Tab | Key::BackTab => {
+                window.focus(&self.focus_handle, cx);
+                if focus::move_next(cx, code == Key::BackTab) {
+                    cx.notify();
+                }
             }
-            cx.notify();
-            return;
+            Key::Enter => {
+                if focus::activate(cx, self, window) {
+                    cx.notify();
+                }
+            }
+            Key::Left => {
+                if focus::adjust(cx, -1, self, window) {
+                    cx.notify();
+                }
+            }
+            Key::Right => {
+                if focus::adjust(cx, 1, self, window) {
+                    cx.notify();
+                }
+            }
+            _ => {}
         }
-        let mut modifiers = Modifiers::NONE;
-        if event.keystroke.modifiers.control {
-            modifiers = modifiers | Modifiers::CONTROL;
-        }
-        self.state.handle_key(code, modifiers);
-        self.step(cx);
-        // A key that only moves the selection or writes a status line queues no
-        // effect, so `step` has nothing to notify about; the repaint is ours.
-        cx.notify();
     }
 
     /// Run the effects the state machine queued.
