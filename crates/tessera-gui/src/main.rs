@@ -302,6 +302,8 @@ impl Launcher {
 #[derive(Clone, Copy)]
 enum TitlebarIcon {
     Minimize,
+    Maximize,
+    Restore,
     Close,
 }
 
@@ -313,6 +315,7 @@ enum TitlebarIcon {
 #[derive(Clone, Copy)]
 enum TitlebarAction {
     Minimize,
+    Maximize,
     Close,
 }
 
@@ -327,6 +330,25 @@ fn titlebar_icon(icon: TitlebarIcon, color: u32) -> impl IntoElement {
                 TitlebarIcon::Minimize => {
                     path.move_to(point(x + px(4.0), y + px(8.0)));
                     path.line_to(point(x + px(12.0), y + px(8.0)));
+                }
+                TitlebarIcon::Maximize => {
+                    path.move_to(point(x + px(4.0), y + px(4.0)));
+                    path.line_to(point(x + px(12.0), y + px(4.0)));
+                    path.line_to(point(x + px(12.0), y + px(12.0)));
+                    path.line_to(point(x + px(4.0), y + px(12.0)));
+                    path.close();
+                }
+                TitlebarIcon::Restore => {
+                    // A smaller front square overlapping a back one, the usual
+                    // "restore down" mark.
+                    path.move_to(point(x + px(6.0), y + px(4.0)));
+                    path.line_to(point(x + px(12.0), y + px(4.0)));
+                    path.line_to(point(x + px(12.0), y + px(10.0)));
+                    path.move_to(point(x + px(4.0), y + px(6.0)));
+                    path.line_to(point(x + px(10.0), y + px(6.0)));
+                    path.line_to(point(x + px(10.0), y + px(12.0)));
+                    path.line_to(point(x + px(4.0), y + px(12.0)));
+                    path.close();
                 }
                 TitlebarIcon::Close => {
                     path.move_to(point(x + px(4.0), y + px(4.0)));
@@ -346,12 +368,13 @@ fn titlebar_icon(icon: TitlebarIcon, color: u32) -> impl IntoElement {
 fn titlebar_button(
     id: &'static str,
     action: TitlebarAction,
+    area: WindowControlArea,
     icon: TitlebarIcon,
     color: u32,
     hover_background: u32,
     cx: &mut Context<Launcher>,
 ) -> impl IntoElement {
-    div()
+    let mut button = div()
         .id(id)
         .w(TITLE_BAR_HEIGHT)
         .h_full()
@@ -359,17 +382,27 @@ fn titlebar_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(move |style| style.bg(rgb(hover_background)))
-        .on_click(cx.listener(
-            move |this: &mut Launcher, _event, window, cx| match action {
-                // Minimizing keeps the launcher alive; closing goes through the
-                // same shutdown path as the blocked screen, so the log and the
-                // settings are written before the process ends.
-                TitlebarAction::Minimize => window.minimize_window(),
-                TitlebarAction::Close => this.shutdown(cx),
-            },
-        ))
-        .child(titlebar_icon(icon, color))
+        .hover(move |style| style.bg(rgb(hover_background)));
+    // Windows has no public "restore down" call: `zoom_window` always sends
+    // SW_MAXIMIZE there. Let the platform's hit-test handle maximize/restore,
+    // and run the actions ourselves everywhere else (Linux and macOS expose a
+    // real toggle).
+    if cfg!(target_os = "windows") && matches!(action, TitlebarAction::Maximize) {
+        button = button.window_control_area(area);
+    } else {
+        button =
+            button.on_click(cx.listener(
+                move |this: &mut Launcher, _event, window, cx| match action {
+                    // Minimizing keeps the launcher alive; closing goes through the
+                    // same shutdown path as the blocked screen, so the log and the
+                    // settings are written before the process ends.
+                    TitlebarAction::Minimize => window.minimize_window(),
+                    TitlebarAction::Maximize => window.zoom_window(),
+                    TitlebarAction::Close => this.shutdown(cx),
+                },
+            ));
+    }
+    button.child(titlebar_icon(icon, color))
 }
 
 impl Render for Launcher {
@@ -451,7 +484,11 @@ impl Render for Launcher {
                             .pl(px(space::MD))
                             // X11 and Wayland ignore `window_control_area` for
                             // dragging, so move the window on the mouse-down
-                            // like gpui-component's own title bar does.
+                            // like gpui-component's own title bar does. Windows
+                            // uses the hit-test area below; its
+                            // `start_window_move` is a no-op, so keeping both
+                            // paths is safe.
+                            .window_control_area(WindowControlArea::Drag)
                             .on_mouse_down(MouseButton::Left, |_, window, _| {
                                 window.start_window_move();
                             })
@@ -467,7 +504,21 @@ impl Render for Launcher {
                     .child(titlebar_button(
                         "titlebar-minimize",
                         TitlebarAction::Minimize,
+                        WindowControlArea::Min,
                         TitlebarIcon::Minimize,
+                        colors.text_primary,
+                        colors.hover,
+                        cx,
+                    ))
+                    .child(titlebar_button(
+                        "titlebar-maximize",
+                        TitlebarAction::Maximize,
+                        WindowControlArea::Max,
+                        if window.is_maximized() {
+                            TitlebarIcon::Restore
+                        } else {
+                            TitlebarIcon::Maximize
+                        },
                         colors.text_primary,
                         colors.hover,
                         cx,
@@ -475,6 +526,7 @@ impl Render for Launcher {
                     .child(titlebar_button(
                         "titlebar-close",
                         TitlebarAction::Close,
+                        WindowControlArea::Close,
                         TitlebarIcon::Close,
                         colors.text_primary,
                         colors.hover,
