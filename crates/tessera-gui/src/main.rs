@@ -460,6 +460,9 @@ impl Render for Launcher {
             .relative()
             .size_full()
             .bg(rgb(colors.canvas))
+            // One hairline around the outside, matching the separators inside.
+            .border(px(stroke::THIN))
+            .border_color(rgb(colors.text_on_fill))
             .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE_HEIGHT))
