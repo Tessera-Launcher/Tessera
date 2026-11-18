@@ -486,6 +486,25 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
     assert_eq!(app.aot.total, 200);
     assert_eq!(app.status, "AOT 训练：100 / 200 个类");
 
+    app.handle_aot_event(crate::aot::Event::Menu {
+        version: "26.3".to_string(),
+        loaded: 150,
+        total: 200,
+    });
+    assert!(app.aot.playing);
+    assert!(
+        app.status.contains("退出游戏"),
+        "the player has to be told the run ends when they quit: {}",
+        app.status
+    );
+    // Progress keeps arriving while the game runs; it must not bury the ask.
+    app.handle_aot_event(crate::aot::Event::Progress {
+        version: "26.3".to_string(),
+        loaded: 180,
+        total: 200,
+    });
+    assert!(app.status.contains("退出游戏"), "{}", app.status);
+
     app.handle_aot_event(crate::aot::Event::Assembling {
         version: "26.3".to_string(),
     });
@@ -495,14 +514,21 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
         version: "26.3".to_string(),
         loaded: 190,
         total: 200,
+        code_entries: 470,
         java_major: 28,
         java_version: "28+23-ea-beta".to_string(),
     });
     assert!(!app.aot.assembling);
+    assert!(!app.aot.playing);
     assert!(app.aot.training.is_none());
     assert!(
         app.aot.note.as_deref().unwrap().contains("AOT 缓存已生成"),
         "{:?}",
+        app.aot.note
+    );
+    assert!(
+        app.aot.note.as_deref().unwrap().contains("470 段编译代码"),
+        "a cache with compiled code must say so: {:?}",
         app.aot.note
     );
 }

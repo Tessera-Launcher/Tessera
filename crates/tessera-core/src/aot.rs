@@ -12,6 +12,12 @@
 //! a player who only plays once does not want either cost. Mod Loader installs
 //! are refused by the caller — their custom class loaders load the classes AOT
 //! cannot cache.
+//!
+//! A run ends when the player quits the game, not on a timer. Since JEP 544
+//! (JDK 28) the same cache also carries the C2 code compiled during the run, so
+//! every extra minute in a world is worth having; a launcher clock can only
+//! guess at that, and guessing wrong throws the code away. The launcher asks
+//! instead, and only ever kills the game when the player cancels.
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -26,12 +32,6 @@ use crate::error::{Error, Result};
 use crate::java;
 use crate::launch;
 
-/// How long to keep the game at the main menu before requesting a clean exit.
-///
-/// `Sound engine started` arrives just before the menu finishes drawing; the
-/// extra seconds let lazy font/gui classes load too, which is exactly the class
-/// set the cache is for.
-const MENU_DWELL: Duration = Duration::from_secs(10);
 /// Lines that mean the game reached its menu.
 ///
 /// Modern versions log "Sound engine started", the applet-era ones print
@@ -42,10 +42,9 @@ const MENU_MARKERS: [&str; 3] = [
     "OpenAL initialized",
     "[tessera] window up",
 ];
-/// Hard cap for reaching that menu. Big vanilla packs are slow, but this is only
-/// vanilla.
-const START_TIMEOUT: Duration = Duration::from_secs(8 * 60);
-/// Assembly happens in a forked JVM after the game exits.
+/// Hard cap for the cache-assembly JVM that runs after the game exits.
+///
+/// The game itself has no cap: it runs until the player closes it.
 const ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// What the training worker reports.
@@ -61,6 +60,13 @@ pub enum Event {
         loaded: usize,
         total: usize,
     },
+    /// The game reached its menu. From here the run lasts as long as the player
+    /// keeps playing, so the only thing left for the launcher is to say so.
+    Menu {
+        version: String,
+        loaded: usize,
+        total: usize,
+    },
     Assembling {
         version: String,
     },
@@ -68,6 +74,9 @@ pub enum Event {
         version: String,
         loaded: usize,
         total: usize,
+        /// Compiled-code blobs in the cache (JEP 544). Zero on a JDK that does
+        /// not ship it, or on a run too short to compile anything.
+        code_entries: usize,
         java_major: u32,
         java_version: String,
     },
@@ -145,10 +154,12 @@ fn train(
     let cache = version_dir.join(format!("{version}.aot"));
     let meta_path = version_dir.join(format!("{version}.aot.json"));
     let class_log = version_dir.join("logs").join("aot-classload.log");
+    let aot_log = version_dir.join("logs").join("aot-cache.log");
     let game_log = version_dir.join("logs").join("latest.log");
     let _ = fs::remove_file(&cache);
     let _ = fs::remove_file(&meta_path);
     let _ = fs::remove_file(&class_log);
+    let _ = fs::remove_file(&aot_log);
     // A previous run's log would make the "Sound engine started" marker look
     // present immediately, terminating the training run before it began.
     let _ = fs::remove_file(&game_log);
@@ -184,8 +195,13 @@ fn train(
         1,
         format!("-Xlog:class+load=info:file={}", class_log.display()),
     );
-    args.insert(2, format!("-javaagent:{}", agent.display()));
-    args.insert(3, "-Dtessera.aot.preload=1".to_string());
+    // JEP 544 writes compiled code into this same cache. No flag is needed: the
+    // ergonomics of `-XX:AOTCacheOutput` turn code caching on, and replay always
+    // picks the code up. Logging the assembly tells us whether the run actually
+    // produced code or only classes.
+    args.insert(2, format!("-Xlog:aot=info:file={}", aot_log.display()));
+    args.insert(3, format!("-javaagent:{}", agent.display()));
+    args.insert(4, "-Dtessera.aot.preload=1".to_string());
     if cancel.load(Ordering::Relaxed) {
         return Err(Error::process("启动器退出，AOT 训练已取消"));
     }
@@ -217,26 +233,32 @@ fn train(
         });
     }
 
-    let started = Instant::now();
     let mut last_report = Instant::now();
     let mut menu_seen: Option<Instant> = None;
-    let mut terminated = false;
     let mut class_log_tail = ClassLogTail::default();
     let mut game_log_tail = TextTail::default();
-    let mut last_loaded;
+    let mut last_loaded: usize;
+    // Only the player ends this run: the longer the game stays up, the more
+    // classes and compiled code the cache collects, and no clock in the
+    // launcher can tell when they have seen enough.
     loop {
         if cancel.load(Ordering::Relaxed) {
             terminate(&mut child);
             return Err(Error::process("启动器退出，AOT 训练已取消"));
         }
+        let loaded = class_log_tail.count(&class_log);
+        last_loaded = loaded;
         if menu_seen.is_none()
             && (menu_line.load(Ordering::Relaxed)
                 || game_log_tail.contains(&game_log, "Sound engine started"))
         {
             menu_seen = Some(Instant::now());
+            let _ = sender.send(Event::Menu {
+                version: version.to_string(),
+                loaded,
+                total,
+            });
         }
-        let loaded = class_log_tail.count(&class_log);
-        last_loaded = loaded;
         if last_report.elapsed() >= Duration::from_millis(200) {
             last_report = Instant::now();
             let _ = sender.send(Event::Progress {
@@ -244,18 +266,6 @@ fn train(
                 loaded,
                 total,
             });
-        }
-        if let Some(at) = menu_seen {
-            if at.elapsed() >= MENU_DWELL {
-                terminate(&mut child);
-                terminated = true;
-                break;
-            }
-        }
-        if started.elapsed() >= START_TIMEOUT {
-            terminate(&mut child);
-            terminated = true;
-            break;
         }
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -265,7 +275,10 @@ fn train(
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    if terminated {
+    // One-step training assembles the cache in a fork that runs before the game
+    // process actually exits, so the file is normally already there. Waiting is
+    // only for the case where it is not.
+    if !cache.is_file() {
         let _ = sender.send(Event::Assembling {
             version: version.to_string(),
         });
@@ -274,7 +287,9 @@ fn train(
     // The cache-assembly JVM is launched with the same `-Xlog:...:file=` option
     // and truncates the class log, so use the count captured before termination.
     let loaded = last_loaded;
+    let code_entries = aot_code_entries(&aot_log);
     let _ = fs::remove_file(&class_log);
+    let _ = fs::remove_file(&aot_log);
 
     if !cache.is_file() || cache.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
         return Err(Error::process(
@@ -286,6 +301,7 @@ fn train(
         "java_version": java.version,
         "unsigned_jar": training_jar.file_name().and_then(|name| name.to_str()),
         "agent": agent.file_name().and_then(|name| name.to_str()),
+        "code_entries": code_entries,
     });
     let body = serde_json::to_vec(&meta).map_err(|error| Error::internal(error.to_string()))?;
     crate::fsutil::write_atomic(&meta_path, &body, false)
@@ -295,6 +311,7 @@ fn train(
         version: version.to_string(),
         loaded,
         total,
+        code_entries,
         java_major: java.major,
         java_version: java.version,
     });
@@ -440,6 +457,26 @@ fn classpath_classes(args: &[String]) -> usize {
                 .count()
         })
         .sum()
+}
+
+/// How many compiled-code blobs the assembled cache holds.
+///
+/// The assembly JVM logs `Wrote N AOT code entries to AOT Code Cache` when JEP
+/// 544 is in play. Reporting the number is the only way to tell a cache that
+/// also carries C2 code from one that only carries classes; the two feel very
+/// different in game.
+fn aot_code_entries(path: &Path) -> usize {
+    let Ok(text) = fs::read_to_string(path) else {
+        return 0;
+    };
+
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.split("Wrote ").nth(1)?;
+            rest.split(' ').next()?.parse::<usize>().ok()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Ask the JVM to shut down normally so the launcher can assemble the cache.

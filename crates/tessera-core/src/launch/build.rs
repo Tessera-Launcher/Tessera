@@ -22,6 +22,78 @@ pub(super) fn is_1_8(id: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('-'))
 }
 
+/// JVM options that pick or tune a collector, plus the heap-sizing knobs that
+/// belong with one. The launcher forces its own policy, so a version JSON's copy
+/// is dropped instead of being left to fight with it: the JVM honours the *last*
+/// flag on the command line, and a mod-loader profile is free to carry a set
+/// copied from a wiki (Aikar's G1 flags are the usual one).
+const PROFILE_GC_PREFIXES: &[&str] = &[
+    "-Xms",
+    "-Xmn",
+    "-XX:+UseZGC",
+    "-XX:-UseZGC",
+    "-XX:+UseG1GC",
+    "-XX:-UseG1GC",
+    "-XX:+UseShenandoahGC",
+    "-XX:-UseShenandoahGC",
+    "-XX:+UseSerialGC",
+    "-XX:+UseParallelGC",
+    "-XX:+UseConcMarkSweepGC",
+    "-XX:+UseEpsilonGC",
+    "-XX:+UseStringDeduplication",
+    "-XX:-UseStringDeduplication",
+    "-XX:+UseCompactObjectHeaders",
+    "-XX:-UseCompactObjectHeaders",
+    "-XX:+AlwaysPreTouch",
+    "-XX:+ParallelRefProcEnabled",
+    "-XX:+DisableExplicitGC",
+    "-XX:+ExplicitGCInvokesConcurrent",
+    "-XX:Z",
+    "-XX:+Z",
+    "-XX:-Z",
+    "-XX:G1",
+    "-XX:+G1",
+    "-XX:-G1",
+    "-XX:MaxGCPauseMillis",
+    "-XX:SoftMaxHeapSize",
+    "-XX:ParallelGCThreads",
+    "-XX:ConcGCThreads",
+    "-XX:MaxRAMPercentage",
+    "-XX:ErgoHeapSizeLimit",
+];
+
+/// Whether a resolved profile argument belongs to the collector the launcher
+/// chooses for itself. See [`PROFILE_GC_PREFIXES`].
+fn is_profile_gc_option(arg: &str) -> bool {
+    PROFILE_GC_PREFIXES
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
+}
+
+/// The GC policy forced on every launch.
+///
+/// Every version runs on the same runtime, so the collector is the launcher's
+/// call, not a version JSON's. ZGC has the short pauses a game wants on a shared
+/// desktop, and on JDK 28 `ZAdaptiveHeapSizing` (JEP 546) lets it use whatever
+/// headroom `-Xmx` leaves without asking the user to tune a collector.
+///
+/// `-Xms` and `-XX:+AlwaysPreTouch` are deliberately absent: since JEP 545, ZGC
+/// starts on a 2 MB heap and expands aggressively, so committing a large heap
+/// up front only delays startup. `-XX:+UseCompactObjectHeaders` is default on
+/// JDK 27+ (JEP 534), so forcing it would be a no-op that only looks thorough.
+fn forced_gc_args(java_major: u32) -> Vec<String> {
+    // Only a pinned AOT runtime can be older than the launch JDK, and there is no
+    // point passing ZGC to a JVM that does not have it.
+    if java_major < 15 {
+        return Vec::new();
+    }
+    let mut args = vec!["-XX:+UseZGC".to_string()];
+    if java_major >= 28 {
+        args.push("-XX:+ZAdaptiveHeapSizing".to_string());
+    }
+    args
+}
+
 /// Every `.jar` directly inside `<version_dir>/mods`, sorted for a stable order.
 fn mod_jars(version_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(version_dir.join("mods")) else {
@@ -251,9 +323,17 @@ pub(super) fn prepare_inner(
     let mut args: Vec<String> = Vec::new();
     for raw in &merged.jvm_args {
         if let Some(value) = resolve_argument(raw, &features) {
-            args.push(substitute(&value, &vars));
+            let value = substitute(&value, &vars);
+            if !is_profile_gc_option(&value) {
+                args.push(value);
+            }
         }
     }
+
+    // Forced, so it goes after the profile's own arguments: a collector flag
+    // the profile carried was filtered out above, and the JVM would honour the
+    // later one anyway.
+    args.extend(forced_gc_args(java_major));
 
     // Required no matter what the profile claimed.
     args.push(format!("-Xmx{}M", options.memory_mb));

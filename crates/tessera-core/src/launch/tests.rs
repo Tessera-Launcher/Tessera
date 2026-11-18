@@ -720,6 +720,111 @@ fn a_loader_profile_merges_its_parent_and_wins_the_classpath_order() {
 }
 
 #[test]
+fn the_forced_gc_policy_replaces_a_profiles_own_collector_flags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_version(
+        root,
+        "26.3",
+        serde_json::json!({
+            "id": "26.3",
+            "type": "release",
+            "mainClass": "net.minecraft.client.main.Main",
+            "assetIndex": { "id": "34" },
+            "javaVersion": { "majorVersion": 21 },
+            "arguments": {
+                "jvm": [
+                    "-Xms2G",
+                    "-XX:+UseG1GC",
+                    "-XX:G1NewSizePercent=20",
+                    "-XX:+UnlockExperimentalVMOptions",
+                    "-XX:+AlwaysPreTouch",
+                    "-XX:-UseCompactObjectHeaders",
+                    "-Djava.library.path=${natives_directory}",
+                    "-cp",
+                    "${classpath}"
+                ],
+                "game": ["--username", "${auth_player_name}"]
+            },
+            "libraries": []
+        }),
+    );
+    std::fs::write(root.join("versions/26.3/26.3.jar"), EMPTY_JAR).unwrap();
+    let options = Options {
+        runtimes: Some(managed_runtime(root, 28)),
+        ..Options::default()
+    };
+    let launch = prepare(root, "26.3", &Credentials::offline("Steve"), &options).unwrap();
+    let args = &launch.command.args;
+
+    assert_eq!(
+        args.iter().filter(|arg| *arg == "-XX:+UseZGC").count(),
+        1,
+        "{args:?}"
+    );
+    assert!(
+        args.iter().any(|arg| arg == "-XX:+ZAdaptiveHeapSizing"),
+        "{args:?}"
+    );
+    for dropped in [
+        "-Xms2G",
+        "-XX:+UseG1GC",
+        "-XX:G1NewSizePercent=20",
+        "-XX:+AlwaysPreTouch",
+        "-XX:-UseCompactObjectHeaders",
+    ] {
+        assert!(
+            !args.iter().any(|arg| arg == dropped),
+            "{dropped} must not survive the forced policy: {args:?}"
+        );
+    }
+    // Everything that is not about the collector is still the profile's business.
+    assert!(args
+        .iter()
+        .any(|arg| arg == "-XX:+UnlockExperimentalVMOptions"));
+    assert!(args
+        .iter()
+        .any(|arg| arg.starts_with("-Djava.library.path=")));
+
+    let main = args
+        .iter()
+        .position(|arg| arg == "net.minecraft.client.main.Main")
+        .expect("main class");
+    let zgc = args
+        .iter()
+        .position(|arg| arg == "-XX:+UseZGC")
+        .expect("zgc");
+    assert!(zgc < main, "a `-X` after the main class is a game argument");
+}
+
+#[test]
+fn the_forced_gc_policy_applies_to_versions_that_ask_for_nothing() {
+    // 1.8.9 carries no `arguments.jvm` at all; it still has to get the policy,
+    // because every version runs on the same runtime now.
+    let tmp = tempfile::tempdir().unwrap();
+    fixture(tmp.path());
+    let options = Options {
+        runtimes: Some(managed_runtime(tmp.path(), 28)),
+        ..Options::default()
+    };
+    let launch = prepare(
+        tmp.path(),
+        "1.8.9",
+        &Credentials::offline("Steve"),
+        &options,
+    )
+    .unwrap();
+
+    assert!(launch.command.args.iter().any(|arg| arg == "-XX:+UseZGC"));
+    assert!(launch
+        .command
+        .args
+        .iter()
+        .any(|arg| arg == "-XX:+ZAdaptiveHeapSizing"));
+    assert!(launch.command.args.iter().any(|arg| arg == "-Xmx2048M"));
+}
+
+#[test]
 fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

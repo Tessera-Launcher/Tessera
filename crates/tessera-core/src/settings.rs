@@ -36,7 +36,7 @@ pub enum Theme {
 pub struct Settings {
     /// Schema version of this file; see [`Settings::CURRENT_VERSION`].
     pub version: u32,
-    /// `-Xmx` in MiB.
+    /// `-Xmx` in MiB. The settings slider offers 1–16 GiB.
     pub memory_mb: u32,
     /// `--width` passed to the game.
     pub window_width: u32,
@@ -76,9 +76,10 @@ impl Settings {
     pub const CURRENT_VERSION: u32 = 1;
 
     /// The smallest heap the picker will offer, matching the GUI's slider.
-    pub const MIN_MEMORY_MB: u32 = 512;
-    /// A heap larger than this is almost certainly a typo, not a choice.
-    pub const MAX_MEMORY_MB: u32 = 65_536;
+    pub const MIN_MEMORY_MB: u32 = 1024;
+    /// A heap larger than this is almost certainly a typo, not a choice; the
+    /// settings slider offers nothing above it either.
+    pub const MAX_MEMORY_MB: u32 = 16_384;
     /// Anything outside this is not a window a game can use.
     pub const MIN_WINDOW: u32 = 320;
     pub const MAX_WINDOW: u32 = 16_384;

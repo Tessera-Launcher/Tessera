@@ -142,6 +142,9 @@ pub struct AotProgress {
     /// Classes loaded so far, and how many the classpath has in total.
     pub loaded: usize,
     pub total: usize,
+    /// The game is up and only the player can end the run: the status line keeps
+    /// asking them to quit when they are done, instead of counting classes.
+    pub playing: bool,
     /// The game is gone and the JVM is assembling the cache.
     pub assembling: bool,
     /// The last run's result, for the status line.
@@ -153,6 +156,7 @@ impl AotProgress {
     fn reset(&mut self) {
         self.loaded = 0;
         self.total = 0;
+        self.playing = false;
         self.assembling = false;
         self.note = None;
     }
@@ -548,7 +552,7 @@ impl App {
         };
         self.status = format!("准备 AOT 训练：{dir}");
         self.log(format!(
-            "开始 AOT 训练 {dir}（会启动一次游戏，训练完缓存放在版本目录里）"
+            "开始 AOT 训练 {dir}（会启动一次游戏；进游戏后想玩多久就玩多久，准备好了自己退出，缓存会更大）"
         ));
         self.request(Effect::TrainAot(dir));
     }
@@ -559,6 +563,7 @@ impl App {
         let version = match &event {
             Event::Preparing { version, .. }
             | Event::Progress { version, .. }
+            | Event::Menu { version, .. }
             | Event::Assembling { version }
             | Event::Finished { version, .. }
             | Event::Skipped { version, .. }
@@ -579,11 +584,21 @@ impl App {
                 self.aot.loaded = loaded;
                 self.aot.total = total;
                 self.aot.assembling = false;
-                self.status = if total > 0 {
+                self.status = if self.aot.playing {
+                    // The game is running: the class count is no longer the
+                    // point, the player quitting is.
+                    format!("游戏已启动：玩到你想要的深度后退出游戏（已加载 {loaded} 个类，训练会一直等到你退出）")
+                } else if total > 0 {
                     format!("AOT 训练：{loaded} / {total} 个类")
                 } else {
                     format!("AOT 训练：已加载 {loaded} 个类")
                 };
+            }
+            Event::Menu { loaded, .. } => {
+                self.aot.playing = true;
+                self.aot.loaded = loaded.max(self.aot.loaded);
+                self.status = "游戏已到主菜单：请自行退出游戏，训练会一直等到你退出".to_string();
+                self.log("游戏已到主菜单：现在开始玩。启动器不会再自动结束游戏——玩得越久，缓存里的类和方法越多。想结束时正常退出游戏即可。");
             }
             Event::Assembling { .. } => {
                 self.aot.assembling = true;
@@ -594,12 +609,19 @@ impl App {
             Event::Finished {
                 loaded,
                 total,
+                code_entries,
                 java_major,
                 java_version,
                 ..
             } => {
+                self.aot.playing = false;
+                let code = if code_entries > 0 {
+                    format!("，含 {code_entries} 段编译代码")
+                } else {
+                    String::new()
+                };
                 let note = format!(
-                    "AOT 缓存已生成（Java {java_major} {java_version}，{loaded}/{total} 个类）"
+                    "AOT 缓存已生成（Java {java_major} {java_version}，{loaded}/{total} 个类{code}）"
                 );
                 self.aot.assembling = false;
                 self.aot.note = Some(note.clone());
@@ -612,11 +634,13 @@ impl App {
             }
             Event::Skipped { reason, .. } => {
                 self.aot.note = Some(format!("跳过 AOT：{reason}"));
+                self.aot.playing = false;
                 self.aot.training = None;
                 self.status = format!("跳过 AOT：{reason}");
                 self.log(format!("跳过 AOT 训练：{reason}"));
             }
             Event::Failed { reason, .. } => {
+                self.aot.playing = false;
                 self.aot.assembling = false;
                 self.aot.note = Some(format!("AOT 训练失败：{reason}"));
                 self.aot.training = None;
