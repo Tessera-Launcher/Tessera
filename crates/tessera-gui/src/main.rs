@@ -468,18 +468,6 @@ impl Render for Launcher {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_key(event, window, cx);
             }));
-        #[cfg(target_os = "linux")]
-        let root = root.on_mouse_down(MouseButton::Left, |_, window, _| {
-            // There is no native frame to start a resize from, so treat a press
-            // on the outer few pixels as an edge drag.
-            if window.is_maximized() {
-                return;
-            }
-            let size = window.window_bounds().get_bounds().size;
-            if let Some(edge) = resize_edge(window.mouse_position(), size) {
-                window.start_window_resize(edge);
-            }
-        });
         root.child(
             div()
                 .h_flex()
@@ -550,6 +538,7 @@ impl Render for Launcher {
         )
         .child(workspace.child(content))
         .children(overlay)
+        .children((cfg!(target_os = "linux")).then(resize_overlay))
     }
 }
 
@@ -557,8 +546,8 @@ impl Render for Launcher {
 ///
 /// That plugin wraps every window in `WindowBorder`, whose 20 px shadow margin
 /// is painted solid black on X11 surfaces that do not blend ARGB. The app draws
-/// its own frame (title bar, border and resize edges), so this plugin renders
-/// the application view directly instead. The overlays that come with that
+/// its own title bar and edge resize strips, so this plugin renders the
+/// application view directly instead. The overlays that come with that
 /// plugin (tooltips, notification and dialog layers) are unused by Tessera;
 /// inline context menus live in the app view and are unaffected.
 #[cfg(target_os = "linux")]
@@ -584,29 +573,90 @@ impl gpui_kit::base::RootPlugin for FramePlugin {
     }
 }
 
-/// Which edge or corner the pointer is on, for a 5 px borderless resize band.
+/// A transparent strip that turns a press on the window edge into a resize.
 #[cfg(target_os = "linux")]
-fn resize_edge(position: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
-    const BAND: f32 = 5.0;
-    let x = position.x.as_f32();
-    let y = position.y.as_f32();
-    let width = size.width.as_f32();
-    let height = size.height.as_f32();
-    let left = x <= BAND;
-    let right = x >= width - BAND;
-    let top = y <= BAND;
-    let bottom = y >= height - BAND;
-    match (top, bottom, left, right) {
-        (true, _, true, _) => Some(ResizeEdge::TopLeft),
-        (true, _, _, true) => Some(ResizeEdge::TopRight),
-        (_, true, true, _) => Some(ResizeEdge::BottomLeft),
-        (_, true, _, true) => Some(ResizeEdge::BottomRight),
-        (true, _, _, _) => Some(ResizeEdge::Top),
-        (_, true, _, _) => Some(ResizeEdge::Bottom),
-        (_, _, true, _) => Some(ResizeEdge::Left),
-        (_, _, _, true) => Some(ResizeEdge::Right),
-        _ => None,
-    }
+fn resize_zone(edge: ResizeEdge, cursor: CursorStyle) -> Div {
+    div()
+        .cursor(cursor)
+        .on_mouse_down(MouseButton::Left, move |_, window, _| {
+            if !window.is_maximized() {
+                window.start_window_resize(edge);
+            }
+        })
+}
+
+/// Edge and corner resize strips drawn above the content.
+///
+/// `WindowBorder` used to own these, but it also brought the shadow margin that
+/// turned into a black frame. Keeping the strips as the last children means a
+/// scrollbar or footer sitting against the edge cannot swallow the press.
+#[cfg(target_os = "linux")]
+fn resize_overlay() -> Div {
+    let band = px(5.0);
+    let corner = px(10.0);
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            resize_zone(ResizeEdge::Top, CursorStyle::ResizeUpDown)
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .h(band),
+        )
+        .child(
+            resize_zone(ResizeEdge::Bottom, CursorStyle::ResizeUpDown)
+                .absolute()
+                .bottom(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .h(band),
+        )
+        .child(
+            resize_zone(ResizeEdge::Left, CursorStyle::ResizeLeftRight)
+                .absolute()
+                .top(px(0.0))
+                .bottom(px(0.0))
+                .left(px(0.0))
+                .w(band),
+        )
+        .child(
+            resize_zone(ResizeEdge::Right, CursorStyle::ResizeLeftRight)
+                .absolute()
+                .top(px(0.0))
+                .bottom(px(0.0))
+                .right(px(0.0))
+                .w(band),
+        )
+        .child(
+            resize_zone(ResizeEdge::TopLeft, CursorStyle::ResizeUpLeftDownRight)
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .size(corner),
+        )
+        .child(
+            resize_zone(ResizeEdge::TopRight, CursorStyle::ResizeUpRightDownLeft)
+                .absolute()
+                .top(px(0.0))
+                .right(px(0.0))
+                .size(corner),
+        )
+        .child(
+            resize_zone(ResizeEdge::BottomLeft, CursorStyle::ResizeUpRightDownLeft)
+                .absolute()
+                .bottom(px(0.0))
+                .left(px(0.0))
+                .size(corner),
+        )
+        .child(
+            resize_zone(ResizeEdge::BottomRight, CursorStyle::ResizeUpLeftDownRight)
+                .absolute()
+                .bottom(px(0.0))
+                .right(px(0.0))
+                .size(corner),
+        )
 }
 
 fn main() {
