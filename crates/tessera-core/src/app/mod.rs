@@ -460,15 +460,12 @@ impl App {
         app.refresh_java();
         app.launch_options.runtimes = Some(app.runtimes.clone());
 
-        app.log(format!(
-            "本地版本 {} 个 · 已保存账户 {} 个",
-            app.versions.len(),
-            app.accounts.len()
-        ));
+        // Start from the newest saved account; `restore_account` applies the
+        // one recorded in the settings file once the front-end has loaded it.
         if let Some(newest) = app.accounts.last().cloned() {
             app.set_account(Account::from_saved(&newest));
-            app.log(format!("使用已保存账户 {}", newest.label()));
         }
+        app.log("Welcome to Tessera Launcher!");
         app
     }
 
@@ -1139,12 +1136,8 @@ impl App {
         match found {
             Some(index) => {
                 let saved = self.accounts[index].clone();
-                let already = self.account.file() == Some(saved.file.as_path());
                 self.set_account(Account::from_saved(&saved));
                 self.accounts_ui.selected = index;
-                if !already {
-                    self.log(format!("恢复上次账户：{}", saved.label()));
-                }
             }
             None => {
                 let current = self.account.clone();
