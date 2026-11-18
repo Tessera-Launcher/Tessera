@@ -213,11 +213,8 @@ impl Launcher {
             Some(library) => {
                 let missing = library.missing();
                 let summary = format!(
-                    "{} · {} {} 首 · 索引 {} · {}{}",
+                    "{} · {}{}",
                     library.version,
-                    library.kind.label(),
-                    library.tracks.len(),
-                    library.index,
                     discover::human_size(library.total_size()),
                     if missing > 0 {
                         format!(" · {missing} 个文件缺失")
@@ -380,13 +377,19 @@ impl Launcher {
             )
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_w(px(layout::SLIDER_MIN))
-                    .border(px(stroke::THIN))
-                    .border_color(rgb(if progress_focused {
-                        colors.border_focus
-                    } else {
-                        colors.canvas
+                    .children(progress_focused.then(|| {
+                        div()
+                            .absolute()
+                            .top(px(-4.0))
+                            .bottom(px(-4.0))
+                            .left(px(-4.0))
+                            .right(px(-4.0))
+                            .border(px(stroke::THIN))
+                            .border_color(rgb(colors.border_focus))
+                            .rounded(px(radius::SM))
                     }))
                     .child(
                         Slider::new(&progress)
@@ -410,13 +413,19 @@ impl Launcher {
             )
             .child(
                 div()
+                    .relative()
                     .w(px(layout::VOLUME_WIDTH))
                     .flex_shrink_0()
-                    .border(px(stroke::THIN))
-                    .border_color(rgb(if volume_focused {
-                        colors.border_focus
-                    } else {
-                        colors.canvas
+                    .children(volume_focused.then(|| {
+                        div()
+                            .absolute()
+                            .top(px(-4.0))
+                            .bottom(px(-4.0))
+                            .left(px(-4.0))
+                            .right(px(-4.0))
+                            .border(px(stroke::THIN))
+                            .border_color(rgb(colors.border_focus))
+                            .rounded(px(radius::SM))
                     }))
                     .child(
                         Slider::new(&volume)
