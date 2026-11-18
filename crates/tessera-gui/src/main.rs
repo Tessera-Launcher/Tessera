@@ -486,77 +486,82 @@ impl Render for Launcher {
                     focus::clear(cx);
                 }),
             );
-        root.child(
-            div()
-                .h_flex()
-                .h(TITLE_BAR_HEIGHT)
-                .flex_shrink_0()
-                .items_center()
-                .bg(rgb(colors.canvas))
-                .border_b(px(stroke::THIN))
-                .border_color(rgb(colors.border_default))
-                .child(
-                    div()
-                        .h_flex()
-                        .flex_1()
-                        .h_full()
-                        .items_center()
-                        .gap(px(space::SM))
-                        .pl(px(space::MD))
-                        // X11 and Wayland ignore `window_control_area` for
-                        // dragging, so move the window on the mouse-down
-                        // like gpui-component's own title bar does. Windows
-                        // uses the hit-test area below; its
-                        // `start_window_move` is a no-op, so keeping both
-                        // paths is safe.
-                        .window_control_area(WindowControlArea::Drag)
-                        .on_mouse_down(MouseButton::Left, |_, window, _| {
-                            window.start_window_move();
-                        })
-                        .child(
-                            div()
-                                .text_size(px(font::TITLE))
-                                .line_height(relative(font::LINE_HEIGHT_TITLE))
-                                .font_weight(FontWeight(weight::BOLD))
-                                .text_color(rgb(colors.text_accent))
-                                .child("Tessera"),
-                        ),
-                )
-                .child(titlebar_button(
-                    "titlebar-minimize",
-                    TitlebarAction::Minimize,
-                    WindowControlArea::Min,
-                    TitlebarIcon::Minimize,
-                    colors.text_primary,
-                    colors.hover,
-                    cx,
-                ))
-                .child(titlebar_button(
-                    "titlebar-maximize",
-                    TitlebarAction::Maximize,
-                    WindowControlArea::Max,
-                    if window.is_maximized() {
-                        TitlebarIcon::Restore
-                    } else {
-                        TitlebarIcon::Maximize
-                    },
-                    colors.text_primary,
-                    colors.hover,
-                    cx,
-                ))
-                .child(titlebar_button(
-                    "titlebar-close",
-                    TitlebarAction::Close,
-                    WindowControlArea::Close,
-                    TitlebarIcon::Close,
-                    colors.text_primary,
-                    colors.hover,
-                    cx,
-                )),
-        )
-        .child(workspace.child(content))
-        .children(overlay)
-        .children((cfg!(target_os = "linux")).then(resize_overlay))
+        let root = root
+            .child(
+                div()
+                    .h_flex()
+                    .h(TITLE_BAR_HEIGHT)
+                    .flex_shrink_0()
+                    .items_center()
+                    .bg(rgb(colors.canvas))
+                    .border_b(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
+                    .child(
+                        div()
+                            .h_flex()
+                            .flex_1()
+                            .h_full()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .pl(px(space::MD))
+                            // X11 and Wayland ignore `window_control_area` for
+                            // dragging, so move the window on the mouse-down
+                            // like gpui-component's own title bar does. Windows
+                            // uses the hit-test area below; its
+                            // `start_window_move` is a no-op, so keeping both
+                            // paths is safe.
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.start_window_move();
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(font::TITLE))
+                                    .line_height(relative(font::LINE_HEIGHT_TITLE))
+                                    .font_weight(FontWeight(weight::BOLD))
+                                    .text_color(rgb(colors.text_accent))
+                                    .child("Tessera"),
+                            ),
+                    )
+                    .child(titlebar_button(
+                        "titlebar-minimize",
+                        TitlebarAction::Minimize,
+                        WindowControlArea::Min,
+                        TitlebarIcon::Minimize,
+                        colors.text_primary,
+                        colors.hover,
+                        cx,
+                    ))
+                    .child(titlebar_button(
+                        "titlebar-maximize",
+                        TitlebarAction::Maximize,
+                        WindowControlArea::Max,
+                        if window.is_maximized() {
+                            TitlebarIcon::Restore
+                        } else {
+                            TitlebarIcon::Maximize
+                        },
+                        colors.text_primary,
+                        colors.hover,
+                        cx,
+                    ))
+                    .child(titlebar_button(
+                        "titlebar-close",
+                        TitlebarAction::Close,
+                        WindowControlArea::Close,
+                        TitlebarIcon::Close,
+                        colors.text_primary,
+                        colors.hover,
+                        cx,
+                    )),
+            )
+            .child(workspace.child(content))
+            .children(overlay);
+        // Resize strips replace the ones inside component's WindowBorder, which
+        // the FramePlugin drops on Linux.
+        #[cfg(target_os = "linux")]
+        let root = root.child(resize_overlay());
+        root
     }
 }
 
