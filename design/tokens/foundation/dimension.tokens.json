@@ -90,13 +90,13 @@
     },
     "sidebar": {
       "$value": {
-        "value": 208,
+        "value": 184,
         "unit": "px"
       }
     },
     "details": {
       "$value": {
-        "value": 380,
+        "value": 352,
         "unit": "px"
       }
     },
@@ -108,7 +108,7 @@
     },
     "musicVersions": {
       "$value": {
-        "value": 240,
+        "value": 220,
         "unit": "px"
       }
     },
@@ -132,7 +132,7 @@
     },
     "rowHeight": {
       "$value": {
-        "value": 40,
+        "value": 36,
         "unit": "px"
       }
     },

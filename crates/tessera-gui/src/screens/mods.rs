@@ -82,7 +82,7 @@ impl Launcher {
             .v_flex()
             .size_full()
             .min_h(px(0.0))
-            .p(px(space::MD))
+            .p(px(space::XS))
             .track_scroll(&self.mods_scroll)
             .overflow_y_scroll();
         if mods.searching {
@@ -134,11 +134,12 @@ impl Launcher {
                     .gap(px(space::MD))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
+                    .border_b(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
                     .bg(rgb(if picked {
                         colors.selected
                     } else {
-                        colors.surface
+                        colors.canvas
                     }))
                     .cursor_pointer()
                     .hover(move |style| style.bg(rgb(colors.hover)))
@@ -282,8 +283,8 @@ impl Launcher {
             .v_flex()
             .size_full()
             .min_h(px(0.0))
-            .gap(px(space::SM))
-            .p(px(space::MD))
+            .gap(px(space::XXS))
+            .px(px(space::XS))
             .track_scroll(&self.mods_detail_scroll)
             .overflow_y_scroll();
 
@@ -356,11 +357,12 @@ impl Launcher {
                         .gap(px(space::MD))
                         .px(px(space::MD))
                         .py(px(space::SM))
-                        .rounded(px(radius::SM))
+                        .border_b(px(stroke::THIN))
+                        .border_color(rgb(colors.border_default))
                         .bg(rgb(if picked {
                             colors.selected
                         } else {
-                            colors.raised
+                            colors.canvas
                         }))
                         .cursor_pointer()
                         .hover(move |style| style.bg(rgb(colors.hover)))
@@ -449,8 +451,8 @@ impl Launcher {
             .v_flex()
             .size_full()
             .min_h(px(0.0))
-            .gap(px(space::XS))
-            .p(px(space::MD))
+            .gap(px(space::XXS))
+            .p(px(space::XS))
             .track_scroll(&self.mods_installed_scroll)
             .overflow_y_scroll();
         if mods.installed.is_empty() {
@@ -468,10 +470,10 @@ impl Launcher {
                     .h_flex()
                     .items_center()
                     .gap(px(space::SM))
-                    .rounded(px(radius::SM))
-                    .bg(rgb(colors.raised))
+                    .border_b(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
                     .px(px(space::SM))
-                    .py(px(space::XS))
+                    .py(px(space::SM))
                     .child(
                         div()
                             .v_flex()
@@ -610,8 +612,8 @@ fn mod_icon_letter(colors: &'static color::Palette, initial: &str) -> AnyElement
     div()
         .w(px(40.0))
         .h(px(40.0))
-        .rounded(px(radius::SM))
-        .bg(rgb(colors.raised))
+        .border(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
         .flex()
         .items_center()
         .justify_center()

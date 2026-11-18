@@ -32,11 +32,10 @@ impl Launcher {
                     .id(format!("filter-{}", filter.label()))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
                     .bg(rgb(if picked {
                         colors.fill_primary
                     } else {
-                        colors.raised
+                        colors.canvas
                     }))
                     .text_color(rgb(if picked {
                         colors.text_on_fill
@@ -84,7 +83,7 @@ impl Launcher {
             .v_flex()
             .size_full()
             .min_h(px(0.0))
-            .p(px(space::MD))
+            .p(px(space::XS))
             .track_scroll(&self.download_scroll)
             .overflow_y_scroll();
 
@@ -152,11 +151,12 @@ impl Launcher {
                                 .px(px(space::MD))
                                 .h(px(ROW_HEIGHT))
                                 .flex_shrink_0()
-                                .rounded(px(radius::SM))
+                                .border_b(px(stroke::THIN))
+                                .border_color(rgb(colors.border_default))
                                 .bg(if picked {
                                     rgb(colors.selected)
                                 } else {
-                                    rgb(colors.surface)
+                                    rgb(colors.canvas)
                                 })
                                 .min_h(px(layout::ROW_HEIGHT))
                                 .cursor_pointer()
@@ -211,8 +211,9 @@ impl Launcher {
                                 .px(px(space::MD))
                                 .h(px(ROW_HEIGHT))
                                 .flex_shrink_0()
-                                .rounded(px(radius::SM))
-                                .bg(rgb(colors.surface))
+                                .border_b(px(stroke::THIN))
+                                .border_color(rgb(colors.border_default))
+                                .bg(rgb(colors.canvas))
                                 .on_click(cx.listener(
                                     move |this: &mut Launcher, _event, _window, cx| {
                                         this.state.download.picked = first;
@@ -262,7 +263,7 @@ impl Launcher {
                 ),
             );
 
-        let mut loaders = div().v_flex().gap(px(space::XS)).p(px(space::MD));
+        let mut loaders = div().v_flex().p(px(space::XS));
         let selected_version = download
             .picked_version()
             .map(|version| version.id.as_str())
@@ -282,11 +283,12 @@ impl Launcher {
                     .gap(px(space::MD))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
+                    .border_b(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
                     .bg(if picked {
                         rgb(colors.selected)
                     } else {
-                        rgb(colors.surface)
+                        rgb(colors.canvas)
                     })
                     .min_h(px(layout::ROW_HEIGHT))
                     .cursor_pointer()

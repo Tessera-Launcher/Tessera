@@ -268,12 +268,16 @@ impl Launcher {
                     .gap(px(space::MD))
                     .child(
                         div()
-                            .w(px(layout::DETAILS))
+                            .v_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
                             .child(panel_fit(colors, "Java", card)),
                     )
                     .child(
                         div()
-                            .w(px(layout::DETAILS))
+                            .v_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
                             .child(panel_fit(colors, "aria2", aria2_card)),
                     ),
             )

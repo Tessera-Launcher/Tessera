@@ -13,7 +13,7 @@
   --layout-checkbox: 16px;
   --layout-clock-width: 44px;
   --layout-control-height: 36px;
-  --layout-details: 380px;
+  --layout-details: 352px;
   --layout-dialog: 480px;
   --layout-indicator-height: 16px;
   --layout-indicator-width: 3px;
@@ -23,12 +23,12 @@
   --layout-metadata-width: 64px;
   --layout-min-height: 640px;
   --layout-min-width: 960px;
-  --layout-music-versions: 240px;
+  --layout-music-versions: 220px;
   --layout-panel-height: 272px;
   --layout-progress-height: 8px;
   --layout-progress-max: 280px;
-  --layout-row-height: 40px;
-  --layout-sidebar: 208px;
+  --layout-row-height: 36px;
+  --layout-sidebar: 184px;
   --layout-slider-min: 80px;
   --layout-status-dot: 8px;
   --layout-track-group: 52px;

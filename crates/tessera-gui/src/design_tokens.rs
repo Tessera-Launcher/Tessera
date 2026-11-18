@@ -19,7 +19,7 @@ pub mod layout {
     pub const CHECKBOX: f32 = 16.0;
     pub const CLOCK_WIDTH: f32 = 44.0;
     pub const CONTROL_HEIGHT: f32 = 36.0;
-    pub const DETAILS: f32 = 380.0;
+    pub const DETAILS: f32 = 352.0;
     pub const DIALOG: f32 = 480.0;
     pub const INDICATOR_HEIGHT: f32 = 16.0;
     pub const INDICATOR_WIDTH: f32 = 3.0;
@@ -29,12 +29,12 @@ pub mod layout {
     pub const METADATA_WIDTH: f32 = 64.0;
     pub const MIN_HEIGHT: f32 = 640.0;
     pub const MIN_WIDTH: f32 = 960.0;
-    pub const MUSIC_VERSIONS: f32 = 240.0;
+    pub const MUSIC_VERSIONS: f32 = 220.0;
     pub const PANEL_HEIGHT: f32 = 272.0;
     pub const PROGRESS_HEIGHT: f32 = 8.0;
     pub const PROGRESS_MAX: f32 = 280.0;
-    pub const ROW_HEIGHT: f32 = 40.0;
-    pub const SIDEBAR: f32 = 208.0;
+    pub const ROW_HEIGHT: f32 = 36.0;
+    pub const SIDEBAR: f32 = 184.0;
     pub const SLIDER_MIN: f32 = 80.0;
     pub const STATUS_DOT: f32 = 8.0;
     pub const TRACK_GROUP: f32 = 52.0;

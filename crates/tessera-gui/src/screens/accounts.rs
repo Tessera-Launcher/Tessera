@@ -12,8 +12,7 @@ impl Launcher {
         let mut list = div()
             .id("accounts")
             .v_flex()
-            .gap(px(space::XS))
-            .p(px(space::MD))
+            .p(px(space::XS))
             .overflow_y_scroll();
         if self.state.accounts.is_empty() {
             list = list.child(
@@ -38,11 +37,12 @@ impl Launcher {
                     .gap(px(space::MD))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
+                    .border_b(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
                     .bg(if selected {
                         rgb(colors.selected)
                     } else {
-                        rgb(colors.surface)
+                        rgb(colors.canvas)
                     })
                     .min_h(px(layout::ROW_HEIGHT))
                     .cursor_pointer()

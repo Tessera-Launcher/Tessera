@@ -4,6 +4,58 @@ use crate::widgets::*;
 use crate::*;
 
 impl Launcher {
+    /// Create the heap slider once, seeded from the saved `-Xmx`.
+    ///
+    /// Values are in GiB because that is what a player thinks in; the state
+    /// machine and the settings file keep MiB.
+    fn ensure_memory_slider(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SliderState> {
+        let _ = window;
+        if let Some(state) = &self.memory_slider {
+            return state.clone();
+        }
+        let min = tessera_core::settings::Settings::MIN_MEMORY_MB as f32 / 1024.0;
+        let max = tessera_core::settings::Settings::MAX_MEMORY_MB as f32 / 1024.0;
+        let start = self.state.settings.memory_mb as f32 / 1024.0;
+        let state = cx.new(|_| {
+            SliderState::new()
+                .min(min)
+                .max(max)
+                .step(0.5)
+                .default_value(start)
+        });
+        self.memory_slider_sub = Some(cx.subscribe(
+            &state,
+            |this: &mut Launcher, _state, event: &SliderEvent, cx| {
+                let gib = match event {
+                    SliderEvent::Change(value) | SliderEvent::Release(value) => match value {
+                        SliderValue::Single(gib) => *gib,
+                        SliderValue::Range(start, _) => *start,
+                    },
+                };
+                // The slider cannot leave the range, but a half-GiB step is not
+                // guaranteed to land on a whole MiB once it is converted.
+                let megabytes = ((gib * 1024.0).round() as u32).clamp(
+                    tessera_core::settings::Settings::MIN_MEMORY_MB,
+                    tessera_core::settings::Settings::MAX_MEMORY_MB,
+                );
+                if this.state.settings.memory_mb == megabytes {
+                    return;
+                }
+                this.state.settings.memory_mb = megabytes;
+                // `launch_options` is the copy the launcher passes to the JVM,
+                // so it has to follow or the slider would not reach `-Xmx`.
+                this.state.launch_options.memory_mb = megabytes;
+                this.refresh(cx);
+            },
+        ));
+        self.memory_slider = Some(state.clone());
+        state
+    }
+
     /// Create the GitHub proxy field once, seeded from the saved value.
     fn ensure_github_proxy(
         &mut self,
@@ -41,6 +93,8 @@ impl Launcher {
             tessera_core::settings::Theme::Dark
         };
         let proxy = self.ensure_github_proxy(window, cx);
+        let heap = self.ensure_memory_slider(window, cx);
+        let heap_gib = self.state.settings.memory_mb as f32 / 1024.0;
         let disk_busy = self.state.disk.busy;
         let disk_note = if disk_busy {
             "正在清理，请稍候…".to_string()
@@ -76,6 +130,39 @@ impl Launcher {
                 this.state.settings.theme = next;
                 this.refresh(cx);
             }));
+
+        let memory = div()
+            .v_flex()
+            .gap(px(space::SM))
+            .p(px(space::LG))
+            .child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child(
+                        "游戏堆上限（-Xmx）。启动器固定用 ZGC，并在这个上限内自适应实际用量；1–16 GB。",
+                    ),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(space::MD))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(layout::SLIDER_MIN))
+                            .child(Slider::new(&heap).horizontal().bg(rgb(colors.fill_primary))),
+                    )
+                    .child(
+                        div()
+                            .w(px(72.0))
+                            .flex_shrink_0()
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.text_primary))
+                            .child(format!("{heap_gib:.1} GB")),
+                    ),
+            );
 
         let download = div()
             .v_flex()
@@ -179,9 +266,13 @@ impl Launcher {
             .id("settings")
             .flex_1()
             .min_h(px(0.0))
+            // Four panels do not fit the minimum window height, and the smallest
+            // one still has to be reachable.
+            .overflow_y_scroll()
             .gap(px(space::MD))
             .child(screen_title(colors, "设置"))
             .child(panel_fit(colors, "外观", appearance))
+            .child(panel_fit(colors, "游戏内存", memory))
             .child(panel_fit(colors, "下载", download))
             .child(panel_fit(colors, "磁盘清理", disk))
     }

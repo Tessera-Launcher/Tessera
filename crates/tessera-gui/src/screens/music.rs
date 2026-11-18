@@ -25,8 +25,7 @@ impl Launcher {
         let mut versions = div()
             .id("music-versions")
             .v_flex()
-            .gap(px(space::XS))
-            .p(px(space::MD))
+            .p(px(space::XS))
             .size_full()
             .min_h(px(0.0))
             .overflow_y_scroll();
@@ -52,11 +51,12 @@ impl Launcher {
                     .gap(px(space::MD))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
+                    .border_b(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
                     .bg(rgb(if focused {
                         colors.selected
                     } else {
-                        colors.surface
+                        colors.canvas
                     }))
                     .min_h(px(layout::ROW_HEIGHT))
                     .cursor_pointer()
@@ -80,8 +80,7 @@ impl Launcher {
         let mut tracks = div()
             .id("music-tracks")
             .v_flex()
-            .gap(px(space::XS))
-            .p(px(space::MD))
+            .p(px(space::XS))
             .size_full()
             .min_h(px(0.0))
             .overflow_y_scroll();
@@ -101,11 +100,12 @@ impl Launcher {
                         .gap(px(space::MD))
                         .px(px(space::MD))
                         .py(px(space::SM))
-                        .rounded(px(radius::SM))
+                        .border_b(px(stroke::THIN))
+                        .border_color(rgb(colors.border_default))
                         .bg(rgb(if focused {
                             colors.selected
                         } else {
-                            colors.surface
+                            colors.canvas
                         }))
                         .min_h(px(layout::ROW_HEIGHT))
                         .cursor_pointer()
@@ -126,11 +126,10 @@ impl Launcher {
                             div()
                                 .w(px(layout::INDICATOR_WIDTH))
                                 .h(px(layout::INDICATOR_HEIGHT))
-                                .rounded(px(radius::PILL))
                                 .bg(rgb(if selected {
                                     colors.fill_primary
                                 } else {
-                                    colors.surface
+                                    colors.canvas
                                 })),
                         )
                         .child(
@@ -277,8 +276,9 @@ impl Launcher {
             .h_flex()
             .items_center()
             .gap(px(space::MD))
-            .px(px(space::LG))
-            .py(px(space::SM))
+            .pt(px(space::SM))
+            .border_t(px(stroke::THIN))
+            .border_color(rgb(colors.border_default))
             .child(self.music_kind_switch(kind, cx))
             .child(
                 div()
@@ -288,8 +288,8 @@ impl Launcher {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(radius::SM))
-                    .bg(rgb(colors.raised))
+                    .border(px(stroke::THIN))
+                    .border_color(rgb(colors.border_default))
                     .text_color(rgb(colors.text_accent))
                     .child(if playing { "⏸" } else { "▶" })
                     .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
@@ -337,7 +337,6 @@ impl Launcher {
                     .id("music-order")
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
                     .border(px(stroke::THIN))
                     .border_color(rgb(colors.border_default))
                     .text_size(px(font::CAPTION))
@@ -365,18 +364,17 @@ impl Launcher {
                     .id(format!("music-kind-{kind:?}"))
                     .px(px(space::MD))
                     .py(px(space::SM))
-                    .rounded(px(radius::SM))
                     .bg(rgb(if picked {
                         colors.selected
                     } else {
-                        colors.surface
+                        colors.canvas
                     }))
                     .min_h(px(layout::ROW_HEIGHT))
                     .cursor_pointer()
                     .hover(move |style| style.bg(rgb(colors.hover)))
-                    .border(px(stroke::THIN))
+                    .border_b(px(stroke::THIN))
                     .border_color(rgb(if picked {
-                        colors.border_focus
+                        colors.fill_primary
                     } else {
                         colors.border_default
                     }))

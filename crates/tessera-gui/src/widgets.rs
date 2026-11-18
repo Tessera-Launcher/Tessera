@@ -109,6 +109,28 @@ pub(crate) fn log_pane(
     panel(colors, title, shell, true)
 }
 
+/// A section heading: a quiet label over a single hairline.
+///
+/// Sections replace the old bordered cards. They keep the same semantic
+/// grouping without painting a container, so the page reads as one surface.
+fn section_header(colors: &'static color::Palette, title: &str) -> Div {
+    div()
+        .h_flex()
+        .items_center()
+        .gap(px(space::MD))
+        .pb(px(space::SM))
+        .border_b(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
+        .child(
+            div()
+                .text_size(px(font::CAPTION))
+                .line_height(relative(font::LINE_HEIGHT_CAPTION))
+                .font_weight(FontWeight(weight::SEMIBOLD))
+                .text_color(rgb(colors.text_secondary))
+                .child(title.to_string()),
+        )
+}
+
 /// A panel whose height follows its content (no fixed body height).
 pub(crate) fn panel_fit(
     colors: &'static color::Palette,
@@ -117,19 +139,9 @@ pub(crate) fn panel_fit(
 ) -> impl IntoElement {
     div()
         .v_flex()
-        .rounded(px(radius::MD))
-        .border(px(stroke::THIN))
-        .border_color(rgb(colors.border_default))
-        .bg(rgb(colors.surface))
-        .overflow_hidden()
-        .child(
-            div()
-                .px(px(space::LG))
-                .py(px(space::SM))
-                .text_size(px(font::CAPTION))
-                .text_color(rgb(colors.text_secondary))
-                .child(title.to_string()),
-        )
+        .w_full()
+        .min_h(px(0.0))
+        .child(section_header(colors, title))
         .child(body)
 }
 
@@ -139,38 +151,25 @@ pub(crate) fn panel(
     body: impl IntoElement,
     grow: bool,
 ) -> impl IntoElement {
-    let mut outer = div()
-        .v_flex()
-        .min_h(px(0.0))
-        .rounded(px(radius::MD))
-        .border(px(stroke::THIN))
-        .border_color(rgb(colors.border_default))
-        .bg(rgb(colors.surface))
-        .overflow_hidden();
+    let mut outer = div().v_flex().w_full().min_h(px(0.0));
     outer = if grow {
         outer.flex_1().h_full()
     } else {
         outer.h(px(layout::PANEL_HEIGHT))
     };
     outer
-        .child(
-            div()
-                .px(px(space::LG))
-                .py(px(space::SM))
-                .text_size(px(font::CAPTION))
-                .text_color(rgb(colors.text_secondary))
-                .child(title.to_string()),
-        )
+        .child(section_header(colors, title))
         .child(div().flex_1().min_h(px(0.0)).child(body))
 }
 
 pub(crate) fn chip(colors: &'static color::Palette, label: &str, color: u32) -> impl IntoElement {
     div()
-        .px(px(space::SM))
-        .rounded(px(radius::SM))
-        .bg(rgb(colors.raised))
+        .px(px(space::XS))
         .text_size(px(font::CAPTION))
+        .line_height(relative(font::LINE_HEIGHT_CAPTION))
         .text_color(rgb(color))
+        .border(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
         .child(label.to_string())
 }
 
@@ -179,12 +178,8 @@ pub(crate) fn screen_title(colors: &'static color::Palette, text: &str) -> impl 
         .h_flex()
         .items_center()
         .gap(px(space::MD))
-        .px(px(space::LG))
-        .py(px(space::MD))
-        .rounded(px(radius::MD))
-        .bg(rgb(colors.surface))
-        .border(px(stroke::THIN))
-        .border_color(rgb(colors.border_default))
+        .pt(px(space::XS))
+        .pb(px(space::XS))
         .child(
             div()
                 .text_size(px(font::TITLE))
@@ -200,8 +195,9 @@ pub(crate) fn footer_bar(colors: &'static color::Palette, status: &str) -> Div {
         .h_flex()
         .items_center()
         .gap(px(space::MD))
-        .px(px(space::LG))
-        .py(px(space::SM))
+        .pt(px(space::SM))
+        .border_t(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
         .text_size(px(font::CAPTION))
         .child(
             div()
@@ -249,10 +245,15 @@ pub(crate) fn choice_row(
         .hover(move |style| style.bg(rgb(colors.hover)))
         .v_flex()
         .gap(px(space::XXS))
-        .px(px(space::MD))
+        .px(px(space::SM))
         .py(px(space::SM))
-        .rounded(px(radius::SM))
-        .bg(rgb(colors.raised))
+        .border_b(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
+        .bg(rgb(if selected {
+            colors.selected
+        } else {
+            colors.canvas
+        }))
         .on_click(
             cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                 action(this, cx);
@@ -346,15 +347,31 @@ fn action_button(
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
 ) -> impl IntoElement {
     let colors = theme::colors(cx);
-    let (background, foreground, hover) = match (kind, enabled) {
-        (_, false) => (colors.raised, colors.text_secondary, colors.raised),
+    let (background, border, foreground, hover) = match (kind, enabled) {
+        (_, false) => (
+            colors.canvas,
+            colors.border_default,
+            colors.text_secondary,
+            colors.canvas,
+        ),
         (ButtonKind::Primary, true) => (
+            colors.fill_primary,
             colors.fill_primary,
             colors.text_on_fill,
             colors.fill_primary_hover,
         ),
-        (ButtonKind::Neutral, true) => (colors.raised, colors.text_primary, colors.hover),
-        (ButtonKind::Danger, true) => (colors.raised, colors.status_danger, colors.hover),
+        (ButtonKind::Neutral, true) => (
+            colors.canvas,
+            colors.border_default,
+            colors.text_primary,
+            colors.hover,
+        ),
+        (ButtonKind::Danger, true) => (
+            colors.canvas,
+            colors.border_default,
+            colors.status_danger,
+            colors.hover,
+        ),
     };
     let mut button = div()
         .id(label.to_string())
@@ -366,15 +383,15 @@ fn action_button(
         .py(px(space::SM))
         .rounded(px(radius::SM))
         .border(px(stroke::THIN))
-        .border_color(rgb(background))
+        .border_color(rgb(border))
         .bg(rgb(background))
         .text_size(px(font::BODY))
         .text_color(rgb(foreground))
-        .font_weight(FontWeight(weight::SEMIBOLD));
+        .font_weight(FontWeight(weight::MEDIUM));
     if enabled {
         button = button
             .cursor_pointer()
-            .hover(move |style| style.bg(rgb(hover)).border_color(rgb(hover)))
+            .hover(move |style| style.bg(rgb(hover)))
             .on_click(
                 cx.listener(move |this: &mut Launcher, _event, _window, cx| {
                     action(this, cx);

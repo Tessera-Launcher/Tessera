@@ -123,6 +123,9 @@ struct Launcher {
     music_progress_sub: Option<Subscription>,
     music_volume: Option<Entity<SliderState>>,
     music_volume_sub: Option<Subscription>,
+    /// The settings page's heap slider, created on first use for the same reason.
+    memory_slider: Option<Entity<SliderState>>,
+    memory_slider_sub: Option<Subscription>,
     /// True while the pointer drags the progress bar, so the clock does not fight
     /// the drag by writing the position back into the slider.
     music_seeking: bool,
@@ -287,6 +290,8 @@ impl Launcher {
             music_volume_sub: None,
             music_seeking: false,
             music_progress_seen: 0.0,
+            memory_slider: None,
+            memory_slider_sub: None,
             settings_path,
             cache_dir,
             settings_saved,
@@ -381,8 +386,19 @@ impl Render for Launcher {
             .child(body);
         // Login is a flow of its own: the sidebar would invite navigating away
         // mid-login, so it only frames the four pages.
-        let sidebar =
-            (!self.blocked && self.state.screen != Screen::Login).then(|| self.sidebar(cx));
+        let sidebar = (!self.blocked && self.state.screen != Screen::Login)
+            .then(|| self.sidebar(cx).into_any_element());
+        let workspace = div()
+            .h_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .p(px(space::MD))
+            .gap(px(space::MD));
+        let workspace = if let Some(sidebar) = sidebar {
+            workspace.child(sidebar)
+        } else {
+            workspace
+        };
         div()
             .v_flex()
             .relative()
@@ -438,16 +454,7 @@ impl Render for Launcher {
                         colors.hover,
                     )),
             )
-            .child(
-                div()
-                    .h_flex()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .p(px(space::MD))
-                    .gap(px(space::MD))
-                    .children(sidebar)
-                    .child(content),
-            )
+            .child(workspace.child(content))
             .children(overlay)
     }
 }

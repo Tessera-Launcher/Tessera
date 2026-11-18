@@ -73,12 +73,7 @@ impl Launcher {
             .h_flex()
             .items_center()
             .gap(px(space::MD))
-            .px(px(space::LG))
-            .py(px(space::MD))
-            .rounded(px(radius::MD))
-            .bg(rgb(colors.surface))
-            .border(px(stroke::THIN))
-            .border_color(rgb(colors.border_default))
+            .pb(px(space::XS))
             .child(
                 div()
                     .text_size(px(font::TITLE))
@@ -101,10 +96,6 @@ impl Launcher {
             )
             .child(
                 div()
-                    .px(px(space::MD))
-                    .py(px(space::SM))
-                    .rounded(px(radius::SM))
-                    .bg(rgb(colors.raised))
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_accent))
                     .child(self.state.account.label()),
@@ -119,8 +110,7 @@ impl Launcher {
             .id("version-list")
             .relative()
             .v_flex()
-            .gap(px(space::XS))
-            .p(px(space::MD))
+            .p(px(space::XS))
             // Fill the panel body so right-clicking below the last row still
             // hits this list, not the panel behind it.
             .size_full()
@@ -182,11 +172,12 @@ impl Launcher {
                         .gap(px(space::MD))
                         .px(px(space::MD))
                         .py(px(space::SM))
-                        .rounded(px(radius::SM))
+                        .border_b(px(stroke::THIN))
+                        .border_color(rgb(colors.border_default))
                         .bg(if selected {
                             rgb(colors.selected)
                         } else {
-                            rgb(colors.surface)
+                            rgb(colors.canvas)
                         })
                         .min_h(px(layout::ROW_HEIGHT))
                         .cursor_pointer()
@@ -299,7 +290,7 @@ impl Launcher {
                 );
             }
         }
-        panel(colors, "详情", body, false)
+        panel_fit(colors, "详情", body)
     }
 
     fn log_panel(&mut self, colors: &'static color::Palette) -> impl IntoElement {
@@ -327,12 +318,13 @@ impl Launcher {
                             .v_flex()
                             .w(px(layout::DETAILS))
                             .h_full()
-                            .gap(px(space::MD))
                             .min_h(px(0.0))
-                            .child(self.details(colors))
-                            .child(self.log_panel(colors)),
+                            .child(self.details(colors)),
                     ),
             )
+            // The log is a full-width strip under both columns: its lines are
+            // paths, which need the room far more than the detail column does.
+            .child(div().h(px(150.0)).child(self.log_panel(colors)))
             .child(
                 footer_bar(colors, &self.state.status)
                     // Training is voluntary: it costs a game start and a cache

@@ -73,26 +73,19 @@ impl Page {
             .h_flex()
             .items_center()
             .gap(px(space::MD))
-            .px(px(space::MD))
-            .py(px(space::MD))
-            .rounded(px(radius::MD))
-            .bg(rgb(if picked {
-                colors.selected
-            } else {
-                colors.surface
-            }))
-            .min_h(px(layout::ROW_HEIGHT))
+            .px(px(space::SM))
+            .py(px(space::SM))
+            .min_h(px(34.0))
             .cursor_pointer()
             .hover(move |style| style.bg(rgb(colors.hover)))
             .child(
                 div()
                     .w(px(layout::INDICATOR_WIDTH))
                     .h(px(layout::INDICATOR_HEIGHT))
-                    .rounded(px(radius::PILL))
                     .bg(rgb(if picked {
                         colors.fill_primary
                     } else {
-                        colors.surface
+                        colors.canvas
                     })),
             )
             .child(
@@ -102,6 +95,11 @@ impl Page {
                         colors.text_primary
                     } else {
                         colors.text_secondary
+                    }))
+                    .font_weight(FontWeight(if picked {
+                        weight::SEMIBOLD
+                    } else {
+                        weight::REGULAR
                     }))
                     .child(self.label()),
             )
@@ -137,7 +135,7 @@ impl Launcher {
     pub(crate) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
         let active = Page::of(self.state.screen);
-        let mut nav = div().v_flex().gap(px(space::XS));
+        let mut nav = div().v_flex();
         for page in Page::ALL {
             nav = nav.child(page.row(page == active, colors, cx));
         }
@@ -146,11 +144,9 @@ impl Launcher {
             .v_flex()
             .w(px(layout::SIDEBAR))
             .h_full()
-            .p(px(space::MD))
+            .pt(px(space::XS))
             .gap(px(space::XL))
-            .rounded(px(radius::MD))
-            .bg(rgb(colors.surface))
-            .border(px(stroke::THIN))
+            .border_r(px(stroke::THIN))
             .border_color(rgb(colors.border_default))
             .child(nav)
             .child(div().flex_1())
@@ -158,7 +154,7 @@ impl Launcher {
                 div()
                     .v_flex()
                     .gap(px(space::XXS))
-                    .px(px(space::MD))
+                    .px(px(space::SM))
                     .py(px(space::SM))
                     .child(
                         div()
