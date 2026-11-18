@@ -364,10 +364,16 @@ impl Launcher {
                 let number = version.version_number.clone();
                 let kind = release_label(&version.version_type).to_string();
                 let size = discover::human_size(version.file_size());
-                let focused = focus::register_row(cx, move |this, cx| {
-                    this.state.select_mod_version(index);
-                    this.refresh(cx);
-                });
+                let focused = focus::register_scrolled_row(
+                    cx,
+                    move |this, cx| {
+                        this.state.select_mod_version(index);
+                        this.refresh(cx);
+                    },
+                    self.mods_detail_scroll.clone(),
+                    // The title, description and metadata come before the rows.
+                    3 + index,
+                );
                 body = body.child(
                     div()
                         .id(format!("mod-version-{index}"))
@@ -488,15 +494,32 @@ impl Launcher {
                     .child("还没有用启动器安装的模组"),
             );
         }
-        for entry in mods.installed.iter().rev() {
+        for (index, entry) in mods.installed.iter().rev().enumerate() {
             let filename = entry.filename.clone();
+            let focused = focus::register_scrolled_row(
+                cx,
+                {
+                    let filename = filename.clone();
+                    move |this, cx| {
+                        this.state.remove_mod(&filename);
+                        this.refresh(cx);
+                    }
+                },
+                self.mods_installed_scroll.clone(),
+                index,
+            );
             body = body.child(
                 div()
                     .h_flex()
                     .items_center()
                     .gap(px(space::SM))
                     .border_b(px(stroke::THIN))
-                    .border_color(rgb(colors.border_default))
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else {
+                        colors.border_default
+                    }))
+                    .bg(rgb(if focused { colors.hover } else { colors.canvas }))
                     .px(px(space::SM))
                     .py(px(space::SM))
                     .child(
