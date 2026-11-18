@@ -152,21 +152,8 @@ impl Launcher {
             .border_color(rgb(colors.border_default))
             .child(nav)
             .child(div().flex_1())
-            .child(
-                div()
-                    .v_flex()
-                    .gap(px(space::XXS))
-                    .px(px(space::SM))
-                    .py(px(space::SM))
-                    .child(
-                        div()
-                            .text_size(px(font::CAPTION))
-                            .text_color(rgb(colors.text_accent))
-                            .child(self.state.account.label()),
-                    ),
-            )
             // Settings closes the sidebar: like a preference pane, it belongs
-            // below the pages and the account, not among them.
+            // below the pages, not among them.
             .child(Page::Settings.row(active == Page::Settings, colors, cx))
     }
 }

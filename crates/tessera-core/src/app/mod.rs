@@ -460,8 +460,6 @@ impl App {
         app.refresh_java();
         app.launch_options.runtimes = Some(app.runtimes.clone());
 
-        let status = app.status.clone();
-        app.log(status);
         app.log(format!(
             "本地版本 {} 个 · 已保存账户 {} 个",
             app.versions.len(),
