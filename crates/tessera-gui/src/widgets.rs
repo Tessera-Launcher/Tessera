@@ -155,6 +155,24 @@ pub(crate) fn panel(
         .child(div().flex_1().min_h(px(0.0)).child(body))
 }
 
+/// The keyboard-focus outline for a slider.
+///
+/// It is drawn behind the slider and outside its bounds, so it never paints a
+/// border through the thumb at a stop. The parent must be `relative()`.
+pub(crate) fn slider_focus_frame(colors: &'static color::Palette, focused: bool) -> Option<Div> {
+    focused.then(|| {
+        div()
+            .absolute()
+            .top(px(-4.0))
+            .bottom(px(-4.0))
+            .left(px(-4.0))
+            .right(px(-4.0))
+            .border(px(stroke::THIN))
+            .border_color(rgb(colors.border_focus))
+            .rounded(px(radius::SM))
+    })
+}
+
 pub(crate) fn chip(colors: &'static color::Palette, label: &str, color: u32) -> impl IntoElement {
     div()
         .px(px(space::XS))

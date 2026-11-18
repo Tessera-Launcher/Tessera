@@ -160,14 +160,10 @@ impl Launcher {
                     .gap(px(space::MD))
                     .child(
                         div()
+                            .relative()
                             .flex_1()
                             .min_w(px(layout::SLIDER_MIN))
-                            .border(px(stroke::THIN))
-                            .border_color(rgb(if heap_focused {
-                                colors.border_focus
-                            } else {
-                                colors.canvas
-                            }))
+                            .children(slider_focus_frame(colors, heap_focused))
                             .child(Slider::new(&heap).horizontal().bg(rgb(colors.fill_primary))),
                     )
                     .child(
