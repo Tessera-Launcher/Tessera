@@ -73,7 +73,7 @@
   --color-border-focus: #10598f;
   --color-border-strong: #808080;
   --color-fill-danger: #a02725;
-  --color-fill-neutral: #525252;
+  --color-fill-neutral: #444444;
   --color-fill-primary: #11568b;
   --color-fill-primary-hover: #15456c;
   --color-fill-warning: #77540d;
@@ -84,7 +84,7 @@
   --color-text-accent-hover: #144b77;
   --color-text-on-fill: #fefefe;
   --color-text-primary: #161616;
-  --color-text-secondary: #525252;
+  --color-text-secondary: #444444;
 }
 
 /* Generated from design/tokens. Run npm run build. */
@@ -100,7 +100,7 @@
   --color-border-focus: #89bdef;
   --color-border-strong: #696969;
   --color-fill-danger: #f07268;
-  --color-fill-neutral: #b1b1b1;
+  --color-fill-neutral: #c4c4c4;
   --color-fill-primary: #0e629e;
   --color-fill-primary-hover: #0c79c4;
   --color-fill-warning: #ca9329;
@@ -111,5 +111,5 @@
   --color-text-accent-hover: #aecfee;
   --color-text-on-fill: #fefefe;
   --color-text-primary: #f8f8f8;
-  --color-text-secondary: #b1b1b1;
+  --color-text-secondary: #c4c4c4;
 }

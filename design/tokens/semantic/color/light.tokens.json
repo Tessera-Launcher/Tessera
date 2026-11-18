@@ -51,7 +51,7 @@
       "$description": "Default body and label text."
     },
     "secondary": {
-      "$value": "{primitive.color.neutral.650}",
+      "$value": "{primitive.color.neutral.705}",
       "$description": "Supporting text, metadata, and muted icons."
     },
     "accent": {
@@ -79,7 +79,7 @@
       "$description": "Hover state for a primary fill."
     },
     "neutral": {
-      "$value": "{primitive.color.neutral.650}",
+      "$value": "{primitive.color.neutral.705}",
       "$description": "Neutral indicators and muted fills."
     },
     "warning": {
