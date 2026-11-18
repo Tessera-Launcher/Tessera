@@ -86,17 +86,6 @@ impl Launcher {
             .child(
                 div()
                     .text_size(px(font::CAPTION))
-                    .text_color(rgb(colors.text_secondary))
-                    .child(format!(
-                        "{}  ·  {} 个版本  ·  {} 个账户",
-                        self.state.root.display(),
-                        self.state.versions.len(),
-                        self.state.accounts.len()
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_accent))
                     .child(self.state.account.label()),
             )

@@ -119,7 +119,12 @@ impl Launcher {
             .min_h(px(0.0))
             .gap(px(space::MD))
             .child(screen_title(colors, "账户"))
-            .child(panel(colors, "已保存的会话", list, true))
+            .child(panel(
+                colors,
+                &format!("已保存的会话 ({})", self.state.accounts.len()),
+                list,
+                true,
+            ))
             .child(
                 footer_bar(colors, confirm)
                     .child(primary_button("切换", cx, |this: &mut Launcher, cx| {
