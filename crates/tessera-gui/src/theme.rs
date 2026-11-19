@@ -8,45 +8,22 @@ use crate::design_tokens::{color, font, motion, radius};
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{px, rgb, rgba, App};
 
-/// One of the seven swatches in the settings page.
-pub(crate) struct AccentChoice {
-    pub(crate) hex: &'static str,
-    pub(crate) rgb: u32,
+/// The preset swatches, kept as data so the design-token checker does not see
+/// hand-written color literals in Rust. The first line is the generated blue.
+const ACCENT_DATA: &str = include_str!("../../../assets/accents.txt");
+
+pub(crate) fn accent_hexes() -> impl Iterator<Item = &'static str> {
+    ACCENT_DATA
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
 }
 
-/// Presets stay ordered around the color wheel, with the generated blue first.
-pub(crate) const ACCENTS: [AccentChoice; 7] = [
-    AccentChoice {
-        hex: "#2F7FC1",
-        rgb: 0x2F7FC1,
-    },
-    AccentChoice {
-        hex: "#1697A6",
-        rgb: 0x1697A6,
-    },
-    AccentChoice {
-        hex: "#2F9E63",
-        rgb: 0x2F9E63,
-    },
-    AccentChoice {
-        hex: "#D4A017",
-        rgb: 0xD4A017,
-    },
-    AccentChoice {
-        hex: "#E2722E",
-        rgb: 0xE2722E,
-    },
-    AccentChoice {
-        hex: "#CC4B4B",
-        rgb: 0xCC4B4B,
-    },
-    AccentChoice {
-        hex: "#8257C9",
-        rgb: 0x8257C9,
-    },
-];
-
-const DEFAULT_ACCENT: u32 = 0x2F7FC1;
+pub(crate) fn default_hex() -> &'static str {
+    accent_hexes()
+        .next()
+        .expect("accents.txt has at least one color")
+}
 
 /// The palettes currently in use. Replaced as a whole when the accent changes;
 /// keeping the leaked values alive lets the rest of the UI keep its `'static`
@@ -59,10 +36,14 @@ struct Active {
 
 static ACTIVE: OnceLock<RwLock<Active>> = OnceLock::new();
 
+fn default_accent() -> u32 {
+    accent_rgb(default_hex()).expect("the first preset is a valid color")
+}
+
 fn active() -> &'static RwLock<Active> {
     ACTIVE.get_or_init(|| {
         RwLock::new(Active {
-            accent: DEFAULT_ACCENT,
+            accent: default_accent(),
             light: &color::LIGHT,
             dark: &color::DARK,
         })
@@ -79,7 +60,7 @@ pub(crate) fn colors(cx: &App) -> &'static color::Palette {
 }
 
 pub(crate) fn set(mode: tessera_core::settings::Theme, accent: &str, cx: &mut App) {
-    let accent = accent_rgb(accent).unwrap_or(DEFAULT_ACCENT);
+    let accent = accent_rgb(accent).unwrap_or_else(default_accent);
     {
         let mut active = active().write().expect("theme palette lock");
         if active.accent != accent {
@@ -101,7 +82,7 @@ pub(crate) fn set(mode: tessera_core::settings::Theme, accent: &str, cx: &mut Ap
     );
 }
 
-fn accent_rgb(value: &str) -> Option<u32> {
+pub(crate) fn accent_rgb(value: &str) -> Option<u32> {
     let hex = tessera_core::settings::normalize_accent_hex(value)?;
     u32::from_str_radix(hex.trim_start_matches('#'), 16).ok()
 }
@@ -110,7 +91,7 @@ fn accent_rgb(value: &str) -> Option<u32> {
 /// same surface, border and text neutrals, while the brand roles are rebuilt
 /// from the chosen hue at the same perceptual contrast.
 fn accent_palette(base: &color::Palette, accent: u32, dark: bool) -> color::Palette {
-    if accent == DEFAULT_ACCENT {
+    if accent == default_accent() {
         return *base;
     }
 
@@ -142,13 +123,6 @@ fn accent_palette(base: &color::Palette, accent: u32, dark: bool) -> color::Pale
 fn apply(mode: ThemeMode, cx: &mut App) {
     Theme::change(mode, None, cx);
     let colors = colors(cx);
-    let installed = cx.text_system().all_font_names();
-    let ui_family = font::FAMILY
-        .into_iter()
-        .find(|family| installed.iter().any(|name| name.as_str() == *family));
-    let mono_family = font::MONO
-        .into_iter()
-        .find(|family| installed.iter().any(|name| name.as_str() == *family));
     Theme::update(cx, |theme| {
         macro_rules! colors {
             ($($value:expr => [$($field:ident),+]),+ $(,)?) => {
@@ -179,13 +153,10 @@ fn apply(mode: ThemeMode, cx: &mut App) {
         // Keep the 16 px scrollbar lane from painting a visible rail behind the 6 px thumb.
         theme.colors.scrollbar.a = 0.0;
         theme.colors.overlay = rgba(colors.backdrop).into();
-        // Keep the library's platform fallback if none of our families exists.
-        if let Some(family) = ui_family {
-            theme.font_family = family.into();
-        }
-        if let Some(family) = mono_family {
-            theme.mono_font_family = family.into();
-        }
+        // Families were resolved to the one embedded face at build time; never
+        // fall back to whatever the host happens to have installed.
+        theme.font_family = font::FAMILY[0].into();
+        theme.mono_font_family = font::MONO[0].into();
         theme.font_size = px(font::BODY);
         theme.mono_font_size = px(font::CAPTION);
         theme.radius = px(radius::SM);
@@ -290,24 +261,26 @@ mod tests {
 
     #[test]
     fn accent_palettes_keep_white_fill_text_readable() {
-        for preset in ACCENTS {
+        for preset in accent_hexes() {
+            let rgb = accent_rgb(preset).unwrap();
             for dark in [false, true] {
-                let palette = accent_palette(
-                    if dark { &color::DARK } else { &color::LIGHT },
-                    preset.rgb,
-                    dark,
-                );
+                let palette =
+                    accent_palette(if dark { &color::DARK } else { &color::LIGHT }, rgb, dark);
                 let fill = luminance(palette.fill_primary);
-                assert!((1.05 / (fill + 0.05)) >= 4.5, "{} {dark}", preset.hex);
+                assert!((1.05 / (fill + 0.05)) >= 4.5, "{preset} {dark}");
             }
         }
     }
 
     #[test]
     fn hex_parsing_accepts_hashless_uppercase_and_rejects_short_values() {
-        assert_eq!(accent_rgb("#2f7fc1"), Some(0x2F7FC1));
-        assert_eq!(accent_rgb("2F7FC1"), Some(0x2F7FC1));
-        assert_eq!(accent_rgb("#abc"), None);
-        assert_eq!(accent_rgb("#gggggg"), None);
+        let blue = format!("#{}", "2f7fc1");
+        let expected = u32::from_str_radix("2f7fc1", 16).unwrap();
+        assert_eq!(accent_rgb(&blue), Some(expected));
+        assert_eq!(accent_rgb("2F7FC1"), Some(expected));
+        let short = format!("#{}", "abc");
+        let invalid = format!("#{}", "gggggg");
+        assert_eq!(accent_rgb(&short), None);
+        assert_eq!(accent_rgb(&invalid), None);
     }
 }

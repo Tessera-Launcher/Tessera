@@ -3,12 +3,12 @@
   --font-body: 14px;
   --font-caption: 12px;
   --font-display: 32px;
-  --font-family: "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-family: "Unifont";
   --font-line-height: 1.428571;
   --font-line-height-caption: 1.333333;
   --font-line-height-display: 1.25;
   --font-line-height-title: 1.333333;
-  --font-mono: "Cascadia Code", "Consolas", monospace;
+  --font-mono: "Unifont";
   --font-title: 21px;
   --layout-checkbox: 16px;
   --layout-clock-width: 44px;

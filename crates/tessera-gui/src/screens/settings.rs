@@ -83,7 +83,7 @@ impl Launcher {
         if let Some(state) = &self.accent_input {
             return state.clone();
         }
-        let state = cx.new(|cx| InputState::new(window, cx).placeholder("#2F7FC1"));
+        let state = cx.new(|cx| InputState::new(window, cx).placeholder(theme::default_hex()));
         let saved = self.state.settings.accent.clone();
         state.update(cx, |state, cx| state.set_value(saved, window, cx));
         self.accent_input = Some(state.clone());
@@ -94,7 +94,10 @@ impl Launcher {
     /// form back into the text field.
     fn apply_accent(&mut self, value: &str, window: Option<&mut Window>, cx: &mut Context<Self>) {
         let Some(hex) = tessera_core::settings::normalize_accent_hex(value) else {
-            self.accent_note = Some("请输入 6 位十六进制颜色，例如 #2F7FC1".to_string());
+            self.accent_note = Some(format!(
+                "请输入 6 位十六进制颜色，例如 {}",
+                theme::default_hex()
+            ));
             cx.notify();
             return;
         };
@@ -140,14 +143,14 @@ impl Launcher {
         };
 
         let mut swatches = div().h_flex().items_center().gap(px(space::XS));
-        for preset in theme::ACCENTS {
-            let selected = accent_value.eq_ignore_ascii_case(preset.hex);
+        for preset in theme::accent_hexes() {
+            let selected = accent_value.eq_ignore_ascii_case(preset);
             let focused = focus::register_row_with_window(cx, move |this, window, cx| {
-                this.apply_accent(preset.hex, Some(window), cx);
+                this.apply_accent(preset, Some(window), cx);
             });
             swatches = swatches.child(
                 div()
-                    .id(format!("accent-{}", preset.hex))
+                    .id(format!("accent-{preset}"))
                     .size(px(26.0))
                     .p(px(2.0))
                     .rounded(px(radius::PILL))
@@ -165,10 +168,10 @@ impl Launcher {
                         div()
                             .size_full()
                             .rounded(px(radius::PILL))
-                            .bg(rgb(preset.rgb)),
+                            .bg(rgb(theme::accent_rgb(preset).unwrap())),
                     )
                     .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.apply_accent(preset.hex, Some(window), cx);
+                        this.apply_accent(preset, Some(window), cx);
                     })),
             );
         }

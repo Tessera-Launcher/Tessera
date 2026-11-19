@@ -40,6 +40,7 @@ use crate::design_tokens::{color, font, layout, radius, space, stroke, weight};
 #[rustfmt::skip]
 mod design_tokens;
 mod focus;
+mod fonts;
 mod theme;
 
 mod loading;
@@ -693,6 +694,7 @@ fn resize_overlay() -> Div {
 fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        fonts::install(cx);
         // Must be registered after gpui-component, so it wraps (and replaces)
         // the WindowBorder that component's root plugin would install. Linux is
         // where that border adds the unusable shadow margin.
