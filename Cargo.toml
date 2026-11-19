@@ -38,3 +38,9 @@ opt-level = 3
 opt-level = 3
 [profile.release.package.tar]
 opt-level = 3
+
+# GPUI normally offsets rasterized glyphs by their subpixel position. The
+# embedded Unifont is a bitmap face, and that offset blurs its pixel grid, so the
+# vendored renderer keeps bitmap glyphs on whole pixels.
+[patch.crates-io]
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }

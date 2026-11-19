@@ -695,6 +695,9 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         fonts::install(cx);
+        // Unifont has bitmap strikes for every UI size; grayscale keeps the
+        // glyph edges at 0/255 instead of colour-fringed subpixel samples.
+        cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
         // Must be registered after gpui-component, so it wraps (and replaces)
         // the WindowBorder that component's root plugin would install. Linux is
         // where that border adds the unusable shadow margin.

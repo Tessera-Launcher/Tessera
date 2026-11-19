@@ -6,12 +6,12 @@ pub mod font {
     pub const BODY: f32 = 14.0;
     pub const CAPTION: f32 = 12.0;
     pub const DISPLAY: f32 = 32.0;
-    pub const FAMILY: [&str; 1] = ["Unifont"];
+    pub const FAMILY: [&str; 1] = ["Tessera Unifont"];
     pub const LINE_HEIGHT: f32 = 1.428571;
     pub const LINE_HEIGHT_CAPTION: f32 = 1.333333;
     pub const LINE_HEIGHT_DISPLAY: f32 = 1.25;
     pub const LINE_HEIGHT_TITLE: f32 = 1.333333;
-    pub const MONO: [&str; 1] = ["Unifont"];
+    pub const MONO: [&str; 1] = ["Tessera Unifont"];
     pub const TITLE: f32 = 21.0;
 }
 

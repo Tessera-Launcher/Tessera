@@ -5,13 +5,13 @@
     "family": {
       "$type": "fontFamily",
       "$value": [
-        "Unifont"
+        "Tessera Unifont"
       ]
     },
     "mono": {
       "$type": "fontFamily",
       "$value": [
-        "Unifont"
+        "Tessera Unifont"
       ]
     }
   }
