@@ -1,7 +1,7 @@
 {
   "$schema": "../schemas/typography.recipe.schema.json",
-  "steps": [200, 300, 600, 900],
-  "roles": { "caption": 200, "body": 300, "title": 600, "display": 900 },
+  "steps": [408, 908],
+  "roles": { "caption": 408, "body": 408, "title": 908, "display": 908 },
   "lineHeight": {
     "anchors": [
       { "fontSizePx": 10, "ratio": 1.2 },

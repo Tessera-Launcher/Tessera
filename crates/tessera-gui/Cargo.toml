@@ -15,7 +15,7 @@ path = "src/main.rs"
 tessera-core = { path = "../tessera-core" }
 gpui-kit = "0.9.0"
 futures = "0.3"
-# Decompress the embedded bitmap font at startup instead of storing the raw 22 MB OTF.
+# Decompress the embedded bitmap font at startup instead of storing the raw 15 MB OTF.
 flate2 = "1"
 # 在系统文件管理器里打开目录（Explorer / Finder / xdg-open）。
 open = "5.4"

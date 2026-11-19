@@ -38,15 +38,15 @@
   "font": {
     "lineHeightCaption": {
       "$type": "number",
-      "$value": 1.333333
+      "$value": 1.5
     },
     "lineHeight": {
       "$type": "number",
-      "$value": 1.428571
+      "$value": 1.5
     },
     "lineHeightTitle": {
       "$type": "number",
-      "$value": 1.333333
+      "$value": 1.25
     },
     "lineHeightDisplay": {
       "$type": "number",

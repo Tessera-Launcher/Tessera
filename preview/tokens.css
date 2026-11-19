@@ -1,15 +1,15 @@
 /* Generated from design/tokens. Run npm run build. */
 :root {
-  --font-body: 14px;
-  --font-caption: 12px;
+  --font-body: 16px;
+  --font-caption: 16px;
   --font-display: 32px;
   --font-family: "Tessera Unifont";
-  --font-line-height: 1.428571;
-  --font-line-height-caption: 1.333333;
+  --font-line-height: 1.5;
+  --font-line-height-caption: 1.5;
   --font-line-height-display: 1.25;
-  --font-line-height-title: 1.333333;
+  --font-line-height-title: 1.25;
   --font-mono: "Tessera Unifont";
-  --font-title: 21px;
+  --font-title: 32px;
   --layout-checkbox: 16px;
   --layout-clock-width: 44px;
   --layout-control-height: 36px;
@@ -20,7 +20,7 @@
   --layout-inspector: 280px;
   --layout-label-width: 80px;
   --layout-loader-dot: 6px;
-  --layout-metadata-width: 64px;
+  --layout-metadata-width: 96px;
   --layout-min-height: 640px;
   --layout-min-width: 960px;
   --layout-music-versions: 220px;

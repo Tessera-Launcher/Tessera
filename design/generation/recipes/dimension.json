@@ -7,7 +7,7 @@
     "sidebar": 4600, "details": 8800, "inspector": 7000, "musicVersions": 5500,
     "dialog": 12000, "panelHeight": 6800, "progressMax": 7000, "rowHeight": 900,
     "controlHeight": 900, "checkbox": 400, "statusDot": 200, "loaderDot": 150,
-    "indicatorWidth": 75, "indicatorHeight": 400, "labelWidth": 2000, "metadataWidth": 1600,
+    "indicatorWidth": 75, "indicatorHeight": 400, "labelWidth": 2000, "metadataWidth": 2400,
     "trackGroup": 1300, "clockWidth": 1100, "volumeWidth": 2400, "sliderMin": 2000,
     "progressHeight": 200, "treeIndent": 400
   }

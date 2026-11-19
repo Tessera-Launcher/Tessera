@@ -525,7 +525,7 @@ impl Render for Launcher {
                             })
                             .child(
                                 div()
-                                    .text_size(px(font::TITLE))
+                                    .text_size(px(font::BODY))
                                     .line_height(relative(font::LINE_HEIGHT_TITLE))
                                     .font_weight(FontWeight(weight::BOLD))
                                     .text_color(rgb(colors.text_accent))

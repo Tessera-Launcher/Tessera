@@ -180,7 +180,7 @@
     },
     "metadataWidth": {
       "$value": {
-        "value": 64,
+        "value": 96,
         "unit": "px"
       }
     },
@@ -267,21 +267,21 @@
     "caption": {
       "$type": "dimension",
       "$value": {
-        "value": 12,
+        "value": 16,
         "unit": "px"
       }
     },
     "body": {
       "$type": "dimension",
       "$value": {
-        "value": 14,
+        "value": 16,
         "unit": "px"
       }
     },
     "title": {
       "$type": "dimension",
       "$value": {
-        "value": 21,
+        "value": 32,
         "unit": "px"
       }
     },

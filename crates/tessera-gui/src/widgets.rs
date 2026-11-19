@@ -134,6 +134,7 @@ pub(crate) fn panel_fit(
         .v_flex()
         .w_full()
         .min_h(px(0.0))
+        .flex_shrink_0()
         .child(section_header(colors, title))
         .child(body)
 }

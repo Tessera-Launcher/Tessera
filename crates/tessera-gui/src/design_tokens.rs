@@ -3,16 +3,16 @@
 #![allow(dead_code)]
 
 pub mod font {
-    pub const BODY: f32 = 14.0;
-    pub const CAPTION: f32 = 12.0;
+    pub const BODY: f32 = 16.0;
+    pub const CAPTION: f32 = 16.0;
     pub const DISPLAY: f32 = 32.0;
     pub const FAMILY: [&str; 1] = ["Tessera Unifont"];
-    pub const LINE_HEIGHT: f32 = 1.428571;
-    pub const LINE_HEIGHT_CAPTION: f32 = 1.333333;
+    pub const LINE_HEIGHT: f32 = 1.5;
+    pub const LINE_HEIGHT_CAPTION: f32 = 1.5;
     pub const LINE_HEIGHT_DISPLAY: f32 = 1.25;
-    pub const LINE_HEIGHT_TITLE: f32 = 1.333333;
+    pub const LINE_HEIGHT_TITLE: f32 = 1.25;
     pub const MONO: [&str; 1] = ["Tessera Unifont"];
-    pub const TITLE: f32 = 21.0;
+    pub const TITLE: f32 = 32.0;
 }
 
 pub mod layout {
@@ -26,7 +26,7 @@ pub mod layout {
     pub const INSPECTOR: f32 = 280.0;
     pub const LABEL_WIDTH: f32 = 80.0;
     pub const LOADER_DOT: f32 = 6.0;
-    pub const METADATA_WIDTH: f32 = 64.0;
+    pub const METADATA_WIDTH: f32 = 96.0;
     pub const MIN_HEIGHT: f32 = 640.0;
     pub const MIN_WIDTH: f32 = 960.0;
     pub const MUSIC_VERSIONS: f32 = 220.0;
