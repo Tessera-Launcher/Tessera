@@ -6,3 +6,11 @@
 # into the process working directory, which is the repo root when a test runs it.
 /installer.log
 /log.txt
+
+# The generated Unifont asset is rebuilt by tools/fetch_unifont.py.
+/assets/fonts/*.otf
+/assets/fonts/*.otf.gz
+/assets/fonts/*.ttf
+
+# Python bytecode from local helper scripts.
+__pycache__/
