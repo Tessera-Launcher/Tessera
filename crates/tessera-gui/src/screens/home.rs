@@ -146,13 +146,6 @@ impl Launcher {
             {
                 let selected = index == self.state.selected;
                 let broken = !version.has_jar && version.inherits.is_none();
-                // What the launch will actually use: Java 28 for every profile,
-                // or the JVM a trained cache recorded.
-                let java = self
-                    .state
-                    .java_for(version)
-                    .map(|major| format!("Java {major}"))
-                    .unwrap_or_else(|| "Java —".to_string());
                 let dir = version.dir.clone();
                 let focused = focus::register_scrolled_row(
                     cx,
@@ -221,12 +214,6 @@ impl Launcher {
                                 }))
                                 .child(version.id.clone()),
                         )
-                        .child(
-                            div()
-                                .text_size(px(font::CAPTION))
-                                .text_color(rgb(colors.text_secondary))
-                                .child(java),
-                        )
                         .context_menu({
                             let weak = weak.clone();
                             move |menu, _, _| {
@@ -255,14 +242,6 @@ impl Launcher {
                     .child(field(colors, "类型", version.kind.label().to_string()))
                     .child(field(
                         colors,
-                        "Java",
-                        self.state
-                            .java_for(version)
-                            .map(|major| major.to_string())
-                            .unwrap_or_else(|| "—".to_string()),
-                    ))
-                    .child(field(
-                        colors,
                         "AOT Cache",
                         if version.aot { "是" } else { "否" }.to_string(),
                     ))
@@ -270,11 +249,6 @@ impl Launcher {
                         colors,
                         "主类",
                         version.main_class.clone().unwrap_or_else(|| "—".into()),
-                    ))
-                    .child(field(
-                        colors,
-                        "继承",
-                        version.inherits.clone().unwrap_or_else(|| "—".to_string()),
                     ))
                     .child(field(
                         colors,
