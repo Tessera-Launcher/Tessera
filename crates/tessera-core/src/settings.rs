@@ -1,9 +1,9 @@
 //! `data/配置.toml` — state that should outlive a run.
 //!
 //! Only things the launcher genuinely owns live here: the heap size, the window
-//! size, the color theme, the download screen's kind filter, which saved account
-//! was last active (by file name, never its tokens), and the single GitHub proxy
-//! used by every GitHub download
+//! size, the color theme and accent color, the download screen's kind filter,
+//! which saved account was last active (by file name, never its tokens), and the
+//! single GitHub proxy used by every GitHub download
 //! (Java, aria2, AOT runtime setup). The download source is deliberately *not*
 //! persisted (a one-off switch should not become the new normal), and nothing
 //! about credentials is written here.
@@ -47,6 +47,8 @@ pub struct Settings {
     pub github_proxy: String,
     /// The color scheme in use.
     pub theme: Theme,
+    /// The accent color as `#RRGGBB`. Kept as text so a hand edit is readable.
+    pub accent: String,
     /// The kind filter last chosen on the download screen (全部 / 正式版 /
     /// 快照 / 旧版). The search text is deliberately not persisted: a leftover
     /// query would make the next visit look like an empty version list.
@@ -65,6 +67,7 @@ impl Default for Settings {
             window_height: 480,
             github_proxy: String::new(),
             theme: Theme::Light,
+            accent: Settings::DEFAULT_ACCENT.to_string(),
             download_filter: crate::app::VersionFilter::All,
             account: String::new(),
         }
@@ -74,6 +77,9 @@ impl Default for Settings {
 impl Settings {
     /// The schema this build writes.
     pub const CURRENT_VERSION: u32 = 1;
+
+    /// The blue the generated palette was built around.
+    pub const DEFAULT_ACCENT: &'static str = "#2F7FC1";
 
     /// The smallest heap the picker will offer, matching the GUI's slider.
     pub const MIN_MEMORY_MB: u32 = 1024;
@@ -165,6 +171,13 @@ impl Settings {
                 Settings::MIN_MEMORY_MB
             ));
         }
+        match normalize_accent_hex(&self.accent) {
+            Some(accent) => self.accent = accent,
+            None => {
+                self.accent = Settings::DEFAULT_ACCENT.to_string();
+                notes.push("accent 不是 #RRGGBB，已用默认主题色".to_string());
+            }
+        }
         for (label, value) in [
             ("window_width", &mut self.window_width),
             ("window_height", &mut self.window_height),
@@ -186,6 +199,16 @@ impl Settings {
             (self, Some(notes.join("；")))
         }
     }
+}
+
+/// Canonical `#RRGGBB` form, or `None` when the input is not a six-digit hex color.
+pub fn normalize_accent_hex(value: &str) -> Option<String> {
+    let value = value.trim();
+    let value = value.strip_prefix('#').unwrap_or(value);
+    if value.len() != 6 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("#{}", value.to_ascii_uppercase()))
 }
 
 /// Write the settings atomically, so a crash cannot truncate them.
@@ -217,6 +240,7 @@ mod tests {
             window_height: 720,
             github_proxy: "gh-proxy.com".into(),
             theme: Theme::Dark,
+            accent: "#C7534E".into(),
             download_filter: crate::app::VersionFilter::Snapshot,
             account: "Steve (1).json".into(),
         };
@@ -225,6 +249,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("memory_mb = 4096"), "{text}");
         assert!(text.contains("download_filter = \"snapshot\""), "{text}");
+        assert!(text.contains("accent = \"#C7534E\""), "{text}");
         assert!(!path.with_extension("toml.tmp").exists());
     }
 
@@ -270,6 +295,26 @@ mod tests {
         assert_eq!(settings.version, Settings::CURRENT_VERSION);
         assert_eq!(settings.memory_mb, 4096);
         assert!(note.unwrap().contains("升级到"));
+    }
+
+    #[test]
+    fn an_invalid_accent_falls_back_to_the_default_blue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Settings::path(tmp.path());
+        std::fs::write(&path, "accent = \"not-a-color\"\n").unwrap();
+        let (settings, note) = load(&path);
+        assert_eq!(settings.accent, Settings::DEFAULT_ACCENT);
+        assert!(note.unwrap().contains("accent"));
+    }
+
+    #[test]
+    fn an_accent_is_normalized_to_uppercase() {
+        assert_eq!(
+            normalize_accent_hex(" #2f7fc1 "),
+            Some("#2F7FC1".to_string())
+        );
+        assert_eq!(normalize_accent_hex("#abc"), None);
+        assert_eq!(normalize_accent_hex("#gggggg"), None);
     }
 
     #[test]

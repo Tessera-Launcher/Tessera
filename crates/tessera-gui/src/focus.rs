@@ -82,6 +82,15 @@ pub(crate) fn register_row(
     )
 }
 
+/// Register a row whose action also needs the window, such as a preset that
+/// writes the canonical value back into its text field.
+pub(crate) fn register_row_with_window(
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Window, &mut Context<Launcher>) + 'static,
+) -> bool {
+    register(cx, Rc::new(action), None, None)
+}
+
 /// Register a row inside a scrolling list; Tab scrolls it into view.
 pub(crate) fn register_scrolled_row(
     cx: &mut Context<Launcher>,

@@ -74,6 +74,40 @@ impl Launcher {
         state
     }
 
+    /// Create the accent hex field once, seeded from the saved value.
+    fn ensure_accent_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(state) = &self.accent_input {
+            return state.clone();
+        }
+        let state = cx.new(|cx| InputState::new(window, cx).placeholder("#2F7FC1"));
+        let saved = self.state.settings.accent.clone();
+        state.update(cx, |state, cx| state.set_value(saved, window, cx));
+        self.accent_input = Some(state.clone());
+        state
+    }
+
+    /// Validate and apply one accent value, optionally writing the canonical
+    /// form back into the text field.
+    fn apply_accent(&mut self, value: &str, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        let Some(hex) = tessera_core::settings::normalize_accent_hex(value) else {
+            self.accent_note = Some("请输入 6 位十六进制颜色，例如 #2F7FC1".to_string());
+            cx.notify();
+            return;
+        };
+        self.accent_note = None;
+        self.state.settings.accent = hex.clone();
+        theme::set(self.state.settings.theme, &hex, cx);
+        if let (Some(window), Some(input)) = (window, self.accent_input.clone()) {
+            input.update(cx, |state, cx| state.set_value(hex, window, cx));
+        }
+        // Persist the new accent through the usual settings path.
+        self.refresh(cx);
+    }
+
     pub(crate) fn settings_screen(
         &mut self,
         window: &mut Window,
@@ -93,6 +127,9 @@ impl Launcher {
             tessera_core::settings::Theme::Dark
         };
         let proxy = self.ensure_github_proxy(window, cx);
+        let accent_input = self.ensure_accent_input(window, cx);
+        let accent_value = self.state.settings.accent.clone();
+        let accent_note = self.accent_note.clone();
         let heap = self.ensure_memory_slider(window, cx);
         let heap_gib = self.state.settings.memory_mb as f32 / 1024.0;
         let disk_busy = self.state.disk.busy;
@@ -102,34 +139,124 @@ impl Launcher {
             self.state.disk.note.clone()
         };
 
+        let mut swatches = div().h_flex().items_center().gap(px(space::XS));
+        for preset in theme::ACCENTS {
+            let selected = accent_value.eq_ignore_ascii_case(preset.hex);
+            let focused = focus::register_row_with_window(cx, move |this, window, cx| {
+                this.apply_accent(preset.hex, Some(window), cx);
+            });
+            swatches = swatches.child(
+                div()
+                    .id(format!("accent-{}", preset.hex))
+                    .size(px(26.0))
+                    .p(px(2.0))
+                    .rounded(px(radius::PILL))
+                    .border(px(if focused { 2.0 } else { stroke::THIN }))
+                    .border_color(rgb(if focused {
+                        colors.border_focus
+                    } else if selected {
+                        colors.text_primary
+                    } else {
+                        colors.border_default
+                    }))
+                    .cursor_pointer()
+                    .hover(move |style| style.border_color(rgb(colors.border_strong)))
+                    .child(
+                        div()
+                            .size_full()
+                            .rounded(px(radius::PILL))
+                            .bg(rgb(preset.rgb)),
+                    )
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.apply_accent(preset.hex, Some(window), cx);
+                    })),
+            );
+        }
+
         let appearance = div()
-            .h_flex()
-            .items_center()
+            .v_flex()
             .gap(px(space::MD))
             .p(px(space::LG))
             .child(
                 div()
-                    .v_flex()
-                    .flex_1()
-                    .gap(px(space::XXS))
+                    .h_flex()
+                    .items_center()
+                    .gap(px(space::MD))
                     .child(
                         div()
-                            .text_size(px(font::BODY))
-                            .text_color(rgb(colors.text_primary))
-                            .child("主题"),
+                            .v_flex()
+                            .flex_1()
+                            .gap(px(space::XXS))
+                            .child(
+                                div()
+                                    .text_size(px(font::BODY))
+                                    .text_color(rgb(colors.text_primary))
+                                    .child("主题"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(font::CAPTION))
+                                    .text_color(rgb(colors.text_secondary))
+                                    .child(format!("当前：{current}")),
+                            ),
                     )
+                    .child(button(toggle_label, cx, move |this, cx| {
+                        theme::set(next, &this.state.settings.accent, cx);
+                        this.state.settings.theme = next;
+                        this.refresh(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .gap(px(space::SM))
                     .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap(px(space::MD))
+                            .child(
+                                div()
+                                    .v_flex()
+                                    .flex_1()
+                                    .gap(px(space::XXS))
+                                    .child(
+                                        div()
+                                            .text_size(px(font::BODY))
+                                            .text_color(rgb(colors.text_primary))
+                                            .child("主题色"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(font::CAPTION))
+                                            .text_color(rgb(colors.text_secondary))
+                                            .child(format!("当前：{accent_value}")),
+                                    ),
+                            )
+                            .child(swatches)
+                            .child(
+                                div().w(px(132.0)).flex_shrink_0().child(
+                                    Input::new(&accent_input)
+                                        .appearance(true)
+                                        .text_size(px(font::BODY)),
+                                ),
+                            )
+                            .child(button("应用", cx, move |this, cx| {
+                                let value = this
+                                    .accent_input
+                                    .as_ref()
+                                    .map(|input| input.read(cx).value().to_string())
+                                    .unwrap_or_default();
+                                this.apply_accent(&value, None, cx);
+                            })),
+                    )
+                    .children(accent_note.map(|note| {
                         div()
                             .text_size(px(font::CAPTION))
-                            .text_color(rgb(colors.text_secondary))
-                            .child(format!("当前：{current}")),
-                    ),
-            )
-            .child(button(toggle_label, cx, move |this, cx| {
-                theme::set(next, cx);
-                this.state.settings.theme = next;
-                this.refresh(cx);
-            }));
+                            .text_color(rgb(colors.status_danger))
+                            .child(note)
+                    })),
+            );
 
         let heap_slider = heap.clone();
         let heap_focused = focus::register_slider(

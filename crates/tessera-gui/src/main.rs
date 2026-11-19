@@ -120,6 +120,11 @@ struct Launcher {
     /// The GitHub proxy field on the settings page. Kept separate from
     /// `state.settings` so typing only reaches 配置.toml after "保存".
     github_proxy_input: Option<Entity<InputState>>,
+    /// The accent hex field on the settings page; presets and Apply write the
+    /// canonical value back into it.
+    accent_input: Option<Entity<InputState>>,
+    /// A rejected accent input, shown under the swatches until the next apply.
+    accent_note: Option<String>,
     /// The audio worker's command side. Its reports live in [`Tasks`], and the
     /// worker is started on the first sound: a launcher that never plays
     /// anything must not open an audio device.
@@ -203,13 +208,14 @@ impl Launcher {
         state.launch_options.width = settings.window_width;
         state.launch_options.height = settings.window_height;
         let theme = settings.theme;
+        let accent = settings.accent.clone();
         // The picker opens on the kind filter last used; the list itself is
         // fetched later, and `apply_filter` honours this value when it arrives.
         state.download.filter = settings.download_filter;
         state.settings = settings;
         // Apply the persisted scheme before the first frame, then bring back the
         // account the user last switched to.
-        theme::set(theme, cx);
+        theme::set(theme, &accent, cx);
         state.restore_account();
         for note in startup_notes {
             state.log(note);
@@ -286,6 +292,8 @@ impl Launcher {
             offline_input: None,
             offline_sub: None,
             github_proxy_input: None,
+            accent_input: None,
+            accent_note: None,
             music_audio: None,
             music_progress: None,
             music_progress_sub: None,
