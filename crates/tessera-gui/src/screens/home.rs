@@ -206,6 +206,12 @@ impl Launcher {
                         .child(
                             div()
                                 .flex_1()
+                                // Version ids are directory names and can be
+                                // arbitrarily long; without this the row would
+                                // refuse to shrink and push the details column
+                                // off the window.
+                                .min_w(px(0.0))
+                                .truncate()
                                 .text_size(px(font::BODY))
                                 .text_color(rgb(if selected {
                                     colors.text_accent
@@ -298,6 +304,13 @@ impl Launcher {
                         div()
                             .v_flex()
                             .w(px(layout::DETAILS))
+                            // Pinned: the list to its left gives up width first,
+                            // so every value in this column starts at the same
+                            // offset no matter how long a version id is.
+                            .flex_shrink_0()
+                            // Same reason as the panels: a long value may not
+                            // widen this column past the width it was given.
+                            .min_w(px(0.0))
                             .h_full()
                             .min_h(px(0.0))
                             .child(self.details(colors)),

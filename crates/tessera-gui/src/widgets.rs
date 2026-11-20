@@ -133,6 +133,11 @@ pub(crate) fn panel_fit(
     div()
         .v_flex()
         .w_full()
+        // Panels always sit in a row, and a long value inside one must not
+        // widen it: without this the panel refuses to shrink below the widest
+        // unbreakable run it contains and pushes its neighbours out of the
+        // window.
+        .min_w(px(0.0))
         .min_h(px(0.0))
         .flex_shrink_0()
         .child(section_header(colors, title))
@@ -145,7 +150,7 @@ pub(crate) fn panel(
     body: impl IntoElement,
     grow: bool,
 ) -> impl IntoElement {
-    let mut outer = div().v_flex().w_full().min_h(px(0.0));
+    let mut outer = div().v_flex().w_full().min_w(px(0.0)).min_h(px(0.0));
     outer = if grow {
         outer.flex_1().h_full()
     } else {
@@ -226,21 +231,60 @@ pub(crate) fn field(
 ) -> impl IntoElement {
     div()
         .h_flex()
+        // A wrapped value makes the row two lines tall; keep the label on the
+        // first one so the column reads like every other row.
+        .items_start()
         .gap(px(space::MD))
         .child(
             div()
                 .w(px(layout::LABEL_WIDTH))
+                .flex_shrink_0()
                 .text_size(px(font::CAPTION))
                 .text_color(rgb(colors.text_secondary))
                 .child(label.to_string()),
         )
         .child(
             div()
+                .h_flex()
+                .flex_wrap()
+                .items_start()
                 .flex_1()
+                // A flex item may not shrink below its min-content width, and
+                // a main class is one unbreakable token: without this the row
+                // grew past the panel and the value was clipped instead of
+                // wrapping. The label above is pinned, so the value always
+                // starts at the same offset.
+                .min_w(px(0.0))
                 .text_size(px(font::CAPTION))
                 .text_color(rgb(colors.text_primary))
-                .child(value),
+                .children(
+                    split_at_dots(&value)
+                        .into_iter()
+                        .map(|part| div().min_w(px(0.0)).child(part)),
+                ),
         )
+}
+
+/// `net.minecraft.client.main.Main` → `["net.", "minecraft.", "client.",
+/// "main.", "Main"]`.
+///
+/// A Java class name has no spaces, so the line wrapper would otherwise break
+/// in the middle of an identifier. The dots are where the name already reads in
+/// parts; each part becomes its own flex item, the row wraps between them, and a
+/// single part that is still too wide shrinks and breaks inside itself.
+fn split_at_dots(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for character in value.chars() {
+        current.push(character);
+        if character == '.' {
+            parts.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 pub(crate) fn choice_row(
