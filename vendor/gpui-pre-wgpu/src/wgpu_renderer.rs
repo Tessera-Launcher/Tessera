@@ -4,8 +4,9 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Path, Point, PrimitiveBatch,
-    ScaledPixels, Scene, Size, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Hsla, MonochromeSprite, Path,
+    Point, PrimitiveBatch, Rgba, ScaledPixels, Scene, Size, SubpixelSprite,
+    get_gamma_correction_ratios, point,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -20,6 +21,91 @@ use std::sync::Arc;
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
 const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
+
+// --- text shadow -------------------------------------------------------- //
+//
+// Minecraft paints every glyph twice: a copy one pixel down and to the right,
+// then the text itself. Tessera's bitmap font has no antialiasing, so the copy
+// stays on the pixel grid and reads as a shadow instead of the grey halo an
+// emboldened outline would produce.
+//
+// Minecraft dims the copy to a quarter of each colour channel and leaves the
+// alpha alone, which works on the dark, noisy backgrounds the game draws text
+// over. The dimming itself is right for both themes — it is the alpha that has
+// to follow the surface: near-black text on a light surface needs the copy
+// translucent, or it stops being a shadow and just thickens the glyphs, while
+// light text on a dark surface needs it opaque to show at all. A glyph's own
+// luminance says which surface it is meant for, because each palette theme sits
+// on one side of it; no colour the themes use comes close to the split.
+//
+// The copies are interleaved shadow-first, so the instance range for a sprite
+// batch `start..end` becomes `start * 2..end * 2`.
+
+/// How far the shadow sits from its glyph, in device pixels.
+const TEXT_SHADOW_OFFSET: f32 = 1.0;
+/// The luminance that separates light text from dark text.
+const TEXT_SHADOW_SPLIT: f32 = 0.5;
+/// Behind light text: Minecraft's opaque copy, lifted a little above its own
+/// quarter, because this theme's surfaces are almost black and a quarter of a
+/// light colour lands too close to them to read as a shadow.
+const TEXT_SHADOW_DIM_ON_DARK: f32 = 0.35;
+const TEXT_SHADOW_ALPHA_ON_DARK: f32 = 1.0;
+/// Behind dark text: Minecraft's quarter, held back by alpha so the copy settles
+/// towards the light surface instead of thickening the glyph.
+const TEXT_SHADOW_DIM_ON_LIGHT: f32 = 0.25;
+const TEXT_SHADOW_ALPHA_ON_LIGHT: f32 = 0.25;
+
+fn text_shadow_bounds(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
+    Bounds {
+        origin: point(
+            ScaledPixels(bounds.origin.x.0 + TEXT_SHADOW_OFFSET),
+            ScaledPixels(bounds.origin.y.0 + TEXT_SHADOW_OFFSET),
+        ),
+        size: bounds.size,
+    }
+}
+
+fn text_shadow_color(color: Hsla) -> Hsla {
+    let rgba = Rgba::from(color);
+    let luminance = 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
+    let (dim, alpha) = if luminance > TEXT_SHADOW_SPLIT {
+        (TEXT_SHADOW_DIM_ON_DARK, TEXT_SHADOW_ALPHA_ON_DARK)
+    } else {
+        (TEXT_SHADOW_DIM_ON_LIGHT, TEXT_SHADOW_ALPHA_ON_LIGHT)
+    };
+    Hsla::from(Rgba {
+        r: rgba.r * dim,
+        g: rgba.g * dim,
+        b: rgba.b * dim,
+        a: rgba.a * alpha,
+    })
+}
+
+fn monochrome_sprites_with_shadow(sprites: &[MonochromeSprite]) -> Vec<MonochromeSprite> {
+    let mut out = Vec::with_capacity(sprites.len() * 2);
+    for sprite in sprites {
+        out.push(MonochromeSprite {
+            bounds: text_shadow_bounds(sprite.bounds),
+            color: text_shadow_color(sprite.color),
+            ..*sprite
+        });
+        out.push(*sprite);
+    }
+    out
+}
+
+fn subpixel_sprites_with_shadow(sprites: &[SubpixelSprite]) -> Vec<SubpixelSprite> {
+    let mut out = Vec::with_capacity(sprites.len() * 2);
+    for sprite in sprites {
+        out.push(SubpixelSprite {
+            bounds: text_shadow_bounds(sprite.bounds),
+            color: text_shadow_color(sprite.color),
+            ..*sprite
+        });
+        out.push(*sprite);
+    }
+    out
+}
 
 /// Shader variant for backends with storage buffer support: the shared shader
 /// logic plus the storage-buffer instance transport.
@@ -1603,6 +1689,8 @@ impl WgpuRendererCore {
                         &mut pass,
                     ),
                     PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+                        // Glyphs were written shadow-first; see `monochrome_sprites_with_shadow`.
+                        let range = range.start * 2..range.end * 2;
                         self.draw_sprites(
                             &instance_bindings.monochrome_sprites,
                             texture_id,
@@ -1612,6 +1700,8 @@ impl WgpuRendererCore {
                         )?;
                     }
                     PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+                        // Glyphs were written shadow-first; see `subpixel_sprites_with_shadow`.
+                        let range = range.start * 2..range.end * 2;
                         let resources = self.resources();
                         self.draw_sprites(
                             &instance_bindings.subpixel_sprites,
@@ -1672,12 +1762,12 @@ impl WgpuRendererCore {
             monochrome_sprites: self.write_instance_binding(
                 "monochrome_sprites_bind_group",
                 instance_offset,
-                &scene.monochrome_sprites,
+                &monochrome_sprites_with_shadow(&scene.monochrome_sprites),
             )?,
             subpixel_sprites: self.write_instance_binding(
                 "subpixel_sprites_bind_group",
                 instance_offset,
-                &scene.subpixel_sprites,
+                &subpixel_sprites_with_shadow(&scene.subpixel_sprites),
             )?,
             polychrome_sprites: self.write_instance_binding(
                 "polychrome_sprites_bind_group",

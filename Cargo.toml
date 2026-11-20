@@ -39,8 +39,14 @@ opt-level = 3
 [profile.release.package.tar]
 opt-level = 3
 
-# GPUI normally offsets rasterized glyphs by their subpixel position. The
-# embedded Unifont is a bitmap face, and that offset blurs its pixel grid, so the
-# vendored renderer keeps bitmap glyphs on whole pixels.
+# The renderer is vendored for two local changes:
+#
+# - GPUI normally offsets rasterized glyphs by their subpixel position. The
+#   embedded Unifont is a bitmap face, and that offset blurs its pixel grid, so
+#   bitmap glyphs stay on whole pixels.
+# - Text is drawn twice, the first copy one pixel down-right in a translucent
+#   version of the text colour, the way Minecraft's `Font` paints its shadow.
+#   Doing it in the renderer keeps every glyph in the app in step, including the
+#   ones gpui-component draws for menus and fields.
 [patch.crates-io]
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
