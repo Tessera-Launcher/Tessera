@@ -248,7 +248,10 @@ impl Launcher {
                     .child(field(colors, "类型", version.kind.label().to_string()))
                     .child(field(
                         colors,
-                        "AOT Cache",
+                        // The pixel face is wider than Unifont was: the English
+                        // label no longer fits the label column, and every other
+                        // label here is Chinese anyway.
+                        "AOT 缓存",
                         if version.aot { "是" } else { "否" }.to_string(),
                     ))
                     .child(field(

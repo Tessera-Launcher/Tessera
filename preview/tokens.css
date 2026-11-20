@@ -3,12 +3,12 @@
   --font-body: 16px;
   --font-caption: 16px;
   --font-display: 32px;
-  --font-family: "Tessera Unifont";
+  --font-family: "Tessera Pixel 8", "Tessera Unifont";
   --font-line-height: 1.5;
   --font-line-height-caption: 1.5;
   --font-line-height-display: 1.25;
   --font-line-height-title: 1.25;
-  --font-mono: "Tessera Unifont";
+  --font-mono: "Tessera Pixel 8", "Tessera Unifont";
   --font-title: 32px;
   --layout-checkbox: 16px;
   --layout-clock-width: 44px;

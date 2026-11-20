@@ -1,16 +1,18 @@
 {
   "$schema": "https://designtokens.org/schemas/2025.10/format.json",
-  "$description": "The embedded Unifont face is the only UI and mono font.",
+  "$description": "Latin text uses the embedded pixel face; Unifont covers every glyph it lacks. Both faces are compiled into the executable.",
   "font": {
     "family": {
       "$type": "fontFamily",
       "$value": [
+        "Tessera Pixel 8",
         "Tessera Unifont"
       ]
     },
     "mono": {
       "$type": "fontFamily",
       "$value": [
+        "Tessera Pixel 8",
         "Tessera Unifont"
       ]
     }

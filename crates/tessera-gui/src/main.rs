@@ -480,7 +480,7 @@ impl Render for Launcher {
             // separators inside.
             .border(px(stroke::THIN))
             .border_color(rgb(colors.border_default))
-            .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
+            .font(theme::text_font())
             .text_size(px(font::BODY))
             .line_height(relative(font::LINE_HEIGHT))
             .text_color(rgb(colors.text_primary))

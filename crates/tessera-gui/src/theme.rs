@@ -50,6 +50,26 @@ fn active() -> &'static RwLock<Active> {
     })
 }
 
+/// The inherited text style: every element starts on the pixel face and hands
+/// any glyph it lacks to Unifont.
+///
+/// The component theme only carries a family name, and a family name alone
+/// would send a Chinese glyph to whatever the host has installed. The fallback
+/// chain has to travel with the root element's text style, which is why it is
+/// built here and applied once in `Launcher::render`.
+pub(crate) fn text_font() -> gpui_kit::Font {
+    gpui_kit::Font {
+        family: font::FAMILY[0].into(),
+        fallbacks: Some(gpui_kit::FontFallbacks::from_fonts(
+            font::FAMILY[1..]
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
+        )),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn colors(cx: &App) -> &'static color::Palette {
     let active = active().read().expect("theme palette lock");
     if Theme::global(cx).is_dark() {
@@ -160,7 +180,7 @@ fn apply(mode: ThemeMode, cx: &mut App) {
         // Keep the 16 px scrollbar lane from painting a visible rail behind the 6 px thumb.
         theme.colors.scrollbar.a = 0.0;
         theme.colors.overlay = rgba(colors.backdrop).into();
-        // Families were resolved to the one embedded face at build time; never
+        // Families were resolved to the embedded faces at build time; never
         // fall back to whatever the host happens to have installed.
         theme.font_family = font::FAMILY[0].into();
         theme.mono_font_family = font::MONO[0].into();

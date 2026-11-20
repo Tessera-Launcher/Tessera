@@ -1,14 +1,27 @@
 use std::path::PathBuf;
 
 fn main() {
-    let asset =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/tessera-unifont.otf.gz");
-    println!("cargo:rerun-if-changed={}", asset.display());
-    if !asset.exists() {
-        panic!(
-            "missing embedded font asset: {}\n\
-             Run `python3 tools/fetch_unifont.py` from the repository root first.",
-            asset.display()
-        );
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let assets = [
+        (
+            "assets/fonts/tessera-pixel8.ttf.gz",
+            "tools/fetch_pixel_font.py",
+        ),
+        (
+            "assets/fonts/tessera-unifont.otf.gz",
+            "tools/fetch_unifont.py",
+        ),
+    ];
+
+    for (asset, script) in assets {
+        let path = root.join(asset);
+        println!("cargo:rerun-if-changed={}", path.display());
+        if !path.exists() {
+            panic!(
+                "missing embedded font asset: {}\n\
+                 Run `python3 {script}` from the repository root first.",
+                path.display()
+            );
+        }
     }
 }
