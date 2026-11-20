@@ -108,7 +108,10 @@ def scale_bdf_2x(source: Path, destination: Path) -> None:
             output.append(f"{line.split()[0]} {int(line.split()[1]) * 2}")
         else:
             output.append(line)
-        if line == "BITMAP":
+        # Unifont's BDF writes `BITMAP ` with a trailing space, so compare the
+        # trimmed line; an exact match silently skipped the doubling below and
+        # left a 32 px strike whose bitmap was the 16 px one in the corner.
+        if line.strip() == "BITMAP":
             in_bitmap = True
     destination.write_text("\n".join(output) + "\n", encoding="latin-1")
 
@@ -168,6 +171,53 @@ def remap_bitmap_strikes(otf_path: Path, otb_path: Path) -> TTFont:
     return otf
 
 
+def ink_extent(glyph) -> tuple[int, int]:
+    """Width and height of the ink inside one bitmap glyph, in pixels."""
+    metrics = glyph.metrics
+    width, height = metrics.width, metrics.height
+    row_bytes = (width + 7) // 8
+    data = glyph.imageData
+    columns, rows = [], []
+    for y in range(height):
+        row = data[y * row_bytes : (y + 1) * row_bytes]
+        for x in range(width):
+            if row[x // 8] >> (7 - x % 8) & 1:
+                columns.append(x)
+                rows.append(y)
+    if not columns:
+        return (0, 0)
+    return (max(columns) - min(columns) + 1, max(rows) - min(rows) + 1)
+
+
+def verify_strikes(otf: TTFont, sample: int = 0x4E3B) -> None:
+    """Refuse to ship a strike whose bitmap did not grow with its box.
+
+    The 32 px strike is the 16 px BDF doubled by [`scale_bdf_2x`]. When that
+    pass silently skipped every glyph, the strike kept its 32 px box and put 16
+    px of ink in the corner, so titles rendered at body size with double
+    advances. Comparing the ink extents catches that: the box alone does not.
+    """
+    name = otf.getBestCmap().get(sample)
+    boxes = {}
+    for strike, data in zip(otf["EBLC"].strikes, otf["EBDT"].strikeData):
+        glyph = data.get(name) if name else None
+        if glyph is not None:
+            boxes[strike.bitmapSizeTable.ppemY] = ink_extent(glyph)
+    if len(boxes) < 2:
+        raise SystemExit(f"fewer than two bitmap strikes carry U+{sample:04X}: {boxes}")
+    small, large = min(boxes), max(boxes)
+    (small_w, small_h), (large_w, large_h) = boxes[small], boxes[large]
+    scale = large / small
+    # A doubled bitmap is exactly `scale` times the ink; one pixel of slack
+    # absorbs a strike whose extreme column happened to be blank.
+    if large_w < small_w * scale - 1 or large_h < small_h * scale - 1:
+        raise SystemExit(
+            f"the {large} px strike holds {large_w}x{large_h} of ink for U+{sample:04X}, "
+            f"not the {scale:g}x {small_w}x{small_h} of the {small} px strike: "
+            "scale_bdf_2x did not double the bitmaps"
+        )
+
+
 def main() -> None:
     if shutil.which("fonttosfnt") is None:
         raise SystemExit(
@@ -186,9 +236,10 @@ def main() -> None:
     if not bdf16.exists():
         with gzip.open(bdf_gz, "rb") as source, bdf16.open("wb") as target:
             shutil.copyfileobj(source, target)
-    if not bdf32.exists():
-        print("doubling", bdf16, "->", bdf32)
-        scale_bdf_2x(bdf16, bdf32)
+    # Always rebuilt: a cached 32 px BDF from a broken run would otherwise keep
+    # reproducing the bad strike until someone deleted the cache by hand.
+    print("doubling", bdf16, "->", bdf32)
+    scale_bdf_2x(bdf16, bdf32)
     run(
         [
             "fonttosfnt",
@@ -202,6 +253,9 @@ def main() -> None:
     )
 
     otf = remap_bitmap_strikes(otf_path, otb_path)
+    # Before the font is saved: a strike that never grew is a rendering bug the
+    # build cannot see, so the generator refuses to produce it.
+    verify_strikes(otf)
     with tempfile.NamedTemporaryFile(suffix=".otf", delete=False) as temporary:
         temporary_path = Path(temporary.name)
     try:
