@@ -258,11 +258,6 @@ impl Launcher {
                     ))
                     .child(field(
                         colors,
-                        "客户端 jar",
-                        if version.has_jar { "有" } else { "无" }.into(),
-                    ))
-                    .child(field(
-                        colors,
                         "大小",
                         size.unwrap_or_else(|| "计算中…".into()),
                     ));
