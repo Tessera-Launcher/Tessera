@@ -24,35 +24,33 @@ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
 
 // --- text shadow -------------------------------------------------------- //
 //
-// Minecraft paints every glyph twice: a copy one pixel down and to the right,
-// then the text itself. Tessera's bitmap font has no antialiasing, so the copy
-// stays on the pixel grid and reads as a shadow instead of the grey halo an
-// emboldened outline would produce.
+// Minecraft paints every glyph twice: a copy one font unit down and to the
+// right, then the text itself. The copy is the same glyph with each colour
+// channel scaled to a quarter, alpha untouched, which reads as a hard shadow
+// rather than as the soft halo an emboldened outline would leave.
 //
-// Minecraft dims the copy to a quarter of each colour channel and leaves the
-// alpha alone, which works on the dark, noisy backgrounds the game draws text
-// over. The dimming itself is right for both themes — it is the alpha that has
-// to follow the surface: near-black text on a light surface needs the copy
-// translucent, or it stops being a shadow and just thickens the glyphs, while
-// light text on a dark surface needs it opaque to show at all. A glyph's own
-// luminance says which surface it is meant for, because each palette theme sits
-// on one side of it; no colour the themes use comes close to the split.
+// The offset is measured in font units: Minecraft's font is eight units tall, so
+// one unit is `font_size / 8`. A sprite batch carries no font size, only the
+// rasterised tile and its destination rect, so the offset here is that unit at
+// the 16 px body size this UI uses throughout. A 32 px title earns the same 2 px
+// instead of 4 px; nothing else in the app is big enough for that to show.
+//
+// Dark text is the exception: on a light surface an opaque quarter-colour copy
+// prints the glyph a second time instead of casting a shadow, so its copy loses
+// alpha as well. Minecraft's own text is light on dark nearly everywhere, so it
+// never needed the distinction.
 //
 // The copies are interleaved shadow-first, so the instance range for a sprite
 // batch `start..end` becomes `start * 2..end * 2`.
 
-/// How far the shadow sits from its glyph, in device pixels.
-const TEXT_SHADOW_OFFSET: f32 = 1.0;
-/// The luminance that separates light text from dark text.
+/// One font unit at the 16 px body size, in device pixels.
+const TEXT_SHADOW_OFFSET: f32 = 2.0;
+/// Minecraft's `ARGB.scaleRGB(colour, 0.25)`.
+const TEXT_SHADOW_DIM: f32 = 0.25;
+/// The luminance that separates light text from dark text. Every palette theme
+/// sits on one side of it.
 const TEXT_SHADOW_SPLIT: f32 = 0.5;
-/// Behind light text: Minecraft's opaque copy, lifted a little above its own
-/// quarter, because this theme's surfaces are almost black and a quarter of a
-/// light colour lands too close to them to read as a shadow.
-const TEXT_SHADOW_DIM_ON_DARK: f32 = 0.35;
-const TEXT_SHADOW_ALPHA_ON_DARK: f32 = 1.0;
-/// Behind dark text: Minecraft's quarter, held back by alpha so the copy settles
-/// towards the light surface instead of thickening the glyph.
-const TEXT_SHADOW_DIM_ON_LIGHT: f32 = 0.25;
+/// Alpha a dark glyph's shadow keeps, so it settles into a light surface.
 const TEXT_SHADOW_ALPHA_ON_LIGHT: f32 = 0.25;
 
 fn text_shadow_bounds(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
@@ -68,16 +66,15 @@ fn text_shadow_bounds(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
 fn text_shadow_color(color: Hsla) -> Hsla {
     let rgba = Rgba::from(color);
     let luminance = 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
-    let (dim, alpha) = if luminance > TEXT_SHADOW_SPLIT {
-        (TEXT_SHADOW_DIM_ON_DARK, TEXT_SHADOW_ALPHA_ON_DARK)
-    } else {
-        (TEXT_SHADOW_DIM_ON_LIGHT, TEXT_SHADOW_ALPHA_ON_LIGHT)
-    };
     Hsla::from(Rgba {
-        r: rgba.r * dim,
-        g: rgba.g * dim,
-        b: rgba.b * dim,
-        a: rgba.a * alpha,
+        r: rgba.r * TEXT_SHADOW_DIM,
+        g: rgba.g * TEXT_SHADOW_DIM,
+        b: rgba.b * TEXT_SHADOW_DIM,
+        a: if luminance > TEXT_SHADOW_SPLIT {
+            rgba.a
+        } else {
+            rgba.a * TEXT_SHADOW_ALPHA_ON_LIGHT
+        },
     })
 }
 
