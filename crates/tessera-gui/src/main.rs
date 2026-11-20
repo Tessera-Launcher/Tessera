@@ -524,12 +524,33 @@ impl Render for Launcher {
                                 window.start_window_move();
                             })
                             .child(
+                                // Unifont ships one weight, so `font_weight`
+                                // never changed a pixel here. For a bitmap face
+                                // the honest bold is a second pass shifted one
+                                // pixel right: the stems double in width and
+                                // every edge stays on the device grid, which an
+                                // emboldened outline could not promise. The
+                                // characters are laid out one by one with a one
+                                // pixel gap, because that second pass would
+                                // otherwise fill the gap between two stems. One
+                                // device pixel is the whole point here, so it is
+                                // neither a spacing nor a border token.
                                 div()
+                                    .h_flex()
+                                    .gap(px(1.0))
                                     .text_size(px(font::BODY))
                                     .line_height(relative(font::LINE_HEIGHT_TITLE))
-                                    .font_weight(FontWeight(weight::BOLD))
                                     .text_color(rgb(colors.text_accent))
-                                    .child("Tessera"),
+                                    .children("Tessera".chars().map(|letter| {
+                                        let letter = letter.to_string();
+                                        div().relative().child(letter.clone()).child(
+                                            div()
+                                                .absolute()
+                                                .top(px(0.0))
+                                                .left(px(1.0))
+                                                .child(letter),
+                                        )
+                                    })),
                             ),
                     )
                     .child(titlebar_button(
