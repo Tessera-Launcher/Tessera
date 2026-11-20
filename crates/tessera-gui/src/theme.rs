@@ -142,7 +142,7 @@ fn apply(mode: ThemeMode, cx: &mut App) {
             colors.text_secondary => [muted_foreground, tab_foreground, scrollbar_thumb_hover, description_list_label_foreground, magenta, magenta_light, chart_4, chart_5],
             colors.text_accent => [link, link_active, caret],
             colors.text_accent_hover => [link_hover],
-            colors.text_on_fill => [primary_foreground, button_primary_foreground, info_foreground, button_info_foreground, success_foreground, button_success_foreground, warning_foreground, button_warning_foreground, danger_foreground, button_danger_foreground, sidebar_primary_foreground, accent_foreground, switch_thumb],
+            colors.text_on_fill => [primary_foreground, button_primary_foreground, info_foreground, button_info_foreground, success_foreground, button_success_foreground, warning_foreground, button_warning_foreground, danger_foreground, button_danger_foreground, sidebar_primary_foreground, switch_thumb],
             colors.fill_primary => [primary, primary_active, button_primary, button_primary_active, info, info_active, button_info, button_info_active, success, success_active, button_success, button_success_active, sidebar_primary, progress_bar, slider_bar, slider_thumb, blue, green, cyan, chart_1, chart_bullish],
             colors.fill_primary_hover => [primary_hover, button_primary_hover, info_hover, button_info_hover, success_hover, button_success_hover, blue_light, green_light, cyan_light],
             colors.fill_warning => [warning, warning_active, warning_hover, button_warning, button_warning_active, button_warning_hover],
@@ -150,6 +150,13 @@ fn apply(mode: ThemeMode, cx: &mut App) {
             colors.status_warning => [yellow, yellow_light, chart_2],
             colors.status_danger => [red, red_light, chart_3, chart_bearish]
         }
+        // The component theme pairs `accent` with `accent_foreground`, and
+        // `accent` is mapped to `background.selected` above. `text.onFill` is
+        // only for text on `fill.*`, so using it here painted white labels on
+        // the light selected tint wherever a component highlights a row: the
+        // popup menu's hover was 1.1:1. `text.accent` is the role the design
+        // system defines for text on a selected surface.
+        theme.colors.accent_foreground = rgb(colors.text_accent).into();
         // Keep the 16 px scrollbar lane from painting a visible rail behind the 6 px thumb.
         theme.colors.scrollbar.a = 0.0;
         theme.colors.overlay = rgba(colors.backdrop).into();
