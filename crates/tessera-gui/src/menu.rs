@@ -5,17 +5,27 @@ use super::*;
 // ---- context menu items ----
 
 /// Build one menu item that runs `action` against the launcher and repaints.
+///
+/// The label is drawn here rather than left to `PopupMenuItem::new`, which
+/// styles the item with `text_sm()` (0.875 rem = 14 px). The embedded Unifont
+/// only carries 16 px and 32 px bitmap strikes, so a 14 px run has no strike to
+/// pick and swash falls back to the outline face: grey antialiased edges next
+/// to the crisp 16 px text everywhere else. `PopupMenuItem::element` keeps the
+/// row, hover, focus and click handling and only asks for the label, so the
+/// text can stay at the body size the design tokens define.
 fn item(
-    label: &str,
+    label: &'static str,
     weak: WeakEntity<Launcher>,
     action: impl Fn(&mut Launcher) + 'static,
 ) -> PopupMenuItem {
-    PopupMenuItem::new(label).on_click(move |_, _, app| {
-        let _ = weak.update(app, |this, cx| {
-            action(this);
-            this.refresh(cx);
-        });
-    })
+    PopupMenuItem::element(move |_, _| div().text_size(px(font::BODY)).child(label)).on_click(
+        move |_, _, app| {
+            let _ = weak.update(app, |this, cx| {
+                action(this);
+                this.refresh(cx);
+            });
+        },
+    )
 }
 
 /// Point the selection at `dir`, or say why it cannot be acted on.

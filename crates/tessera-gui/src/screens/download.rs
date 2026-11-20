@@ -486,7 +486,7 @@ impl Launcher {
         if let Some(summary) = &download.summary {
             body = body.child(
                 div()
-                    .text_sm()
+                    .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
                     .child(summary.text()),
             );
@@ -494,7 +494,7 @@ impl Launcher {
         if download.summary.is_none() && download.error.is_none() {
             body = body.child(
                 div()
-                    .text_sm()
+                    .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
                     .child("下载中，进度见上方日志"),
             );
