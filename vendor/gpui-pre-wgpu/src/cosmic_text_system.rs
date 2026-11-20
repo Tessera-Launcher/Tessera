@@ -65,6 +65,9 @@ struct LoadedFont {
     font: Arc<CosmicTextFont>,
     features: CosmicFontFeatures,
     is_known_emoji_font: bool,
+    /// How far the glyph's shadow copy sits, as a fraction of the em. See
+    /// [`shadow_em`].
+    shadow_em: f32,
     /// resolved at load time so `layout_line` shares one chain across faces.
     /// `Arc` keeps clone cheap on the per-run hot path.
     user_fallback_chain: Arc<[(FontId, SharedString)]>,
@@ -438,6 +441,7 @@ impl CosmicTextSystemState {
                 font,
                 features: cosmic_features.clone(),
                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
+                shadow_em: shadow_em(&name),
                 user_fallback_chain: Arc::clone(&user_fallback_chain),
             });
             self.loaded_font_ids_by_key.insert(key, font_id);
@@ -465,14 +469,44 @@ impl CosmicTextSystemState {
 
     fn raster_bounds(&mut self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
         let image = self.render_glyph_image(params)?;
-        let bounds = Bounds {
+        let shadow = self.shadow_offset(params, image.content);
+        let mut bounds: Bounds<DevicePixels> = Bounds {
             origin: point(image.placement.left.into(), (-image.placement.top).into()),
             size: size(image.placement.width.into(), image.placement.height.into()),
         };
+        // The shadow copy extends right and down from the glyph, so only the
+        // tile grows; its origin, which is what the quad is placed by, does not.
+        bounds.size.width.0 += shadow.0;
+        bounds.size.height.0 += shadow.0;
         if !bounds.is_zero() {
             self.pending_glyph_images.insert(params.clone(), image);
         }
         Ok(bounds)
+    }
+
+    /// Distance from a glyph to its shadow copy, in device pixels.
+    ///
+    /// Minecraft draws the copy a fixed distance from the glyph and leaves it
+    /// out of the advance, so it never moves the text: the offset is a fraction
+    /// of the em, not of the glyph. Zero means this glyph gets no shadow.
+    fn shadow_offset(
+        &self,
+        params: &RenderGlyphParams,
+        content: swash::scale::image::Content,
+    ) -> DevicePixels {
+        // Only alpha masks are composited. A colour glyph (emoji) is copied
+        // verbatim, and a translucent shadow under one reads as a smudge; LCD
+        // subpixel masks carry colour in separate channels that a single-shadow
+        // tile cannot represent. Tessera renders text as grayscale, so the
+        // second case never arises here.
+        if !matches!(content, swash::scale::image::Content::Mask) {
+            return DevicePixels(0);
+        }
+        let Some(font) = self.loaded_fonts.get(params.font_id.0) else {
+            return DevicePixels(0);
+        };
+        let em = f32::from(params.font_size) * params.scale_factor;
+        DevicePixels((em * font.shadow_em).round() as i32)
     }
 
     #[profiling::function]
@@ -499,15 +533,79 @@ impl CosmicTextSystemState {
                 Ok((bitmap_size, image.data))
             }
             swash::scale::image::Content::Mask => {
+                let mask = self.compose_shadow(params, image.content, &image, bitmap_size);
                 if params.subpixel_rendering {
                     // We must always return RGBA data when subpixel rendering is requested.
-                    let expanded = image.data.iter().flat_map(|&a| [a, a, a, a]).collect();
+                    let expanded = mask.iter().flat_map(|&a| [a, a, a, a]).collect();
                     Ok((bitmap_size, expanded))
                 } else {
-                    Ok((bitmap_size, image.data))
+                    Ok((bitmap_size, mask))
                 }
             }
         }
+    }
+
+    /// Lays the glyph into an alpha tile and stamps its shadow copy under it.
+    ///
+    /// The copy is the glyph's own alpha at a quarter strength, which is how
+    /// Minecraft dims it — over the near-black surface the game draws on, that
+    /// is indistinguishable from an opaque quarter-colour copy.
+    fn compose_shadow(
+        &self,
+        params: &RenderGlyphParams,
+        content: swash::scale::image::Content,
+        image: &swash::scale::image::Image,
+        bitmap_size: Size<DevicePixels>,
+    ) -> Vec<u8> {
+        let width = bitmap_size.width.0.max(0) as usize;
+        let height = bitmap_size.height.0.max(0) as usize;
+        let shadow = self.shadow_offset(params, content).0.max(0) as usize;
+        let source_width = (image.placement.width as usize).min(width);
+        let source_height = (image.placement.height as usize).min(height);
+        let mut tile = vec![0; width * height];
+
+        for y in 0..source_height {
+            let row = y * source_width;
+            let target = y * width;
+            let Some(source) = image.data.get(row..row + source_width) else {
+                break;
+            };
+            tile[target..target + source_width].copy_from_slice(source);
+        }
+
+        if shadow == 0 {
+            return tile;
+        }
+
+        for y in 0..source_height {
+            let row = y * source_width;
+            let Some(source) = image.data.get(row..row + source_width) else {
+                break;
+            };
+            let Some(target_y) = (y + shadow).checked_sub(0) else {
+                continue;
+            };
+            if target_y >= height {
+                break;
+            }
+            for (x, &alpha) in source.iter().enumerate() {
+                let alpha = alpha / 4;
+                let (Some(target_x), false) = (x.checked_add(shadow), alpha == 0) else {
+                    continue;
+                };
+                if target_x >= width {
+                    break;
+                }
+                let pixel = &mut tile[target_y * width + target_x];
+                // Shadow under text: alpha-over compositing, in u32 so the
+                // sum cannot overflow a byte.
+                let glyph = *pixel as u32;
+                let shadow = alpha as u32;
+                let over = glyph + shadow - glyph * shadow / 255;
+                *pixel = over.min(255) as u8;
+            }
+        }
+        tile
     }
 
     fn render_glyph_image(
@@ -588,6 +686,11 @@ impl CosmicTextSystemState {
                 font,
                 features: CosmicFontFeatures::new(),
                 is_known_emoji_font: check_is_known_emoji_font(&face.post_script_name),
+                shadow_em: face
+                    .families
+                    .first()
+                    .map(|(name, _)| shadow_em(name))
+                    .unwrap_or(0.0),
                 user_fallback_chain: Arc::from(Vec::new()),
             });
 
@@ -1203,6 +1306,22 @@ fn face_info_into_properties(
 fn check_is_known_emoji_font(postscript_name: &str) -> bool {
     // TODO: Include other common emoji fonts
     postscript_name == "NotoColorEmoji"
+}
+
+/// Where a face's shadow copy sits, as a fraction of the em.
+///
+/// Minecraft measures the offset in font units and its font is eight units
+/// tall, so a bitmap glyph's copy lands one eighth of an em away. Its Unifont
+/// grid is sixteen units tall and `GlyphInfo::getShadowOffset` returns half a
+/// unit there, which is a sixteenth of an em: half the distance, because the
+/// glyph itself is drawn at half size. Tessera ships exactly those two cases —
+/// the 8 px Pixel face and the 16 px Unifont grid.
+fn shadow_em(family: &str) -> f32 {
+    if family.contains("Unifont") {
+        0.5 / 8.0
+    } else {
+        1.0 / 8.0
+    }
 }
 
 #[cfg(test)]

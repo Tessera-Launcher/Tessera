@@ -4,9 +4,8 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Hsla, MonochromeSprite, Path,
-    Point, PrimitiveBatch, Rgba, ScaledPixels, Scene, Size, SubpixelSprite,
-    get_gamma_correction_ratios, point,
+    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Path, Point, PrimitiveBatch,
+    ScaledPixels, Scene, Size, get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -21,88 +20,6 @@ use std::sync::Arc;
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
 const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
-
-// --- text shadow -------------------------------------------------------- //
-//
-// Minecraft paints every glyph twice: a copy one font unit down and to the
-// right, then the text itself. The copy is the same glyph with each colour
-// channel scaled to a quarter, alpha untouched, which reads as a hard shadow
-// rather than as the soft halo an emboldened outline would leave.
-//
-// The offset is measured in font units: Minecraft's font is eight units tall, so
-// one unit is `font_size / 8`. A sprite batch carries no font size, only the
-// rasterised tile and its destination rect, so the offset here is that unit at
-// the 16 px body size this UI uses throughout. A 32 px title earns the same 2 px
-// instead of 4 px; nothing else in the app is big enough for that to show.
-//
-// Dark text is the exception: on a light surface an opaque quarter-colour copy
-// prints the glyph a second time instead of casting a shadow, so its copy loses
-// alpha as well. Minecraft's own text is light on dark nearly everywhere, so it
-// never needed the distinction.
-//
-// The copies are interleaved shadow-first, so the instance range for a sprite
-// batch `start..end` becomes `start * 2..end * 2`.
-
-/// One font unit at the 16 px body size, in device pixels.
-const TEXT_SHADOW_OFFSET: f32 = 2.0;
-/// Minecraft's `ARGB.scaleRGB(colour, 0.25)`.
-const TEXT_SHADOW_DIM: f32 = 0.25;
-/// The luminance that separates light text from dark text. Every palette theme
-/// sits on one side of it.
-const TEXT_SHADOW_SPLIT: f32 = 0.5;
-/// Alpha a dark glyph's shadow keeps, so it settles into a light surface.
-const TEXT_SHADOW_ALPHA_ON_LIGHT: f32 = 0.25;
-
-fn text_shadow_bounds(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
-    Bounds {
-        origin: point(
-            ScaledPixels(bounds.origin.x.0 + TEXT_SHADOW_OFFSET),
-            ScaledPixels(bounds.origin.y.0 + TEXT_SHADOW_OFFSET),
-        ),
-        size: bounds.size,
-    }
-}
-
-fn text_shadow_color(color: Hsla) -> Hsla {
-    let rgba = Rgba::from(color);
-    let luminance = 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
-    Hsla::from(Rgba {
-        r: rgba.r * TEXT_SHADOW_DIM,
-        g: rgba.g * TEXT_SHADOW_DIM,
-        b: rgba.b * TEXT_SHADOW_DIM,
-        a: if luminance > TEXT_SHADOW_SPLIT {
-            rgba.a
-        } else {
-            rgba.a * TEXT_SHADOW_ALPHA_ON_LIGHT
-        },
-    })
-}
-
-fn monochrome_sprites_with_shadow(sprites: &[MonochromeSprite]) -> Vec<MonochromeSprite> {
-    let mut out = Vec::with_capacity(sprites.len() * 2);
-    for sprite in sprites {
-        out.push(MonochromeSprite {
-            bounds: text_shadow_bounds(sprite.bounds),
-            color: text_shadow_color(sprite.color),
-            ..*sprite
-        });
-        out.push(*sprite);
-    }
-    out
-}
-
-fn subpixel_sprites_with_shadow(sprites: &[SubpixelSprite]) -> Vec<SubpixelSprite> {
-    let mut out = Vec::with_capacity(sprites.len() * 2);
-    for sprite in sprites {
-        out.push(SubpixelSprite {
-            bounds: text_shadow_bounds(sprite.bounds),
-            color: text_shadow_color(sprite.color),
-            ..*sprite
-        });
-        out.push(*sprite);
-    }
-    out
-}
 
 /// Shader variant for backends with storage buffer support: the shared shader
 /// logic plus the storage-buffer instance transport.
@@ -1686,8 +1603,6 @@ impl WgpuRendererCore {
                         &mut pass,
                     ),
                     PrimitiveBatch::MonochromeSprites { texture_id, range } => {
-                        // Glyphs were written shadow-first; see `monochrome_sprites_with_shadow`.
-                        let range = range.start * 2..range.end * 2;
                         self.draw_sprites(
                             &instance_bindings.monochrome_sprites,
                             texture_id,
@@ -1697,8 +1612,6 @@ impl WgpuRendererCore {
                         )?;
                     }
                     PrimitiveBatch::SubpixelSprites { texture_id, range } => {
-                        // Glyphs were written shadow-first; see `subpixel_sprites_with_shadow`.
-                        let range = range.start * 2..range.end * 2;
                         let resources = self.resources();
                         self.draw_sprites(
                             &instance_bindings.subpixel_sprites,
@@ -1759,12 +1672,12 @@ impl WgpuRendererCore {
             monochrome_sprites: self.write_instance_binding(
                 "monochrome_sprites_bind_group",
                 instance_offset,
-                &monochrome_sprites_with_shadow(&scene.monochrome_sprites),
+                &scene.monochrome_sprites,
             )?,
             subpixel_sprites: self.write_instance_binding(
                 "subpixel_sprites_bind_group",
                 instance_offset,
-                &subpixel_sprites_with_shadow(&scene.subpixel_sprites),
+                &scene.subpixel_sprites,
             )?,
             polychrome_sprites: self.write_instance_binding(
                 "polychrome_sprites_bind_group",

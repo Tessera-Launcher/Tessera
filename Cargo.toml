@@ -44,9 +44,13 @@ opt-level = 3
 # - GPUI normally offsets rasterized glyphs by their subpixel position. The
 #   embedded Unifont is a bitmap face, and that offset blurs its pixel grid, so
 #   bitmap glyphs stay on whole pixels.
-# - Text is drawn twice, the first copy one pixel down-right in a translucent
-#   version of the text colour, the way Minecraft's `Font` paints its shadow.
-#   Doing it in the renderer keeps every glyph in the app in step, including the
-#   ones gpui-component draws for menus and fields.
+# - Every glyph tile carries its own shadow: a quarter-strength copy of the
+#   glyph one Minecraft font unit down and to the right, composited while the
+#   glyph is rasterized. Rasterizing is the only place that knows both the face
+#   and the font size, and the two faces need different distances — a full unit
+#   for the 8 px pixel face, half a unit for Unifont's 16 px grid, exactly like
+#   `GlyphInfo::getShadowOffset` in the game. Doing it here keeps every glyph in
+#   the app in step, including the ones gpui-component draws for menus and
+#   fields.
 [patch.crates-io]
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
