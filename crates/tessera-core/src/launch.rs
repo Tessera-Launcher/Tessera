@@ -313,10 +313,16 @@ pub fn spawn_game(
     receiver
 }
 
-/// Offline UUID: the same name always maps to the same v3-style uuid.
+/// Offline UUID: the same name always maps to the same uuid.
+///
+/// This is Java's `UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes())`,
+/// i.e. RFC 4122 version 3 — **MD5**, not SHA-1. The version/variant bits are
+/// then forced to 3/`10xx`, which is what makes it look like a v3 uuid; deriving
+/// the rest from SHA-1 produces a value no server has ever seen, so the same
+/// player would be a stranger there.
 pub fn offline_uuid(name: &str) -> String {
-    use sha1::Digest;
-    let mut hasher = sha1::Sha1::new();
+    use md5::Digest;
+    let mut hasher = md5::Md5::new();
     hasher.update(format!("OfflinePlayer:{name}").as_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0u8; 16];

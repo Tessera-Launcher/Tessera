@@ -307,10 +307,12 @@ mod tests {
         assert_eq!(doc["application"], "Offline");
         assert_eq!(doc["player"]["name"], "Steve");
         assert!(doc.get("session").is_none());
-        // The UUID is the one the game will use offline.
+        // The UUID is the one the game will use offline. Spelled out rather
+        // than compared with the function that wrote it: a circular assertion
+        // is how the SHA-1 derivation went unnoticed.
         assert_eq!(
             doc["player"]["uuid"],
-            crate::launch::offline_uuid("Steve").as_str()
+            "5627dd98-e6be-3c21-b8a8-e92344183641"
         );
 
         let listed = list(tmp.path());

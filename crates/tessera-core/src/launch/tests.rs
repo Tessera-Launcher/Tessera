@@ -83,6 +83,19 @@ fn every_class_path_jar_is_normalized_not_only_the_lwjgl3_client() {
 }
 
 #[test]
+fn an_offline_uuid_is_the_one_the_game_computes() {
+    // Java: UUID.nameUUIDFromBytes("OfflinePlayer:Steve") — MD5, version 3.
+    // Deriving it from SHA-1 gives 1cc1131d-d8e4-3ae5-964c-4afd4f9ba6c1, which
+    // no server agrees with.
+    assert_eq!(
+        offline_uuid("Steve"),
+        "5627dd98-e6be-3c21-b8a8-e92344183641"
+    );
+    assert_eq!(offline_uuid("Alex"), offline_uuid("Alex"));
+    assert_ne!(offline_uuid("Alex"), offline_uuid("Steve"));
+}
+
+#[test]
 fn offline_credentials_are_stable_and_legacy() {
     let a = Credentials::offline("Steve");
     let b = Credentials::offline("Steve");

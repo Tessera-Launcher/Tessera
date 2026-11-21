@@ -7058,6 +7058,7 @@ dependencies = [
  "hex",
  "junction",
  "libc",
+ "md-5",
  "mdt-minecraft",
  "minecraft-auth",
  "qbsdiff",
