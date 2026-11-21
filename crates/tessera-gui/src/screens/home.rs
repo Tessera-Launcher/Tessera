@@ -93,7 +93,7 @@ impl Launcher {
 
     fn version_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
-        let title = format!("版本 ({})", self.state.versions.len());
+        let title = format!("版本 ({})", self.state.all_versions.len());
         let weak = cx.entity().downgrade();
         let mut list = div()
             .id("version-list")
@@ -121,7 +121,7 @@ impl Launcher {
                 }),
         );
 
-        if self.state.versions.is_empty() {
+        if self.state.all_versions.is_empty() {
             list = list.child(
                 div()
                     .p(px(space::XL))
@@ -132,13 +132,13 @@ impl Launcher {
         } else {
             // A large `.minecraft` can hold thousands of versions; only render a
             // page around the selection instead of building every row per frame.
-            let total = self.state.versions.len();
+            let total = self.state.all_versions.len();
             let cursor = self.state.selected.min(total.saturating_sub(1));
             let start = cursor.saturating_sub(60);
             let end = (start + 120).min(total);
             for (index, version) in self
                 .state
-                .versions
+                .all_versions
                 .iter()
                 .enumerate()
                 .skip(start)

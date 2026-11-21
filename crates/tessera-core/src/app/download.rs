@@ -121,9 +121,6 @@ pub struct DownloadUi {
     pub expanded: Vec<String>,
     /// The filtered list laid out as drawn lines (see [`crate::version_tree`]).
     pub rows: Vec<crate::version_tree::Row>,
-    /// Folded groups in [`DownloadUi::rows`], cached so the pane title does not
-    /// walk every row on every frame.
-    folded: usize,
     /// Search text, matched against the version id.
     pub query: String,
     pub filter: VersionFilter,
@@ -148,7 +145,6 @@ impl Default for DownloadUi {
             visible: Vec::new(),
             expanded: Vec::new(),
             rows: Vec::new(),
-            folded: 0,
             query: String::new(),
             filter: VersionFilter::All,
             picked: 0,
@@ -184,15 +180,11 @@ impl DownloadUi {
         self.visible.iter().map(|&index| &self.all[index])
     }
 
-    /// The indices behind `DownloadUi::versions`; the tree layout and the
-    /// title need both the list and what it points at.
+    /// The indices behind `DownloadUi::versions`; the tree layout needs both
+    /// the list and what it points at.
+    #[cfg(test)]
     pub fn visible(&self) -> &[usize] {
         &self.visible
-    }
-
-    /// Folded groups currently drawn.
-    pub fn folded_rows(&self) -> usize {
-        self.folded
     }
 
     /// The drawn row the highlight is on.
@@ -213,19 +205,6 @@ impl DownloadUi {
     pub fn rebuild_rows(&mut self) {
         let tree = self.filter == VersionFilter::All && self.query.trim().is_empty();
         self.rows = crate::version_tree::build(&self.all, &self.visible, &self.expanded, tree);
-        self.folded = self
-            .rows
-            .iter()
-            .filter(|row| {
-                matches!(
-                    row.kind,
-                    crate::version_tree::RowKind::Group {
-                        expanded: false,
-                        ..
-                    }
-                )
-            })
-            .count();
     }
 
     pub fn picked_loader(&self) -> Loader {

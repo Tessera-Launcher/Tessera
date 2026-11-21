@@ -51,6 +51,20 @@ pub fn blocking_client(total: Duration) -> Result<reqwest::blocking::Client> {
         .map_err(|error| Error::internal(format!("无法创建 HTTP 客户端：{error}")))
 }
 
+/// Keep log lines readable: show the host and the file name, not the whole URL.
+pub fn shorten(url: &str) -> String {
+    let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let (host, path) = without_scheme
+        .split_once('/')
+        .unwrap_or((without_scheme, ""));
+    let file = path.rsplit('/').next().unwrap_or("");
+    if file.is_empty() {
+        host.to_string()
+    } else {
+        format!("{host}/…/{file}")
+    }
+}
+
 /// Normalise what the user typed into a proxy base.
 ///
 /// `gh-proxy.com`, `https://gh-proxy.com/` and `http://127.0.0.1:8080` all work;

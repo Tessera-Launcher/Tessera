@@ -333,9 +333,6 @@ pub struct App {
     pub runtimes: PathBuf,
     /// Every version on disk, including loader bases.
     pub all_versions: Vec<LocalVersion>,
-    /// What the list shows. Every install gets a row: a self-contained loader
-    /// directory is an install of its own, not a footnote to a vanilla one.
-    pub versions: Vec<LocalVersion>,
     pub accounts: Vec<SavedAccount>,
     pub selected: usize,
     pub status: String,
@@ -414,7 +411,6 @@ impl App {
             runtimes,
             dependencies,
             all_versions: versions,
-            versions: Vec::new(),
             accounts,
             selected: 0,
             log: VecDeque::new(),
@@ -444,7 +440,7 @@ impl App {
         };
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
-        app.rebuild_version_list();
+        app.clamp_selection();
         app.launch_options.runtimes = Some(app.runtimes.clone());
 
         // Start from the newest saved account; `restore_account` applies the
@@ -460,7 +456,7 @@ impl App {
 
     pub fn reload(&mut self) {
         self.refresh_versions();
-        self.status = format!("已刷新：{} 个版本", self.versions.len());
+        self.status = format!("已刷新：{} 个版本", self.all_versions.len());
         self.log(self.status.clone());
     }
 
@@ -473,9 +469,9 @@ impl App {
         self.uninstall_confirm = None;
         self.size_cache = None;
         self.all_versions = discover::scan(&self.root);
-        self.rebuild_version_list();
+        self.clamp_selection();
         self.selected = keep
-            .and_then(|dir| self.versions.iter().position(|v| v.dir == dir))
+            .and_then(|dir| self.all_versions.iter().position(|v| v.dir == dir))
             .unwrap_or(0);
     }
 
@@ -610,16 +606,15 @@ impl App {
         }
     }
 
-    /// Rebuild the visible list from what was scanned.
-    fn rebuild_version_list(&mut self) {
-        self.versions = self.all_versions.clone();
-        if self.selected >= self.versions.len() {
-            self.selected = self.versions.len().saturating_sub(1);
+    /// Keep the selection inside the scanned list.
+    fn clamp_selection(&mut self) {
+        if self.selected >= self.all_versions.len() {
+            self.selected = self.all_versions.len().saturating_sub(1);
         }
     }
 
     pub fn selected_version(&self) -> Option<&LocalVersion> {
-        self.versions.get(self.selected)
+        self.all_versions.get(self.selected)
     }
 
     /// Ask the main loop for a side effect.
@@ -641,7 +636,8 @@ impl App {
         std::mem::take(&mut self.ui_requests)
     }
 
-    /// The requests queued so far, for the front-end and for tests.
+    /// The requests queued so far, for tests.
+    #[cfg(test)]
     pub fn ui_requests(&self) -> &[UiRequest] {
         &self.ui_requests
     }
@@ -650,7 +646,8 @@ impl App {
         std::mem::take(&mut self.effects)
     }
 
-    /// Read-only view of what is queued, without consuming it.
+    /// Read-only view of what is queued, without consuming it, for tests.
+    #[cfg(test)]
     pub fn effects(&self) -> &[Effect] {
         &self.effects
     }
@@ -826,7 +823,7 @@ impl App {
 
         // Rescan rather than filtering in memory: what is on disk is the list.
         self.all_versions = discover::scan(&self.root);
-        self.rebuild_version_list();
+        self.clamp_selection();
 
         // `libraries/` and `assets/` are shared by every version, so the delete
         // above only freed the profile. Reclaim what nothing on disk still
@@ -840,7 +837,7 @@ impl App {
                 .map(|version| version.dir.clone())
                 .collect(),
         ));
-        self.selected = self.selected.min(self.versions.len().saturating_sub(1));
+        self.selected = self.selected.min(self.all_versions.len().saturating_sub(1));
 
         // `removed` starts with the selected version, so index 0 is the one the
         // user asked for.

@@ -24,7 +24,7 @@ fn uninstall_asks_once_then_removes_the_directory() {
     app.request_uninstall();
     assert!(!root.join("versions/1.20.1").exists());
     assert!(root.join("versions/1.8.9").is_dir(), "neighbour survived");
-    assert_eq!(app.versions.len(), 1);
+    assert_eq!(app.all_versions.len(), 1);
     assert!(app.uninstall_plan().is_none());
     assert!(app.status.contains("已卸载"), "{}", app.status);
     assert!(
@@ -79,8 +79,8 @@ fn uninstall_targets_the_directory_not_the_profile_id() {
     write_version(root, "my-instance", r#"{"id":"1.20.1"}"#);
     let mut app = App::new(root, "/acc", discover::scan(root), Vec::new());
     app.selected = 0;
-    assert_eq!(app.versions[0].id, "1.20.1");
-    assert_eq!(app.versions[0].dir, "my-instance");
+    assert_eq!(app.all_versions[0].id, "1.20.1");
+    assert_eq!(app.all_versions[0].dir, "my-instance");
 
     app.request_uninstall();
     assert_eq!(
@@ -92,7 +92,7 @@ fn uninstall_targets_the_directory_not_the_profile_id() {
         !root.join("versions/my-instance").exists(),
         "the directory that was listed is the one that must go"
     );
-    assert!(app.versions.is_empty());
+    assert!(app.all_versions.is_empty());
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn uninstall_takes_dependent_loader_profiles_with_the_base() {
         !root.join("versions/1.20.1+Fabric0.15.11").exists(),
         "a profile without its base cannot start, so it goes too"
     );
-    assert!(app.versions.is_empty(), "list must not keep stale rows");
+    assert!(app.all_versions.is_empty(), "list must not keep stale rows");
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn uninstalling_a_loader_profile_leaves_its_base_alone() {
     );
     assert_eq!(app.all_versions.len(), 1);
     assert_eq!(
-        app.versions.len(),
+        app.all_versions.len(),
         1,
         "the base is no longer hidden now that nothing inherits it"
     );
@@ -443,7 +443,7 @@ fn uninstall_refuses_ids_that_are_not_one_path_component() {
     assert!(canary.is_file(), "`..` escaped the versions directory");
     assert!(root.join("versions").is_dir());
     assert!(app.status.contains("失败"), "{}", app.status);
-    assert_eq!(app.versions.len(), 1, "failed delete keeps the row");
+    assert_eq!(app.all_versions.len(), 1, "failed delete keeps the row");
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn a_missing_directory_reports_failure_and_keeps_the_row() {
     app.request_uninstall();
 
     assert!(app.status.contains("失败"), "{}", app.status);
-    assert_eq!(app.versions.len(), 1);
+    assert_eq!(app.all_versions.len(), 1);
     assert!(app.uninstall_plan().is_none());
 }
 

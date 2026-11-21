@@ -30,6 +30,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::error::{Error, Result};
+use crate::fsutil::sha256_file;
 
 pub const VERSION: &str = "1.8.9";
 /// Celeritas' release index, as a person sees it on GitHub.
@@ -503,20 +504,6 @@ fn entries_digest(entries: &BTreeMap<String, Vec<u8>>) -> String {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
-}
-
-fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(hex::encode(digest.finalize()))
 }
 
 fn safe_path(name: &str) -> Result<()> {

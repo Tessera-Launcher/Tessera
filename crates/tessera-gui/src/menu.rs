@@ -36,7 +36,7 @@ fn item(
 fn select_row(this: &mut Launcher, dir: &str, action: &str) -> bool {
     match this
         .state
-        .versions
+        .all_versions
         .iter()
         .position(|version| version.dir == dir)
     {

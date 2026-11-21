@@ -65,8 +65,6 @@ struct SearchResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SearchHit {
     pub project_id: String,
-    #[serde(default)]
-    pub slug: Option<String>,
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -77,13 +75,9 @@ pub struct SearchHit {
     #[serde(default)]
     pub downloads: u64,
     #[serde(default)]
-    pub categories: Vec<String>,
-    #[serde(default)]
     pub environment: Vec<String>,
     #[serde(default)]
     pub game_versions: Vec<String>,
-    #[serde(default)]
-    pub latest_version: Option<String>,
 }
 
 /// One published version, filtered by the caller to Fabric + one game version.

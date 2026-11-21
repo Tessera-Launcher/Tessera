@@ -16,16 +16,13 @@ fn write_fabric(root: &Path, dir: &str, base: &str) {
 fn search_hit() -> crate::modrinth::SearchHit {
     crate::modrinth::SearchHit {
         project_id: "AANobbMI".into(),
-        slug: Some("sodium".into()),
         title: "Sodium".into(),
         description: "A modern rendering engine".into(),
         author: "jellysquid3".into(),
         icon_url: None,
         downloads: 42,
-        categories: vec!["fabric".into()],
         environment: vec!["client_only".into()],
         game_versions: vec!["1.20.1".into()],
-        latest_version: None,
     }
 }
 

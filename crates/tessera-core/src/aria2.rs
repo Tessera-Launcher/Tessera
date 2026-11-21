@@ -23,6 +23,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
+use crate::fsutil::mark_executable;
+use crate::http::shorten;
 
 /// The aria2 release every build below was cut from.
 pub const VERSION: &str = "1.37.0";
@@ -85,13 +87,6 @@ pub struct Build {
     pub size: u64,
     pub sha256: &'static str,
     pub member: Option<&'static str>,
-}
-
-impl Build {
-    /// The archive has to be unpacked before it can be used.
-    pub const fn archived(self) -> bool {
-        self.member.is_some()
-    }
 }
 
 /// Every pinned build, newest target order.
@@ -457,15 +452,6 @@ fn extract(archive: &Path, dest: &Path, member: &str) -> Result<PathBuf> {
     Err(Error::missing(format!("压缩包里没有 {member}")))
 }
 
-#[cfg(unix)]
-fn mark_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
-}
-
-#[cfg(not(unix))]
-fn mark_executable(_path: &Path) {}
-
 /// Run `aria2c --version` and return the version it reports.
 pub fn probe(binary: &Path) -> Option<String> {
     let output = std::process::Command::new(binary)
@@ -504,17 +490,6 @@ fn parse_triple(version: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// Keep log lines readable: the host and the file name, not the whole URL.
-fn shorten(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let file = path.rsplit('/').next().unwrap_or("");
-    if file.is_empty() {
-        host.to_string()
-    } else {
-        format!("{host}/…/{file}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,7 +507,7 @@ mod tests {
             assert!(build.sha256.chars().all(|c| c.is_ascii_hexdigit()));
             assert!(build.size > 0);
             // A zip carries the member path; a bare binary does not.
-            assert_eq!(build.archived(), build.url.ends_with(".zip"));
+            assert_eq!(build.member.is_some(), build.url.ends_with(".zip"));
         }
     }
 

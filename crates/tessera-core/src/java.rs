@@ -26,10 +26,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::error::{Error, Result};
+use crate::fsutil::{mark_executable, sha256_file};
+use crate::http::shorten;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 /// The one feature version the picker offers.
 ///
@@ -468,20 +469,6 @@ fn fetch_to(
 }
 
 /// Lowercase hex SHA-256 of a file.
-pub fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = BufReader::new(File::open(path)?);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hex::encode(hasher.finalize()))
-}
-
 /// Check a downloaded archive against the hash the API published.
 pub fn verify(path: &Path, expected: &str) -> Result<()> {
     let actual = sha256_file(path).map_err(|error| Error::io("无法读取下载结果", error))?;
@@ -557,20 +544,6 @@ fn single_entry(dir: &Path) -> io::Result<PathBuf> {
 }
 
 /// Make `bin/java` runnable. Tar keeps modes, zip on a Windows archive does not.
-fn mark_executable(java: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = fs::metadata(java) {
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(permissions.mode() | 0o755);
-            let _ = fs::set_permissions(java, permissions);
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = java;
-}
-
 fn blocking_fetch(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -650,20 +623,6 @@ where
         |error| Event::Failed(error.user_message()),
         work,
     )
-}
-
-/// Keep log lines readable: show the host and the file name, not the whole URL.
-fn shorten(url: &str) -> String {
-    let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let (host, path) = without_scheme
-        .split_once('/')
-        .unwrap_or((without_scheme, ""));
-    let file = path.rsplit('/').next().unwrap_or("");
-    if file.is_empty() {
-        host.to_string()
-    } else {
-        format!("{host}/…/{file}")
-    }
 }
 
 #[cfg(test)]

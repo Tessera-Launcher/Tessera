@@ -160,7 +160,7 @@ fn flush_cleanup(app: &mut App) {
 /// Put the selection on `id`, wherever the scan happened to sort it.
 fn select(app: &mut App, id: &str) {
     app.selected = app
-        .versions
+        .all_versions
         .iter()
         .position(|v| v.id == id)
         .unwrap_or_else(|| panic!("{id} is not listed"));

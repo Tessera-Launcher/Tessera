@@ -18,8 +18,8 @@ fn a_loader_install_is_listed_beside_a_vanilla_one() {
         vec![version("26.3"), loader("26.3+Fabric0.20.1", "26.3")],
         vec![],
     );
-    assert_eq!(app.versions.len(), 2, "both installs are listed");
-    assert_eq!(app.versions[1].id, "26.3+Fabric0.20.1");
+    assert_eq!(app.all_versions.len(), 2, "both installs are listed");
+    assert_eq!(app.all_versions[1].id, "26.3+Fabric0.20.1");
 }
 
 #[test]
@@ -34,8 +34,8 @@ fn a_self_contained_loader_has_no_parent_at_all() {
         }],
         vec![],
     );
-    assert_eq!(app.versions.len(), 1);
-    assert!(app.versions[0].loader);
+    assert_eq!(app.all_versions.len(), 1);
+    assert!(app.all_versions[0].loader);
     assert_eq!(
         app.selected_version().map(|v| v.id.as_str()),
         Some("26.3-fabric-0.20.1")
@@ -54,15 +54,15 @@ fn reload_lists_every_directory_on_disk() {
     let mut app = App::new(root, "/acc", vec![], vec![]);
     write("26.3", r#"{"id":"26.3"}"#);
     app.reload();
-    assert_eq!(app.versions.len(), 1);
+    assert_eq!(app.all_versions.len(), 1);
 
     write(
         "26.3+Fabric0.20.1",
         r#"{"id":"26.3+Fabric0.20.1","inheritsFrom":"26.3"}"#,
     );
     app.reload();
-    assert_eq!(app.versions.len(), 2, "nothing is filtered out");
-    let loaders: Vec<_> = app.versions.iter().filter(|v| v.loader).collect();
+    assert_eq!(app.all_versions.len(), 2, "nothing is filtered out");
+    let loaders: Vec<_> = app.all_versions.iter().filter(|v| v.loader).collect();
     assert_eq!(loaders.len(), 1);
     assert_eq!(loaders[0].id, "26.3+Fabric0.20.1");
 }

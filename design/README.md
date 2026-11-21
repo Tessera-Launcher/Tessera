@@ -60,7 +60,7 @@ npm run check             # 以上全部 + 测试
 npm run preview           # 构建后启动浏览器预览
 ```
 
-无需 Rust 查看界面：双击根目录 `preview.cmd`，或直接打开 `preview/index.html`。预览使用已生成的静态文件，运行时不需要 Node、Rust 或网络。
+无需 Rust 查看界面：打开 `preview/index.html`，或运行 `npm run preview`。预览使用已生成的静态文件，运行时不需要 Node、Rust 或网络。
 
 ## 校验
 

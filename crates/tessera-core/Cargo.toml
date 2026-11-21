@@ -21,7 +21,7 @@ qbsdiff = "1.4.4"
 minecraft-auth = { path = "../../vendor/minecraft-auth" }
 mdt-minecraft = { path = "../../vendor/mdt-minecraft" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
-tokio = { version = "1", features = ["rt", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync"] }
 # Ogg Vorbis only: the game ships nothing else, and `default-features = false`
 # keeps flac/mp3/mp4/wav and the recording API out of the binary entirely.
 rodio = { version = "0.23", default-features = false, features = ["playback", "vorbis"] }

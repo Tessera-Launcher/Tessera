@@ -34,9 +34,6 @@ fn the_all_view_folds_a_snapshot_cycle_into_one_row() {
         crate::version_tree::title(&app.download.all, app.download.visible(), 1, 3),
         "1.21.9-pre3 ~ 1.21.9-pre1"
     );
-    // The title's count is cached when the rows are laid out, not scanned on
-    // every frame.
-    assert_eq!(app.download.folded_rows(), 1);
     assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
 }
 
@@ -372,7 +369,7 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
         bytes: 0,
     });
     app.all_versions = vec![version("26.3")];
-    app.rebuild_version_list();
+    app.clamp_selection();
     app.selected = 0;
     app.take_effects();
     app.start_aot_training();

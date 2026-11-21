@@ -8,8 +8,11 @@
 //! sibling temporary file, sync it, rename over the target. A crash leaves
 //! either the old file or the new one, never a truncated one.
 
-use std::io::Write;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::Path;
+
+use sha2::{Digest, Sha256};
 
 /// Replace `path` with `body` atomically.
 ///
@@ -48,6 +51,36 @@ pub fn write_atomic(path: &Path, body: &[u8], private: bool) -> std::io::Result<
     }
 
     std::fs::rename(&temp, path)
+}
+
+/// SHA-256 of one file, streamed in 64 KiB chunks.
+pub fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// Add the executable bits to `path`, keeping whatever else it already has.
+pub fn mark_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(permissions.mode() | 0o755);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(test)]

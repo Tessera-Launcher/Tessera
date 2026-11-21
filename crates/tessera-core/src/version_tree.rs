@@ -59,15 +59,6 @@ impl Row {
             RowKind::Group { first, .. } => first,
         }
     }
-
-    /// Whether the keyboard stops on this row. An unfolded group's header is a
-    /// toggle, not a version, so it is skipped; its children are stops instead.
-    pub fn is_stop(&self) -> bool {
-        match &self.kind {
-            RowKind::Version(_) => true,
-            RowKind::Group { expanded, .. } => !expanded,
-        }
-    }
 }
 
 /// The family a snapshot belongs to, or `None` when it stands on its own.
@@ -286,7 +277,7 @@ mod tests {
                 "25w33a ~ 25w31a",
             ]
         );
-        assert!(rows.iter().all(|row| row.depth == 0 && row.is_stop()));
+        assert!(rows.iter().all(|row| row.depth == 0));
     }
 
     #[test]
@@ -326,9 +317,11 @@ mod tests {
                 (0, "25w33a ~ 25w31a".to_string()),
             ]
         );
-        // The header is a toggle; its children are what the keyboard stops on.
-        assert!(!rows[2].is_stop(), "the unfolded header is not a version");
-        assert!(rows[3].is_stop());
+        assert!(
+            matches!(rows[2].kind, RowKind::Group { expanded: true, .. }),
+            "the unfolded header is a toggle"
+        );
+        assert!(matches!(rows[3].kind, RowKind::Version(_)));
         assert_eq!(
             rows[2].anchor(),
             2,
