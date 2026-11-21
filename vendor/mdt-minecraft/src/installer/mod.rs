@@ -23,14 +23,12 @@ mod version_json;
 use std::path::{Path, PathBuf};
 
 #[cfg(not(feature = "minimal"))]
-#[cfg(not(feature = "minimal"))]
 use crate::customize::{debug_line, Downloader, ProgressReporter};
 use crate::error::MdtError;
 #[cfg(not(feature = "minimal"))]
 use crate::mirror::Mirror;
 #[cfg(not(feature = "minimal"))]
 use crate::modloader::ModLoader;
-#[cfg(not(feature = "minimal"))]
 #[cfg(not(feature = "minimal"))]
 pub use version_json::{
     apply_mirror_to_json, merge_vanilla_profile, GeneratedArtifact, GeneratedLibrary,
@@ -41,9 +39,7 @@ pub use version_json::{
 /// How a loader was installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {
-    /// Method A: official installer driven by a local Java runtime.
-    JavaInjection,
-    /// Method B: manual unpack / JSON synthesis, no Java required.
+    /// Manual unpack / JSON synthesis, no Java required.
     ManualUnpack,
 }
 
@@ -51,7 +47,6 @@ pub enum InstallMethod {
 impl std::fmt::Display for InstallMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InstallMethod::JavaInjection => write!(f, "JavaInjection"),
             InstallMethod::ManualUnpack => write!(f, "ManualUnpack"),
         }
     }

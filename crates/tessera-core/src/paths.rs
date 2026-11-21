@@ -55,12 +55,6 @@ impl Paths {
         }
     }
 
-    /// Whether this root is the portable one next to the binary. Used by the log
-    /// line, so a user who wonders where the files went sees the answer.
-    pub fn is_portable(&self) -> bool {
-        self.root == exe_dir().join(DATA)
-    }
-
     /// For tests: an explicit root.
     #[cfg(test)]
     pub fn at(root: impl Into<PathBuf>) -> Self {

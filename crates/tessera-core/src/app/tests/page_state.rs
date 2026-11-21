@@ -142,34 +142,3 @@ fn account_label_distinguishes_signed_out_and_in() {
         "Steve (2) · 官方启动器"
     );
 }
-
-#[test]
-fn vanilla_versions_are_labelled_java_28() {
-    let mut app = App::new("/mc", "/acc", vec![version("1.8.9")], Vec::new());
-    let selected = version("1.8.9");
-    // `version` pins Java 17; without 28 on disk nothing can start it.
-    app.installed_java = vec![8, 17];
-    assert_eq!(app.java_for(&selected), None);
-    app.installed_java = vec![28, 17];
-    assert_eq!(app.java_for(&selected), Some(28));
-
-    // Mojang's 1.5.2 profile has no parent but boots LaunchWrapper; the launch
-    // shims (class loader, and java.applet past 25) let it take 28 too.
-    let mut legacy = version("1.5.2");
-    legacy.java = Some(8);
-    legacy.main_class = Some(crate::launch::LAUNCHWRAPPER.to_string());
-    app.installed_java = vec![28, 25, 17];
-    assert_eq!(app.java_for(&legacy), Some(28));
-
-    // A loader install (self-contained, no parent) follows the same rule: the
-    // pin in its JSON no longer picks the JVM.
-    let mut loader = version("1.8.9-forge-11.15.0.1656");
-    loader.loader = true;
-    loader.java = Some(8);
-    assert_eq!(app.java_for(&loader), Some(28));
-
-    // A trained cache is bound to the JVM that wrote it.
-    let mut trained = version("1.12.2");
-    trained.aot = true;
-    assert_eq!(app.java_for(&trained), Some(28));
-}

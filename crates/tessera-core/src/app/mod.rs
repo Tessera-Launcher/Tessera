@@ -388,12 +388,6 @@ pub struct App {
     /// training launches a game, and two JVMs fighting over one version
     /// directory is not a state the rest of this code knows how to describe.
     pub aot: AotProgress,
-    /// Majors of the runtimes on disk, newest first.
-    ///
-    /// The list pane prints the Java a launch would actually use, and a vanilla
-    /// profile always takes the newest one, so the answer has to be cached here
-    /// instead of re-reading `data/依赖/java` on every frame.
-    pub installed_java: Vec<u32>,
     /// Version id awaiting the second `x`, cleared by anything else.
     uninstall_confirm: Option<String>,
     /// True from `start_install` until the worker reports Finished/Failed.
@@ -448,7 +442,6 @@ impl App {
             mods: ModsUi::default(),
             disk: DiskUi::default(),
             aot: AotProgress::default(),
-            installed_java: Vec::new(),
             uninstall_confirm: None,
             install_running: false,
             cache: None,
@@ -457,7 +450,6 @@ impl App {
 
         // Callers pass a raw scan; the base-version filter decides what is listed.
         app.rebuild_version_list();
-        app.refresh_java();
         app.launch_options.runtimes = Some(app.runtimes.clone());
 
         // Start from the newest saved account; `restore_account` applies the
@@ -470,27 +462,6 @@ impl App {
     }
 
     // ---- main screen ----
-
-    /// Re-read the runtimes directory; the list pane labels versions with it.
-    fn refresh_java(&mut self) {
-        self.installed_java = crate::java::installed(&self.runtimes)
-            .into_iter()
-            .map(|(major, _)| major)
-            .collect();
-        self.installed_java.sort_unstable_by(|a, b| b.cmp(a));
-    }
-
-    /// The Java major this version will launch with, for display.
-    ///
-    /// Same rule as [`launch::find_java`]: every profile — vanilla, legacy or
-    /// with a loader — runs on [`launch::LAUNCH_JAVA`]. An AOT-trained version
-    /// always runs on the JVM recorded next to its cache.
-    pub fn java_for(&self, version: &LocalVersion) -> Option<u32> {
-        if version.aot {
-            return Some(launch::LAUNCH_JAVA);
-        }
-        launch::pick_major(&self.installed_java, version.java.unwrap_or(8))
-    }
 
     pub fn reload(&mut self) {
         self.refresh_versions();
@@ -507,7 +478,6 @@ impl App {
         self.uninstall_confirm = None;
         self.size_cache = None;
         self.all_versions = discover::scan(&self.root);
-        self.refresh_java();
         self.rebuild_version_list();
         self.selected = keep
             .and_then(|dir| self.versions.iter().position(|v| v.dir == dir))
@@ -676,10 +646,9 @@ impl App {
                 self.handle_music_key(code, modifiers);
                 return;
             }
-            Screen::Mods => {
-                self.handle_mods_key(code, modifiers);
-                return;
-            }
+            // The desktop Modrinth page drives its own actions; no key list
+            // lives in the state machine for it.
+            Screen::Mods => return,
             Screen::Settings => {
                 // Nothing on the page is interactive yet; Esc leaves it like the
                 // music page, q quits.
@@ -970,7 +939,6 @@ impl App {
 
         // Rescan rather than filtering in memory: what is on disk is the list.
         self.all_versions = discover::scan(&self.root);
-        self.refresh_java();
         self.rebuild_version_list();
 
         // `libraries/` and `assets/` are shared by every version, so the delete

@@ -381,39 +381,4 @@ impl App {
             }
         }
     }
-
-    // ---- keys ----
-
-    pub fn handle_mods_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
-        let _ = modifiers;
-        match code {
-            Key::Esc | Key::Char('q') => self.show_main(),
-            Key::Up | Key::Char('k') => {
-                self.mods.selected = self.mods.selected.saturating_sub(1);
-                self.mods.versions.clear();
-                self.mods.versions_for = None;
-            }
-            Key::Down | Key::Char('j') => {
-                let last = self.mods.hits.len().saturating_sub(1);
-                self.mods.selected = (self.mods.selected + 1).min(last);
-                self.mods.versions.clear();
-                self.mods.versions_for = None;
-            }
-            Key::Char('r') => self.search_mods(),
-            Key::Enter => {
-                if self.mods.versions_for.as_deref()
-                    == self.mods.selected_hit().map(|hit| hit.project_id.as_str())
-                    && !self.mods.versions.is_empty()
-                {
-                    self.install_selected_mod();
-                } else if let Some(project) =
-                    self.mods.selected_hit().map(|hit| hit.project_id.clone())
-                {
-                    self.load_mod_versions(project);
-                }
-            }
-            _ => {}
-        }
-        true
-    }
 }
