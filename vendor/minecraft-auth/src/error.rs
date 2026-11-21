@@ -54,9 +54,6 @@ pub enum Error {
     #[error("invalid application config: {0}")]
     InvalidConfig(&'static str),
 
-    #[error("no saved session could be restored: {0}")]
-    NoUsableSession(String),
-
     #[error(
         "this saved session was signed in with a different application (client id {saved}, not {expected}); sign in again"
     )]

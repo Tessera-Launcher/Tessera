@@ -228,44 +228,6 @@ impl JavaAuthManager {
         Ok(json)
     }
 
-    /// Restores the first saved session that still works, refreshing it to prove
-    /// it does.
-    ///
-    /// A launcher keeps one session per identity; at startup it does not know
-    /// which of them are still good, so this walks the candidates in order and
-    /// returns the first whose identity matches *and* whose refresh succeeds.
-    /// Failures are collected into [`Error::NoUsableSession`] so the UI can say
-    /// why each one was skipped instead of showing a blank account list.
-    ///
-    /// This performs one refresh per working candidate, so the returned manager
-    /// is fresh; persist it (`to_json`) or the rotated refresh token is lost.
-    pub async fn restore_first_working(
-        http_client: Client,
-        sessions: &[(AuthApplication, serde_json::Value)],
-    ) -> Result<(AuthApplication, Self)> {
-        let mut failures = Vec::new();
-        for (application, json) in sessions {
-            // An identity whose config cannot work is not worth a request.
-            if let Err(error) = application.config.validate() {
-                failures.push(format!("{}: {error}", application.label));
-                continue;
-            }
-            let restored = Self::from_json_for_application(http_client.clone(), json, application);
-            match restored {
-                Ok(manager) => match manager.msa_token().await {
-                    Ok(_) => return Ok((application.clone(), manager)),
-                    Err(error) => failures.push(format!("{}: {error}", application.label)),
-                },
-                Err(error) => failures.push(format!("{}: {error}", application.label)),
-            }
-        }
-        Err(Error::NoUsableSession(if failures.is_empty() {
-            "no sessions given".to_string()
-        } else {
-            failures.join("; ")
-        }))
-    }
-
     /// Restores a saved session and refuses it unless it was signed in as
     /// `application`. Use this instead of [`Self::from_json`] whenever the
     /// caller knows which identity the session is supposed to be: a refresh
@@ -404,12 +366,6 @@ impl Builder {
         })
     }
 
-    pub async fn login_refresh_token(self, refresh_token: &str) -> Result<JavaAuthManager> {
-        let msa_token =
-            msa::refresh_token(&self.http_client, &self.application_config, refresh_token).await?;
-        self.login_msa_token(msa_token)
-    }
-
     /// Signs in via the device code flow: `on_code` is called once the code
     /// has been requested, to show the user where and what to enter.
     pub async fn login_device_code<F>(self, on_code: F) -> Result<JavaAuthManager>
@@ -484,47 +440,6 @@ mod tests {
                 refresh_token: None,
             });
         assert!(matches!(result, Err(Error::InvalidConfig(_))));
-    }
-
-    /// The multi-identity startup path: no candidate is usable, so every reason
-    /// has to survive into the error. Uses no network: one candidate has an
-    /// impossible config, the other a session belonging to a different app.
-    #[tokio::test]
-    async fn restoring_sessions_reports_why_each_candidate_was_skipped() {
-        let manager = JavaAuthManager::builder(Client::new())
-            .login_msa_token(MsaToken {
-                expire_time_ms: crate::expirable::now_ms() + 60_000,
-                access_token: "a".to_string(),
-                refresh_token: None,
-            })
-            .unwrap();
-        let session = manager.to_json().await.unwrap();
-
-        let mut impossible = MsaApplicationConfig::java_default();
-        impossible.environment = crate::msa::MsaEnvironment::MicrosoftOnlineConsumers;
-        let candidates = vec![
-            (
-                crate::AuthApplication::new("Broken identity", impossible),
-                session.clone(),
-            ),
-            (
-                crate::AuthApplication::azure_application(
-                    "Another app",
-                    "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb",
-                ),
-                session,
-            ),
-        ];
-
-        let error = match JavaAuthManager::restore_first_working(Client::new(), &candidates).await {
-            Ok((app, _)) => panic!("candidate {:?} unexpectedly accepted", app.label),
-            Err(error) => error,
-        };
-        let Error::NoUsableSession(reasons) = &error else {
-            panic!("unexpected error: {error}");
-        };
-        assert!(reasons.contains("Broken identity"), "{reasons}");
-        assert!(reasons.contains("Another app"), "{reasons}");
     }
 
     #[tokio::test]

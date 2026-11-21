@@ -25,7 +25,6 @@ pub mod java;
 pub mod launch;
 pub mod logfile;
 pub mod login;
-pub mod mod_of_mending;
 pub mod modrinth;
 pub mod music;
 pub mod patch;

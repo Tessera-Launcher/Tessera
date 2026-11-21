@@ -58,18 +58,16 @@ pub enum Loader {
     #[default]
     None,
     Fabric,
-    Outlands,
 }
 
 /// Every loader, in picker order.
-pub const LOADERS: [Loader; 3] = [Loader::None, Loader::Fabric, Loader::Outlands];
+pub const LOADERS: [Loader; 2] = [Loader::None, Loader::Fabric];
 
 impl Loader {
     pub fn label(self) -> &'static str {
         match self {
             Loader::None => "无",
             Loader::Fabric => "Fabric",
-            Loader::Outlands => "Outlands",
         }
     }
 
@@ -82,26 +80,7 @@ impl Loader {
         match (self, mc_version) {
             (Loader::None, "1.8.9") => "Celeritas Patch",
             (Loader::Fabric, _) => "Fabric Loader & API",
-            (Loader::Outlands, _) => "Outlands & Mod-of-Mending",
             _ => self.label(),
-        }
-    }
-
-    /// Why this loader cannot be installed right now, if it cannot.
-    ///
-    /// Outlands is kept in the list so the reason is visible instead of
-    /// silently missing, and its install path stays in place for the day
-    /// upstream adapts. It cannot be installed today because its bootstrap
-    /// reaches into `java.lang.Module` internals that the only runtime this
-    /// launcher offers (Java 28) changed twice over: 26 added a parameter to
-    /// `implAddExportsOrOpens` and 28 removed it again, and
-    /// `implAddEnableNativeAccessToAllUnnamed` was renamed in 26. The player
-    /// would get a client that dies in a static initialiser before it writes a
-    /// log, so the picker refuses instead.
-    pub fn unavailable(self) -> Option<&'static str> {
-        match self {
-            Loader::Outlands => Some("不可用，需等待 Outlands 适配"),
-            Loader::None | Loader::Fabric => None,
         }
     }
 
@@ -109,7 +88,6 @@ impl Loader {
         match self {
             Loader::None => None,
             Loader::Fabric => Some(ModLoader::Fabric),
-            Loader::Outlands => Some(ModLoader::Outlands),
         }
     }
 
@@ -406,13 +384,6 @@ pub fn spawn_install(
                 )));
             }
 
-            // Outlands' compatibility mod ships as a CI zip, so it is unpacked
-            // here rather than planned: one entry of `build/libs` is the mod,
-            // and the `-dev` jar next to it would shadow it.
-            if loader == Loader::Outlands {
-                add_mod_of_mending(client.root_dir(), &plan.id, &proxy, &sender).await;
-            }
-
             // The aria2 list only says what to fetch; natives jars also have to
             // be unpacked, or a pre-1.19 launch looks for a `<id>-natives`
             // directory nothing created.
@@ -468,9 +439,6 @@ struct ModFile {
 /// every Fabric install asks for it, but a metadata or network hiccup must not
 /// throw away the several hundred megabytes that are about to be downloaded, so
 /// a failure is reported loudly and the install continues without it.
-///
-/// Outlands' forced mod does not come through here: it is published only as a CI
-/// zip, so it is unpacked after the download (see `add_mod_of_mending`).
 async fn add_fabric_api(
     plan: &mut mdt::plan::DownloadPlan,
     loader: Loader,
@@ -511,49 +479,6 @@ async fn add_fabric_api(
             sha1: api.sha1,
         },
     )
-}
-
-/// Mod of Mending: upstream marks it required for Outlands.
-///
-/// This runs after the download, not as part of the plan: the only published
-/// artifact is the CI zip of `build/libs`, which has to be unpacked and picked
-/// through before a loadable jar exists. Like Fabric API, a failure is reported
-/// and never fails the install.
-async fn add_mod_of_mending(
-    root: &std::path::Path,
-    version_dir: &str,
-    proxy: &str,
-    sender: &Sender<InstallEvent>,
-) -> bool {
-    let _ = sender.send(InstallEvent::Log("Mod of Mending：解析版本…".to_string()));
-    let dir = root.join("versions").join(version_dir);
-    match crate::mod_of_mending::install(&dir, proxy).await {
-        Ok(Some(installed)) => {
-            let _ = sender.send(InstallEvent::Log(format!(
-                "Mod of Mending {}（{}，{}）",
-                installed.version,
-                installed.origin.label(),
-                if installed.verified {
-                    "含校验"
-                } else {
-                    "无可用校验"
-                }
-            )));
-            true
-        }
-        Ok(None) => {
-            let _ = sender.send(InstallEvent::Log(
-                "Mod of Mending：已存在，跳过".to_string(),
-            ));
-            false
-        }
-        Err(error) => {
-            let _ = sender.send(InstallEvent::Log(format!(
-                "Mod of Mending：获取失败（{error}）—— 未安装"
-            )));
-            false
-        }
-    }
 }
 
 /// The language code this client version expects in `options.txt`.
@@ -659,22 +584,6 @@ async fn resolve_loader_version(
     loader: ModLoader,
     mc_version: &str,
 ) -> Result<String> {
-    // Outlands keeps its builds in a Maven repository, not in a loader manifest:
-    // the newest CalVer entry is the one to install.
-    if loader == ModLoader::Outlands {
-        let versions = mdt::outlands::fetch_versions(client.downloader())
-            .await
-            .map_err(|error| {
-                Error::network(format!(
-                    "获取 {} 版本列表失败：{error}",
-                    loader.display_name()
-                ))
-            })?;
-        return versions
-            .latest()
-            .cloned()
-            .ok_or_else(|| Error::missing("Outlands 没有已发布的构建".to_string()));
-    }
     let versions = manifest::fetch_fabric_manifest(client.downloader(), client.mirror())
         .await
         .map_err(|error| {
@@ -968,82 +877,9 @@ mod tests {
             Loader::Fabric.display_label("1.21.1"),
             "Fabric Loader & API"
         );
-        assert_eq!(
-            Loader::Outlands.display_label("1.12.2"),
-            "Outlands & Mod-of-Mending"
-        );
-        // Outlands is the 1.12.2 stack only, and its label is per-version.
-        assert!(Loader::Outlands.compatible("1.12.2"));
-        assert!(!Loader::Outlands.compatible("1.20.1"));
-        assert_eq!(Loader::Outlands.label(), "Outlands");
-    }
-
-    /// Live: Outlands resolves its build list from Maven and writes a plan.
-    ///
-    /// Only metadata is fetched (the build list, the installer jar's
-    /// `version.json`, the asset index), so this runs in seconds and proves the
-    /// whole path except moving bytes.
-    ///
-    /// ```sh
-    /// cargo test -p tessera-core --lib -- --ignored live_outlands --nocapture
-    /// ```
-    #[test]
-    #[ignore = "network + ~7 MB of metadata"]
-    fn live_outlands_build_list_and_plan() {
-        let root = std::env::temp_dir().join("tessera-live-outlands");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let list_dir = root.join("cache");
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let client = MdtClient::builder()
-                .mirror(MdtMirror::Mojang)
-                .root_dir(&root)
-                .list_dir(&list_dir)
-                .build()
-                .expect("a client");
-            let versions = mdt::outlands::fetch_versions(client.downloader())
-                .await
-                .expect("a build list");
-            let latest = versions.latest().cloned().expect("at least one build");
-            eprintln!(
-                "outlands builds: {} (latest {latest})",
-                versions.versions.len()
-            );
-            assert!(versions.versions.len() > 5);
-
-            let plan = client
-                .plan_loader("1.12.2", ModLoader::Outlands, &latest)
-                .await
-                .expect("a plan");
-            eprintln!("{} entries, {} hashed", plan.entries.len(), plan.hashed());
-            assert!(plan.entries.len() > 100, "{} entries", plan.entries.len());
-            // Every Outlands library ships a digest, so nothing is left to guess.
-            assert!(plan.hashed() + 32 >= plan.entries.len(), "unhashed entries");
-            assert!(!plan.extractions.is_empty(), "natives must be unpacked");
-            assert!(plan.path(&list_dir).is_file(), "no download list written");
-
-            let wanted = plan.id.clone();
-            let profile: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(
-                    root.join("versions")
-                        .join(&wanted)
-                        .join(format!("{wanted}.json")),
-                )
-                .expect("the profile"),
-            )
-            .expect("parseable");
-            assert_eq!(profile["id"], wanted.as_str());
-            assert_eq!(profile["mdtLoader"]["id"], "outlands");
-            assert!(profile.get("inheritsFrom").is_none(), "not a delta");
-            assert!(profile["mainClass"].as_str().unwrap().contains("outlands"));
-        });
-        std::fs::remove_dir_all(&root).ok();
+        assert!(Loader::Fabric.compatible("1.21.1"));
+        assert!(!Loader::Fabric.compatible("1.12.2"));
+        assert_eq!(Loader::Fabric.label(), "Fabric");
     }
 
     #[test]

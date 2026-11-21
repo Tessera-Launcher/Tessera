@@ -3987,7 +3987,6 @@ dependencies = [
 name = "mdt-minecraft"
 version = "0.7.0"
 dependencies = [
- "flate2",
  "futures",
  "hex",
  "mdt-macros",
@@ -3998,7 +3997,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml 1.2.1+spec-1.1.0",
- "zip",
 ]
 
 [[package]]

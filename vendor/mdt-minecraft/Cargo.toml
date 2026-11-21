@@ -38,14 +38,6 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "s
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha1 = "0.11.0"
-# Outlands publishes its launcher profile only inside its installer jar, so one
-# entry has to be read out of a ZIP. Deflate only: the jar is a plain
-# Gradle output, no AES, no bzip2, no zstd.
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
-# zip's `deflate-flate2` selects no backend on its own; the pure-Rust one keeps
-# this crate free of a C toolchain (a consuming workspace may otherwise mask the
-# gap through feature unification, which is why it is stated here).
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hex = "0.4.3"
 futures = "0.3.34"
 thiserror = "2.0"

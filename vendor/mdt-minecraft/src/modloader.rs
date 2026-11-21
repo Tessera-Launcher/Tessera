@@ -8,8 +8,6 @@ use crate::mc_version::McVersion;
 pub enum ModLoader {
     /// Lightweight, high-performance loader for 1.14+.
     Fabric,
-    /// 1.12.2 loader forked from Cleanroom/Forge, on Java 25 + LWJGL 3.
-    Outlands,
 }
 
 impl ModLoader {
@@ -19,20 +17,16 @@ impl ModLoader {
     pub fn display_name(self) -> &'static str {
         match self {
             ModLoader::Fabric => "Fabric",
-            ModLoader::Outlands => "Outlands",
         }
     }
 
     /// Whether this loader supports the given Minecraft version.
     ///
     /// Fabric supports `1.14` and later, and unparseable versions (e.g. weekly
-    /// snapshots like `24w05a`) are treated as modern versions. Outlands is a
-    /// continuation of the 1.12.2 stack and exists for that version only, so a
-    /// snapshot is never a match.
+    /// snapshots like `24w05a`) are treated as modern versions.
     #[must_use]
     pub fn compatible_with(self, mc_version: &str) -> bool {
         match self {
-            ModLoader::Outlands => mc_version == "1.12.2",
             ModLoader::Fabric => {
                 let Some(v) = McVersion::parse(mc_version) else {
                     return true;

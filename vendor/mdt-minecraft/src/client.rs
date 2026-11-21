@@ -198,11 +198,6 @@ impl MdtClient {
         loader: ModLoader,
         loader_version: &str,
     ) -> Result<crate::plan::DownloadPlan, MdtError> {
-        // Outlands ships a finished profile instead of a delta over vanilla, so
-        // it does not go through the merge path at all.
-        if loader == ModLoader::Outlands {
-            return self.plan_outlands(mc_version, loader_version).await;
-        }
         self.reporter
             .status(&format!("读取 {mc_version} 的版本清单…"));
         let (vanilla_text, vanilla) =
@@ -293,83 +288,6 @@ impl MdtClient {
             &self.mirror,
         )
         .await;
-        let plan = crate::plan::DownloadPlan::new(id, entries).with_extractions(extractions);
-        let path = plan.write(&self.root, &self.list_dir).await?;
-        self.reporter.status(&format!(
-            "{} 的下载清单：{} 个文件（{} 个带哈希）→ {}",
-            plan.id,
-            plan.entries.len(),
-            plan.hashed(),
-            path.display()
-        ));
-        Ok(plan)
-    }
-
-    /// Plan an Outlands install: one self-contained profile, no vanilla merge.
-    ///
-    /// The profile carries everything — client jar, libraries with digests, the
-    /// asset index — so the entries come straight out of it. Its URLs are the
-    /// ones Outlands publishes (its own Maven and two CDNs) and are left alone:
-    /// unlike Fabric, this loader has no second authority to mirror from.
-    async fn plan_outlands(
-        &self,
-        mc_version: &str,
-        loader_version: &str,
-    ) -> Result<crate::plan::DownloadPlan, MdtError> {
-        self.reporter
-            .status(&format!("读取 {mc_version} 的 Outlands 配置…"));
-        let id = installer::installer_version_id(mc_version, ModLoader::Outlands, loader_version);
-        let req = installer::InstallRequest {
-            mc_version: mc_version.to_string(),
-            loader: ModLoader::Outlands,
-            loader_version: loader_version.to_string(),
-            root_dir: self.root.clone(),
-            mirror: self.mirror.clone(),
-            target_dir: None,
-            reporter: self.reporter.clone(),
-        };
-        let installed = installer::install_modloader(self.downloader.as_ref(), req).await?;
-        let text = crate::io::read_to_string(&installed.version_json).await?;
-        let profile: crate::downloader::VersionJson = serde_json::from_str(&text)?;
-
-        let mut entries = Vec::new();
-        let mut extractions = Vec::new();
-        for task in downloader::build_tasks_from_version_json(&profile, &self.root) {
-            let Ok(path) = task.dest_path.strip_prefix(&self.root) else {
-                continue;
-            };
-            if let Some(into) = task
-                .extract_to
-                .as_deref()
-                .and_then(|into| into.strip_prefix(&self.root).ok())
-            {
-                extractions.push(crate::plan::Extraction {
-                    jar: path.to_path_buf(),
-                    into: into.to_path_buf(),
-                });
-            }
-            entries.push(crate::plan::PlanEntry {
-                url: task.url,
-                path: path.to_path_buf(),
-                size: task.size,
-                sha1: Some(task.sha1).filter(|sha1| !sha1.is_empty()),
-            });
-        }
-        if let Some(asset_index) = &profile.asset_index {
-            let urls = ManifestUrls::try_new(&self.mirror)?;
-            entries.extend(
-                crate::asset::plan_objects(
-                    &self.root,
-                    asset_index,
-                    self.downloader.as_ref(),
-                    &self.mirror,
-                    &urls,
-                    self.reporter.as_ref(),
-                    self.asset_language.as_deref(),
-                )
-                .await?,
-            );
-        }
         let plan = crate::plan::DownloadPlan::new(id, entries).with_extractions(extractions);
         let path = plan.write(&self.root, &self.list_dir).await?;
         self.reporter.status(&format!(

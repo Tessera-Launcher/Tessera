@@ -80,10 +80,6 @@ A launcher keeps one session per identity. The pieces are:
 - `Builder::application(&app)` — sign in as that identity.
 - `JavaAuthManager::from_json_for_application(..)` — restore one session,
   refusing it if its client id is not that identity's.
-- `JavaAuthManager::restore_first_working(..)` — restore the first candidate
-  whose identity matches *and* whose refresh succeeds, reporting every skipped
-  candidate in `Error::NoUsableSession`. This is the startup path: it refreshes,
-  so the caller must persist the returned session.
 - `Error::needs_sign_in()` — distinguishes "ask the user to sign in again" from
   "retry".
 

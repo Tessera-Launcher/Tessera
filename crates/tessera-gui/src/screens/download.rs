@@ -310,10 +310,6 @@ impl Launcher {
         for (index, loader) in download.loaders.iter().enumerate() {
             let picked = index == download.loader_pick;
             let label = loader.display_label(selected_version);
-            // A loader that cannot be installed is still listed, greyed, with
-            // the reason next to it: hiding the row would leave a version that
-            // silently has one option fewer.
-            let unavailable = loader.unavailable();
             let focused = focus::register_row(cx, move |this, cx| {
                 this.state.download.loader_pick = index;
                 this.refresh(cx);
@@ -353,9 +349,7 @@ impl Launcher {
                             .w(px(layout::LOADER_DOT))
                             .h(px(layout::LOADER_DOT))
                             .rounded(px(radius::PILL))
-                            .bg(rgb(if unavailable.is_some() {
-                                colors.text_secondary
-                            } else if picked {
+                            .bg(rgb(if picked {
                                 colors.fill_primary
                             } else {
                                 colors.text_secondary
@@ -370,17 +364,12 @@ impl Launcher {
                             .min_w(px(0.0))
                             .truncate()
                             .text_size(px(font::BODY))
-                            .text_color(rgb(if unavailable.is_some() {
-                                colors.text_secondary
-                            } else if picked {
+                            .text_color(rgb(if picked {
                                 colors.text_accent
                             } else {
                                 colors.text_primary
                             }))
                             .child(label),
-                    )
-                    .children(
-                        unavailable.map(|reason| chip(colors, reason, colors.status_warning)),
                     ),
             );
         }

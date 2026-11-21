@@ -68,12 +68,11 @@ impl LocalVersion {
         }
         // The loader's display name is not part of the marker, but the id's
         // middle segment is the loader id the installer used.
-        const MARKERS: [&str; 6] = [
+        const MARKERS: [&str; 5] = [
             "-fabric-",
             "-forge-",
             "-neoforge-",
             "-quilt-",
-            "-outlands-",
             "-liteloader-",
         ];
         for marker in MARKERS {

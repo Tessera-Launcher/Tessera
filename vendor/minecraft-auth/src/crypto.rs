@@ -21,7 +21,7 @@ impl EcKeyPair {
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
-        self.signing_key.verifying_key().clone()
+        *self.signing_key.verifying_key()
     }
 
     pub fn sign_p1363(&self, data: &[u8]) -> Vec<u8> {

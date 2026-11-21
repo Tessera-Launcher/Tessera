@@ -52,13 +52,6 @@ Added:
   `assets/indexes/<id>.json`, SHA-1 checked) and lists every object.
 - `lwjgl3::plan_swap` — the 1.8.9 LWJGL 3 exchange, planned instead of fetched.
 - `examples/plan.rs` — `cargo run --example plan -- <root> <mc> [loader]`.
-- **Outlands** (`modloader::ModLoader::Outlands`, `outlands.rs`,
-  `installer/outlands.rs`) — a second loader. Its launcher profile is published
-  only as `version.json` inside the installer JAR, so this copy reads one entry
-  out of a ZIP (`zip` + `flate2`, pure-Rust backend) and adds
-  `Downloader::fetch_bytes` for the archive itself. The profile is not a delta:
-  no vanilla merge, no digest back-fill, and its URLs (Outlands' own Maven plus
-  two CDNs) are left alone rather than rewritten to a mirror.
 
 ## Local changes kept from earlier
 

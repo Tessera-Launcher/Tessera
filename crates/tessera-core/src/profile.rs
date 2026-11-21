@@ -27,7 +27,7 @@ pub struct Profile {
     /// installs) or it carries the [`LOADER_MARKER`](crate::profile::LOADER_MARKER)
     /// field a self-contained install writes.
     pub loader: bool,
-    /// The marker's `id` (`fabric`, `outlands`, …), when the installer wrote one.
+    /// The marker's `id` (`fabric`, …), when the installer wrote one.
     /// An older `inheritsFrom`-only profile has none; its `mainClass` is then the
     /// only way to tell which loader it belongs to.
     pub loader_id: Option<String>,

@@ -1,10 +1,8 @@
 //! Mod-loader installation.
 //!
-//! Two loaders are supported, and neither needs a Java runtime. Fabric's
+//! Fabric is the only supported loader, and it needs no Java runtime: its
 //! official profile is fetched, its dependencies are deployed into
-//! `libraries/`, and the version JSON is synthesized. Outlands ships a complete
-//! launcher profile inside its installer jar, so that one is unpacked and
-//! rewritten under the isolated id.
+//! `libraries/`, and the version JSON is synthesized.
 //!
 //! # Isolation guarantee
 //!
@@ -14,8 +12,6 @@
 
 #[cfg(not(feature = "minimal"))]
 mod fabric;
-#[cfg(not(feature = "minimal"))]
-pub(crate) mod outlands;
 #[cfg(not(feature = "minimal"))]
 mod version_json;
 
@@ -101,10 +97,7 @@ pub async fn install_modloader(
             req.loader_version
         ),
     );
-    let result = match req.loader {
-        ModLoader::Fabric => fabric::install(downloader, req).await,
-        ModLoader::Outlands => outlands::install(downloader, req).await,
-    };
+    let result = fabric::install(downloader, req).await;
     debug_line(reporter.as_ref(), "install_modloader: dispatch finished");
     result
 }
