@@ -69,11 +69,6 @@ pub enum MdtError {
     #[error("network error: {0}")]
     NetworkError(#[from] reqwest::Error),
 
-    /// A synchronous (Ureq) HTTP request failed.
-    #[cfg(feature = "blocking")]
-    #[error("network error: {0}")]
-    UreqError(#[from] ureq::Error),
-
     /// A payload could not be deserialized as JSON.
     #[error("JSON parse error: {0}")]
     JsonParseError(#[from] serde_json::Error),
@@ -111,7 +106,7 @@ pub enum MdtError {
 
     /// No default Downloader is available in the current feature configuration.
     /// A custom Downloader must be provided via `.downloader()`.
-    #[error("no default downloader available; provide a custom one when both `tokio` and `blocking` are disabled")]
+    #[error("no default downloader available; enable the `tokio` feature or provide a custom one")]
     MissingDownloader,
 
     /// A downloaded file failed its SHA-1 integrity check.
@@ -187,7 +182,7 @@ impl MdtError {
     }
 }
 
-#[cfg(any(feature = "tokio", feature = "blocking", not(feature = "minimal")))]
+#[cfg(any(feature = "tokio", not(feature = "minimal")))]
 /// Whether an I/O error indicates the disk is full.
 ///
 /// Windows reports `ERROR_HANDLE_DISK_FULL` (39) or `ERROR_DISK_FULL` (112); POSIX reports
@@ -205,7 +200,7 @@ pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
     }
 }
 
-#[cfg(any(feature = "tokio", feature = "blocking", not(feature = "minimal")))]
+#[cfg(any(feature = "tokio", not(feature = "minimal")))]
 /// Convert an I/O error into an [`MdtError`], promoting disk-full errors to [`MdtError::DiskFull`].
 pub(crate) fn io_error(e: std::io::Error, context: impl Into<String>) -> MdtError {
     let context = context.into();

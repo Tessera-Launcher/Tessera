@@ -172,10 +172,9 @@ impl DownloadPlan {
         {
             let plan = self.clone();
             let root = root.to_path_buf();
-            match tokio::task::spawn_blocking(move || plan.verify_blocking(&root)).await {
-                Ok(failed) => failed,
-                Err(_) => Vec::new(),
-            }
+            tokio::task::spawn_blocking(move || plan.verify_blocking(&root))
+                .await
+                .unwrap_or_default()
         }
         #[cfg(not(feature = "tokio"))]
         {

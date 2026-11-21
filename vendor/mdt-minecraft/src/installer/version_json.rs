@@ -5,74 +5,14 @@
 
 use std::path::Path;
 
-use serde::Serialize;
-
 use crate::customize::{debug_line, Downloader, ProgressReporter};
 use crate::error::MdtError;
 use crate::mirror::Mirror;
-use crate::registry;
 use crate::urls::ManifestUrls;
 
 use super::{
-    library_path_from_name, loader_version_id, target_version_dir, InstallMethod, InstallRequest,
-    InstalledVersion,
+    loader_version_id, target_version_dir, InstallMethod, InstallRequest, InstalledVersion,
 };
-
-// ===== generated version JSON structures =====
-
-#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedArtifact {
-    pub path: String,
-    pub url: String,
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedLibraryDownloads {
-    pub artifact: GeneratedArtifact,
-}
-
-/// A single dependency library in the modern `downloads.artifact` format.
-#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedLibrary {
-    pub name: String,
-    pub downloads: GeneratedLibraryDownloads,
-}
-
-impl GeneratedLibrary {
-    /// Build from a Maven coordinate plus a repository base URL.
-    pub fn maven(name: &str, base_url: &str) -> Result<Self, MdtError> {
-        let path = library_path_from_name(name)?;
-        let base = base_url.trim_end_matches('/');
-        Ok(Self {
-            name: name.to_string(),
-            downloads: GeneratedLibraryDownloads {
-                artifact: GeneratedArtifact {
-                    url: format!("{base}/{path}"),
-                    path,
-                },
-            },
-        })
-    }
-}
-
-/// A hand-written Minecraft version JSON.
-#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedVersionJson {
-    pub id: String,
-    #[serde(rename = "inheritsFrom", skip_serializing_if = "Option::is_none")]
-    pub inherits_from: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time: Option<String>,
-    #[serde(rename = "releaseTime", skip_serializing_if = "Option::is_none")]
-    pub release_time: Option<String>,
-    #[serde(rename = "type")]
-    pub version_type: String,
-    #[serde(rename = "mainClass")]
-    pub main_class: String,
-    #[serde(rename = "minecraftArguments", skip_serializing_if = "Option::is_none")]
-    pub minecraft_arguments: Option<String>,
-    pub libraries: Vec<GeneratedLibrary>,
-}
 
 // ===== self-contained profiles =====
 
@@ -308,16 +248,6 @@ pub async fn install_from_profile(
     profile["id"] = serde_json::Value::String(id.clone());
     profile["inheritsFrom"] = serde_json::Value::String(req.mc_version.clone());
 
-    let _libs = profile
-        .get("libraries")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .ok_or_else(|| {
-            MdtError::InvalidManifest("loader profile is missing a `libraries` array".to_string())
-        })?;
-
-    let _by = format!("{} {}", req.loader.display_name(), req.loader_version);
-    let _reg_dir = registry::modloader_dir(req.loader.display_name(), &req.loader_version);
     // The profile's libraries are independent files. Running them one after
     // another paid one checksum + one artifact round trip each; a bounded
     // parallel batch overlaps those small transfers.

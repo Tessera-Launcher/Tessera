@@ -80,14 +80,10 @@ pub mod modloader;
 #[cfg(not(feature = "minimal"))]
 pub mod outlands;
 pub mod plan;
-#[cfg(not(feature = "minimal"))]
-pub mod registry;
 pub mod urls;
 pub use client::{MdtClient, MdtClientBuilder};
 #[cfg(feature = "tokio")]
 pub use customize::HttpDownloader;
-#[cfg(feature = "blocking")]
-pub use customize::UreqDownloader;
 pub use customize::{
     format_bytes, format_duration, redact_credentials, Downloader, FsRegistryCache, NoopReporter,
     ProgressReporter, RegistryCache, StderrReporter,
@@ -97,9 +93,8 @@ pub use error::{FailedDownload, MdtError};
 #[cfg(not(feature = "minimal"))]
 pub use installer::{InstallMethod, InstallRequest, InstalledVersion};
 pub use manifest::{
-    fetch_all_manifests, latest_stable_loader_version, loader_versions_from_data,
-    FabricVersionsList, LatestMinecraftVersion, LoaderVersionEntry, ManifestData,
-    MinecraftVersionsList, VersionEntry, VersionType,
+    FabricVersionsList, LatestMinecraftVersion, LoaderVersionEntry, MinecraftVersionsList,
+    VersionEntry, VersionType,
 };
 pub use mc_version::McVersion;
 pub use mirror::Mirror;

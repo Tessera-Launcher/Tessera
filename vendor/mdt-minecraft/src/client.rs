@@ -6,8 +6,6 @@ use std::time::Duration;
 
 #[cfg(feature = "tokio")]
 use crate::customize::HttpDownloader;
-#[cfg(all(feature = "blocking", not(feature = "tokio")))]
-use crate::customize::UreqDownloader;
 use crate::customize::{Downloader, ProgressReporter, StderrReporter};
 use crate::downloader::{self};
 #[cfg(not(feature = "minimal"))]
@@ -511,9 +509,8 @@ impl MdtClientBuilder {
     ///
     /// # Errors
     ///
-    /// * [`MdtError::MissingDownloader`] if the current feature configuration provides no default
-    ///   downloader (neither `tokio` nor `blocking` is enabled) and none was set via
-    ///   [`downloader`](Self::downloader).
+    /// * [`MdtError::MissingDownloader`] if the `tokio` feature is disabled and no custom
+    ///   downloader was set via [`downloader`](Self::downloader).
     pub fn build(self) -> Result<MdtClient, MdtError> {
         std::fs::create_dir_all(&self.root)?;
 
@@ -530,10 +527,7 @@ impl MdtClientBuilder {
                 #[cfg(feature = "tokio")]
                 return Ok(Arc::new(HttpDownloader::new(http.clone())));
 
-                #[cfg(all(feature = "blocking", not(feature = "tokio")))]
-                return Ok(Arc::new(UreqDownloader));
-
-                #[cfg(not(any(feature = "blocking", feature = "tokio")))]
+                #[cfg(not(feature = "tokio"))]
                 return Err(MdtError::MissingDownloader);
             },
             Ok,
@@ -568,7 +562,7 @@ impl Default for MdtClientBuilder {
 mod tests {
     use super::*;
 
-    #[cfg(not(any(feature = "tokio", feature = "blocking")))]
+    #[cfg(not(feature = "tokio"))]
     #[test]
     fn build_without_transport_returns_missing_downloader() {
         let err = match MdtClient::builder().build() {
@@ -578,7 +572,7 @@ mod tests {
         assert!(matches!(err, MdtError::MissingDownloader), "got {err:?}");
     }
 
-    #[cfg(all(feature = "minimal", any(feature = "tokio", feature = "blocking")))]
+    #[cfg(all(feature = "minimal", feature = "tokio"))]
     #[test]
     fn minimal_client_builds_without_advanced_modules() {
         let _client = MdtClient::builder().build().unwrap();

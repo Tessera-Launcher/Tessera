@@ -84,15 +84,6 @@ pub struct VersionJson {
 #[derive(Deserialize, Debug, Clone)]
 pub struct AssetIndex {
     pub objects: HashMap<String, AssetObject>,
-    /// `"virtual": true` markers: the index name doubles as a virtual directory under
-    /// `assets/virtual/<id>`, and the game does not read `assets/objects` directly.
-    /// Seen on `legacy` (1.6.1–1.7.2).
-    #[serde(default, rename = "virtual")]
-    pub is_virtual: bool,
-    /// Pre-1.6 indexes are mounted into `<game_dir>/resources` instead of a virtual
-    /// directory. Seen on `pre-1.6` (alpha through 1.5.2).
-    #[serde(default)]
-    pub map_to_resources: bool,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]

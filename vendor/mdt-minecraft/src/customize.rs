@@ -16,7 +16,7 @@ use futures::StreamExt;
 #[cfg(feature = "tokio")]
 use tokio::io::AsyncWriteExt;
 
-#[cfg(any(feature = "tokio", feature = "blocking"))]
+#[cfg(feature = "tokio")]
 use crate::error::io_error;
 use crate::error::MdtError;
 
@@ -366,62 +366,6 @@ impl Downloader for HttpDownloader {
                 .await?
                 .error_for_status()?;
             Ok(resp.bytes().await?.to_vec())
-        })
-    }
-}
-
-/// A synchronous [`Downloader`] backed by [`ureq`], for the `blocking` feature.
-///
-/// It performs the request and file I/O synchronously, then returns a ready future — so the whole
-/// pipeline can be driven by `futures::executor::block_on` with no Tokio runtime.
-#[cfg(feature = "blocking")]
-#[derive(Default)]
-pub struct UreqDownloader;
-
-#[cfg(feature = "blocking")]
-impl Downloader for UreqDownloader {
-    fn download<'a>(
-        &'a self,
-        url: &'a str,
-        dest: &'a Path,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MdtError>> + Send + 'a>> {
-        let url = url.to_string();
-        let dest = dest.to_path_buf();
-        Box::pin(async move {
-            let resp = ureq::get(&url).call().map_err(MdtError::from)?;
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| io_error(e, "during download"))?;
-            }
-            let mut out =
-                std::fs::File::create(&dest).map_err(|e| io_error(e, "during download"))?;
-            let mut reader = resp.into_reader();
-            std::io::copy(&mut reader, &mut out).map_err(|e| io_error(e, "during download"))?;
-            Ok(())
-        })
-    }
-
-    fn fetch<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, MdtError>> + Send + 'a>> {
-        let url = url.to_string();
-        Box::pin(async move {
-            let resp = ureq::get(&url).call().map_err(MdtError::from)?;
-            resp.into_string().map_err(MdtError::from)
-        })
-    }
-
-    fn fetch_bytes<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, MdtError>> + Send + 'a>> {
-        let url = url.to_string();
-        Box::pin(async move {
-            let resp = ureq::get(&url).call().map_err(MdtError::from)?;
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)
-                .map_err(MdtError::from)?;
-            Ok(bytes)
         })
     }
 }

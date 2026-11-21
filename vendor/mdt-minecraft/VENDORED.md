@@ -25,9 +25,11 @@ Upstream downloads everything itself. This copy does not:
 | `downloader::execute_downloads*`, `DownloadBatch`, segmented Range downloads | aria2 does this, with more connections and per-file hashes |
 | `asset::AssetRegistry` (`sync`, `fetch_and_sync`, registry seeding, `missing_locally`) | assets are entries in the list now |
 | `virtual_dir` (hardlink / symlink / copy mounts) | it existed to feed the download cache |
+| `registry` (home dir, registry root, mount/index helpers) | nothing is mounted or seeded; the plan writes lists only |
 | `MdtClient::install_vanilla*`, `install_loader*`, `install_modloader`, `full_install`, `uninstall_modloader` | replaced by `plan_vanilla` / `plan_loader` |
 | `installer::mcr` (post-uninstall manifest scan), `installer::uninstall` | uninstall needs the downloader to restore files |
 | `jar` (JAR re-packing), `cli`, `tui`, `blocking`, `macros` | download-side conveniences; this crate has one consumer |
+| `GeneratedVersionJson` / `GeneratedLibrary*`, aggregated manifest helpers | no caller builds a profile struct or fetches every manifest |
 | `DownloadTask::{label, by}`, `MdtClientBuilder::{concurrency, asset_concurrency}` | no transfer happens here; aria2 owns progress and concurrency |
 | `MdtError::{PartialDownloadFailed, UninstallFailed}` | nothing can produce them now |
 

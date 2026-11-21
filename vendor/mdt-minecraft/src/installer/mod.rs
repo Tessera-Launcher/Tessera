@@ -30,10 +30,7 @@ use crate::mirror::Mirror;
 #[cfg(not(feature = "minimal"))]
 use crate::modloader::ModLoader;
 #[cfg(not(feature = "minimal"))]
-pub use version_json::{
-    apply_mirror_to_json, merge_vanilla_profile, GeneratedArtifact, GeneratedLibrary,
-    GeneratedLibraryDownloads, GeneratedVersionJson, LOADER_MARKER,
-};
+pub use version_json::{apply_mirror_to_json, merge_vanilla_profile, LOADER_MARKER};
 
 #[cfg(not(feature = "minimal"))]
 /// How a loader was installed.

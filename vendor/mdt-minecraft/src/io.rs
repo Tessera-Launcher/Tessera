@@ -1,9 +1,9 @@
 //! Internal async I/O shim.
 //!
 //! The core pipeline is written against async filesystem/time primitives. Under the `tokio`
-//! feature those are `tokio::fs` / `tokio::time`; without `tokio` (i.e. `blocking`-only, or a bare
-//! engine with no transport feature) we swap in `std::fs` / `std::thread`, wrapped as
-//! immediately-ready futures, so a plain `futures::executor::block_on` can drive the whole thing.
+//! feature those are `tokio::fs` / `tokio::time`; without `tokio` we swap in `std::fs` /
+//! `std::thread`, wrapped as immediately-ready futures, so a plain
+//! `futures::executor::block_on` can drive the whole thing.
 
 use std::path::Path;
 
