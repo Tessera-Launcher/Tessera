@@ -32,13 +32,13 @@ pub struct JavaUi {
     /// The download that is running (or just finished).
     pub current: Option<u32>,
     pub message: Option<String>,
-    /// A `u` batch is running (it may have an empty queue on its last item).
+    /// An update batch is running (it may have an empty queue on its last item).
     pub updating: bool,
-    /// Runtimes queued by `u` (update every outdated feature in turn).
+    /// Runtimes queued by the update button (every outdated feature in turn).
     pub update_queue: std::collections::VecDeque<crate::java::Runtime>,
-    /// Successfully updated by the current `u` run.
+    /// Successfully updated by the current update run.
     pub update_done: usize,
-    /// Failures from the current `u` run, one line each.
+    /// Failures from the current update run, one line each.
     pub update_failures: Vec<String>,
     /// A runtime-list request is in flight. `stage` alone cannot say this: never
     /// opened also reads as `Loading`.
@@ -164,45 +164,6 @@ impl App {
         };
     }
 
-    pub fn close_java(&mut self) {
-        self.screen = Screen::Main;
-        // A download in flight keeps its thread; only the screen goes away.
-    }
-
-    /// Keys while the Java picker is open.
-    pub fn handle_java_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
-        let _ = modifiers;
-        match self.java.stage {
-            JavaStage::Loading => {
-                if matches!(code, Key::Esc | Key::Char('q')) {
-                    self.close_java();
-                }
-            }
-            JavaStage::Picking | JavaStage::Done | JavaStage::Failed => match code {
-                Key::Esc | Key::Char('q') => self.close_java(),
-                Key::Up | Key::Char('k') => {
-                    self.java.selected = self.java.selected.saturating_sub(1);
-                }
-                Key::Down | Key::Char('j') => {
-                    let last = self.java.runtimes.len().saturating_sub(1);
-                    self.java.selected = (self.java.selected + 1).min(last);
-                }
-                Key::Char('a') => self.start_aria2_install(),
-                Key::Enter => self.start_java_download(),
-                Key::Char('u') => self.start_java_updates(),
-                _ => {}
-            },
-            JavaStage::Downloading => {
-                // Leaving does not stop the worker; the log keeps reporting.
-                if matches!(code, Key::Esc | Key::Char('q')) {
-                    self.close_java();
-                    self.log("Java 下载转到后台");
-                }
-            }
-        }
-        true
-    }
-
     /// Ask the loop to download the runtime under the cursor.
     pub fn start_java_download(&mut self) {
         if self.java.stage == JavaStage::Downloading {
@@ -214,7 +175,7 @@ impl App {
         self.start_java_install(runtime);
     }
 
-    /// `u`: update every feature whose installed build is older than the API's.
+    /// Update every feature whose installed build is older than the API's.
     pub fn start_java_updates(&mut self) {
         if self.java.stage == JavaStage::Downloading {
             return;

@@ -49,11 +49,10 @@ fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
     assert_eq!(app.java.runtimes.len(), 5);
     assert_eq!(app.java.selected_runtime().unwrap().major, 8);
 
-    app.handle_java_key(Key::Down, Modifiers::NONE);
-    app.handle_java_key(Key::Down, Modifiers::NONE);
+    app.java.selected = 2;
     assert_eq!(app.java.selected_runtime().unwrap().major, 21);
 
-    app.handle_java_key(Key::Enter, Modifiers::NONE);
+    app.start_java_download();
     let (runtime, urls) = java_effect(&app).expect("a download started");
     assert_eq!(runtime.major, 21);
     assert_eq!(urls[0], runtime.link, "官方源默认，直接取 GitHub 资产");
@@ -62,7 +61,7 @@ fn the_java_list_fills_the_rows_and_enter_starts_a_download() {
 }
 
 #[test]
-fn u_updates_every_outdated_runtime_in_turn() {
+fn the_update_button_updates_every_outdated_runtime_in_turn() {
     let tmp = tempfile::tempdir().unwrap();
     let runtimes = tmp.path().join("依赖").join("java");
     for version in ["8u502-b07", "17.0.10+1"] {
@@ -82,7 +81,7 @@ fn u_updates_every_outdated_runtime_in_turn() {
     assert_eq!(app.java.update_count(), 2);
     assert!(app.status.contains("2 个可更新"), "{}", app.status);
 
-    app.handle_java_key(Key::Char('u'), Modifiers::NONE);
+    app.start_java_updates();
     let (first, _) = java_effect(&app).expect("the first update started");
     assert_eq!(first.major, 8);
 
@@ -125,7 +124,7 @@ fn the_proxy_decides_the_urls() {
     // The proxy is a global setting, read when the download starts.
     app.settings.github_proxy = "gh-proxy.com".to_string();
 
-    app.handle_java_key(Key::Enter, Modifiers::NONE);
+    app.start_java_download();
     let (_, urls) = java_effect(&app).expect("a download started");
     assert!(
         urls[0].starts_with("https://gh-proxy.com/github.com/adoptium/"),
@@ -147,7 +146,7 @@ fn a_finished_java_download_is_recorded_and_shown() {
     app.set_runtimes(root.join("依赖").join("java"));
     app.open_java();
     app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(21)]));
-    app.handle_java_key(Key::Enter, Modifiers::NONE);
+    app.start_java_download();
 
     app.handle_java_event(crate::java::Event::Progress {
         done: 10 * 1024 * 1024,
@@ -170,9 +169,6 @@ fn a_finished_java_download_is_recorded_and_shown() {
     assert!(app.java.is_installed(21));
     assert!(app.java.message.as_ref().unwrap().contains("21.0.1+1"));
     assert_eq!(app.java.progress, (0, 0, 0.0));
-
-    app.handle_java_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.screen, Screen::Main);
 }
 
 #[test]
@@ -180,13 +176,13 @@ fn a_failed_java_download_keeps_the_reason_on_screen() {
     let mut app = app();
     app.open_java();
     app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(17)]));
-    app.handle_java_key(Key::Enter, Modifiers::NONE);
+    app.start_java_download();
     app.handle_java_event(crate::java::Event::Failed("哈希不匹配".to_string()));
 
     assert_eq!(app.java.stage, JavaStage::Failed);
     assert_eq!(app.java.message.as_deref(), Some("哈希不匹配"));
     assert!(app.log.iter().any(|line| line.contains("哈希不匹配")));
-    // Esc still leaves, and a second Enter retries.
-    app.handle_java_key(Key::Enter, Modifiers::NONE);
-    assert!(java_effect(&app).is_some(), "retrying is one key away");
+    // A second click retries.
+    app.start_java_download();
+    assert!(java_effect(&app).is_some(), "retrying is one click away");
 }

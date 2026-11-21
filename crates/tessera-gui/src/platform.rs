@@ -4,28 +4,28 @@ use super::*;
 
 use std::path::Path;
 
-/// Translate one GPUI keystroke into the state machine's vocabulary.
+/// The keys the custom-drawn UI handles itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Key {
+    Tab,
+    BackTab,
+    Enter,
+    Left,
+    Right,
+}
+
+/// Translate one GPUI keystroke into [`Key`].
+///
+/// Everything else is left to the focused text field or ignored: the launcher
+/// has no letter shortcuts, and a mouse click leaves keyboard mode.
 pub(crate) fn gui_key(keystroke: &Keystroke) -> Option<Key> {
     Some(match keystroke.key.as_str() {
-        "enter" => Key::Enter,
-        "escape" => Key::Esc,
         "tab" => Key::Tab,
         "backtab" | "shift-tab" => Key::BackTab,
-        "backspace" => Key::Backspace,
-        "delete" => Key::Delete,
-        "up" => Key::Up,
-        "down" => Key::Down,
+        "enter" => Key::Enter,
         "left" => Key::Left,
         "right" => Key::Right,
-        "home" => Key::Home,
-        "end" => Key::End,
-        "pageup" | "page_up" => Key::PageUp,
-        "pagedown" | "page_down" => Key::PageDown,
-        "space" => Key::Char(' '),
-        _ => {
-            let text = keystroke.key_char.as_deref().unwrap_or(&keystroke.key);
-            Key::Char(text.chars().next()?)
-        }
+        _ => return None,
     })
 }
 

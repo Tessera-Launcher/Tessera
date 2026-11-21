@@ -9,25 +9,6 @@ use super::*;
 
 use serde::{Deserialize, Serialize};
 
-/// Which pane of the download picker has the keyboard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickerFocus {
-    Versions,
-    Loaders,
-    Search,
-}
-
-impl PickerFocus {
-    /// Tab order: versions → loaders → the filter bar → back.
-    fn next(self) -> Self {
-        match self {
-            PickerFocus::Versions => PickerFocus::Loaders,
-            PickerFocus::Loaders => PickerFocus::Search,
-            PickerFocus::Search => PickerFocus::Versions,
-        }
-    }
-}
-
 /// The kind-of-release filter above the version list.
 ///
 /// Persisted in `配置.toml`, so the spelling of each variant is part of the
@@ -57,16 +38,6 @@ impl VersionFilter {
             VersionFilter::Release => "正式版",
             VersionFilter::Snapshot => "快照",
             VersionFilter::Old => "旧版",
-        }
-    }
-
-    /// Cycles the way `f` does; the mouse picks one directly.
-    fn next(self) -> Self {
-        match self {
-            VersionFilter::All => VersionFilter::Release,
-            VersionFilter::Release => VersionFilter::Snapshot,
-            VersionFilter::Snapshot => VersionFilter::Old,
-            VersionFilter::Old => VersionFilter::All,
         }
     }
 
@@ -160,7 +131,6 @@ pub struct DownloadUi {
     /// Loaders compatible with the picked version, in [`LOADERS`] order.
     pub loaders: Vec<Loader>,
     pub loader_pick: usize,
-    pub focus: PickerFocus,
     pub error: Option<String>,
     pub installed: Option<(String, Option<String>)>,
     /// When the player confirmed the install; `None` outside a running one.
@@ -184,7 +154,6 @@ impl Default for DownloadUi {
             picked: 0,
             loaders: vec![Loader::None],
             loader_pick: 0,
-            focus: PickerFocus::Versions,
             error: None,
             installed: None,
             started: None,
@@ -239,13 +208,6 @@ impl DownloadUi {
             .unwrap_or(0)
     }
 
-    /// Rows the keyboard walks: versions, and groups that are folded.
-    pub fn stops(&self) -> Vec<usize> {
-        (0..self.rows.len())
-            .filter(|index| self.rows[*index].is_stop())
-            .collect()
-    }
-
     /// Re-lay the filtered list out. Folding only happens in the "全部" view with
     /// no search: a search must never hide the version it matched.
     pub fn rebuild_rows(&mut self) {
@@ -264,22 +226,6 @@ impl DownloadUi {
                 )
             })
             .count();
-    }
-
-    /// The drawn row of the folded group the cursor is in, if any: the header
-    /// itself when the header is selected, or the one above an opened member.
-    fn group_row_at_cursor(&self) -> Option<usize> {
-        let cursor = self.cursor();
-        let rows = &self.rows;
-        if matches!(
-            rows.get(cursor)?.kind,
-            crate::version_tree::RowKind::Group { .. }
-        ) {
-            return Some(cursor);
-        }
-        rows[..cursor]
-            .iter()
-            .rposition(|row| matches!(row.kind, crate::version_tree::RowKind::Group { .. }))
     }
 
     pub fn picked_loader(&self) -> Loader {
@@ -369,7 +315,7 @@ impl App {
         self.status = format!("下载源：{}", source.label());
     }
 
-    /// `s` in the picker: the other source.
+    /// Switch to the other download source.
     pub fn toggle_source(&mut self) {
         self.set_source(self.source.next());
     }
@@ -417,120 +363,7 @@ impl App {
         }
     }
 
-    pub fn handle_download_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
-        let _ = modifiers;
-        match self.download.stage {
-            DownloadStage::LoadingVersions => {
-                if matches!(code, Key::Esc | Key::Char('q')) {
-                    self.close_download();
-                }
-            }
-            DownloadStage::Picking => {
-                // The search box swallows printable keys, so it gets first say.
-                if self.download.focus == PickerFocus::Search {
-                    match code {
-                        Key::Esc => {
-                            if self.download.query.is_empty() {
-                                self.download.focus = PickerFocus::Versions;
-                            } else {
-                                self.download.query.clear();
-                                self.download.apply_filter();
-                            }
-                        }
-                        Key::Backspace => {
-                            if self.download.query.pop().is_some() {
-                                self.download.apply_filter();
-                            }
-                        }
-                        Key::Tab => self.download.focus = self.download.focus.next(),
-                        // Arrows still walk the list while the caret is in the box.
-                        Key::Up => self.picker_step(-1, true),
-                        Key::Down => self.picker_step(1, true),
-                        Key::Enter => self.start_install(),
-                        Key::Char(c) if !c.is_control() => {
-                            self.download.query.push(c);
-                            self.download.apply_filter();
-                        }
-                        _ => {}
-                    }
-                    return true;
-                }
-                match code {
-                    Key::Esc | Key::Char('q') => self.close_download(),
-                    Key::Tab => self.download.focus = self.download.focus.next(),
-                    Key::Char('/') => self.download.focus = PickerFocus::Search,
-                    Key::Char('s') => self.toggle_source(),
-                    Key::Char('f') => self.set_download_filter(self.download.filter.next()),
-                    Key::Up | Key::Char('k') => self.picker_step(-1, true),
-                    Key::Down | Key::Char('j') => self.picker_step(1, true),
-                    // Tree controls: `←` closes, `→` opens, `Space` flips whichever
-                    // group the cursor is in (its header, or one of its members).
-                    Key::Left => self.toggle_group_at_cursor(Some(false)),
-                    Key::Right => self.toggle_group_at_cursor(Some(true)),
-                    Key::Char(' ') => self.toggle_group_at_cursor(None),
-                    Key::Enter => self.start_install(),
-                    _ => {}
-                }
-            }
-            DownloadStage::Installing => {
-                if matches!(code, Key::Esc | Key::Char('q')) {
-                    self.screen = Screen::Main;
-                    self.log("安装转为后台进行，完成后会重新扫描版本");
-                }
-            }
-            DownloadStage::Done | DownloadStage::Failed => {
-                if matches!(code, Key::Esc | Key::Enter | Key::Char('q')) {
-                    self.reload();
-                    self.screen = Screen::Main;
-                }
-            }
-        }
-        true
-    }
-
-    /// Move the picker selection by `delta` steps.
-    ///
-    /// The keyboard wraps (`↓` on the last row starts over); the picker stops at
-    /// both ends; that is the only difference, so both share this walk.
-    fn picker_step(&mut self, delta: i32, wrap: bool) {
-        let step = |position: i32, count: usize| -> usize {
-            let last = count as i32 - 1;
-            let target = position + delta;
-            (if wrap {
-                target.rem_euclid(count as i32)
-            } else {
-                target.clamp(0, last)
-            }) as usize
-        };
-        match self.download.focus {
-            // Walk the drawn rows, not the filtered list: a folded group is one
-            // stop, however many snapshots it hides, and its members are not
-            // steps the keyboard may land on.
-            PickerFocus::Versions | PickerFocus::Search => {
-                let stops = self.download.stops();
-                if stops.is_empty() {
-                    return;
-                }
-                let cursor = self.download.cursor();
-                let position = stops.iter().position(|row| *row == cursor).unwrap_or(0);
-                let next = step(position as i32, stops.len());
-                self.download.picked = self.download.rows[stops[next]].anchor();
-                self.download.refresh_loaders();
-            }
-            PickerFocus::Loaders => {
-                let count = self.download.loaders.len();
-                if count == 0 {
-                    return;
-                }
-                self.download.loader_pick = step(self.download.loader_pick as i32, count);
-            }
-        }
-    }
-
     /// A text field changed the search box; re-filter in place.
-    ///
-    /// The keyboard path (`/` then typing) and a GUI input box both end up here,
-    /// so the two front-ends cannot disagree about when the list is rebuilt.
     pub fn set_download_query(&mut self, query: &str) {
         if self.download.query == query {
             return;
@@ -552,14 +385,12 @@ impl App {
         self.status = format!("下载：{} 版本", filter.label());
     }
 
-    /// Open or close the group drawn at `drawn`, for a front-end that has the
-    /// row index rather than a keyboard cursor.
+    /// Open or close the group drawn at `drawn`.
     pub fn toggle_row(&mut self, drawn: usize) {
         self.toggle_group(drawn, None);
     }
 
-    /// Open or close the group drawn at `drawn`, or under the keyboard cursor when
-    /// `drawn` is `None`.
+    /// Open or close the group drawn at `drawn`; `expand` forces a direction.
     fn toggle_group(&mut self, drawn: usize, expand: Option<bool>) {
         let Some(crate::version_tree::RowKind::Group {
             key,
@@ -578,14 +409,6 @@ impl App {
         self.download.picked = first;
         self.download.rebuild_rows();
         self.download.refresh_loaders();
-    }
-
-    /// `←` folds the group the cursor is in, `→` unfolds it, `Space` flips it.
-    fn toggle_group_at_cursor(&mut self, expand: Option<bool>) {
-        let Some(drawn) = self.download.group_row_at_cursor() else {
-            return;
-        };
-        self.toggle_group(drawn, expand);
     }
 
     pub fn start_install(&mut self) {

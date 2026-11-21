@@ -7,7 +7,7 @@ use super::*;
 #[derive(Debug, Clone, Default)]
 pub struct AccountsUi {
     pub selected: usize,
-    /// Set after the first `d`; a second `d` deletes the file.
+    /// Set after the first remove request; a second one deletes the file.
     pub confirm_delete: bool,
     /// Whether the page has been opened before. The cursor is only meaningful
     /// from the second visit on; the first one lands on the active account.
@@ -57,41 +57,6 @@ impl App {
         self.accounts.get(self.accounts_ui.selected).cloned()
     }
 
-    pub fn close_accounts(&mut self) {
-        self.screen = Screen::Main;
-        self.accounts_ui.confirm_delete = false;
-    }
-
-    /// Keys while the account manager is open.
-    pub fn handle_accounts_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
-        let count = self.accounts.len();
-        match code {
-            Key::Esc | Key::Char('q') => self.close_accounts(),
-            Key::Up | Key::Char('k') if count > 0 => {
-                self.accounts_ui.selected = (self.accounts_ui.selected + count - 1) % count;
-                self.accounts_ui.confirm_delete = false;
-            }
-            Key::Down | Key::Char('j') if count > 0 => {
-                self.accounts_ui.selected = (self.accounts_ui.selected + 1) % count;
-                self.accounts_ui.confirm_delete = false;
-            }
-            Key::Home | Key::Char('g') => {
-                self.accounts_ui.selected = 0;
-                self.accounts_ui.confirm_delete = false;
-            }
-            Key::End | Key::Char('G') => {
-                self.accounts_ui.selected = count.saturating_sub(1);
-                self.accounts_ui.confirm_delete = false;
-            }
-            Key::Enter | Key::Char(' ') => self.activate_selected_account(),
-            Key::Char('d') | Key::Delete => self.remove_selected_account(),
-            Key::Char('l') => self.open_login(),
-            _ => {}
-        }
-        let _ = modifiers;
-        true
-    }
-
     /// Make the highlighted account the active one.
     ///
     /// The flag on the file decides which kind it becomes: an offline account has
@@ -116,11 +81,11 @@ impl App {
             self.accounts_ui.confirm_delete = true;
             self.status = if account.offline {
                 format!(
-                    "再按一次 d 移除离线账户 {}（会删除账户文件）",
+                    "再点一次「移除」删除离线账户 {}（会删除账户文件）",
                     account.name()
                 )
             } else {
-                format!("再按一次 d 移除 {}（会删除凭据文件）", account.name())
+                format!("再点一次「移除」删除 {}（会删除凭据文件）", account.name())
             };
             return;
         }

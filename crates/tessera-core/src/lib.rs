@@ -18,7 +18,6 @@ pub mod fastmenu;
 pub mod fastutil;
 pub mod fsutil;
 pub mod http;
-pub mod input;
 pub mod install;
 pub mod instance;
 mod jar;

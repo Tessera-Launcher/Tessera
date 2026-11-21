@@ -41,11 +41,11 @@ fn the_card_downloads_the_pinned_build_with_the_configured_proxy() {
 }
 
 #[test]
-fn the_a_key_starts_the_same_download() {
+fn the_aria2_button_starts_the_same_download() {
     let mut app = app();
     app.open_java();
     app.handle_java_event(crate::java::Event::Listed(vec![java_runtime(28)]));
-    app.handle_java_key(Key::Char('a'), Modifiers::NONE);
+    app.start_aria2_install();
     assert!(aria2_effect(&app).is_some());
 }
 

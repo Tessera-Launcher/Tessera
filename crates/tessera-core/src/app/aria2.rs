@@ -80,7 +80,7 @@ impl App {
         self.aria2.path = Some(path);
     }
 
-    /// `a`: download (or reinstall) the pinned aria2.
+    /// Download (or reinstall) the pinned aria2.
     pub fn start_aria2_install(&mut self) {
         if self.aria2.downloading {
             return;

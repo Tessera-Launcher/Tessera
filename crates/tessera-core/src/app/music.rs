@@ -41,20 +41,11 @@ impl PlayOrder {
     }
 }
 
-/// Which list the arrow keys move.
+/// Which list has the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MusicFocus {
     Versions,
     Tracks,
-}
-
-impl MusicFocus {
-    fn toggled(self) -> Self {
-        match self {
-            MusicFocus::Versions => MusicFocus::Tracks,
-            MusicFocus::Tracks => MusicFocus::Versions,
-        }
-    }
 }
 
 /// The music page's own state.
@@ -174,16 +165,6 @@ impl App {
         self.music.selected_version().map(str::to_string)
     }
 
-    /// Leaving the page stops the sound.
-    ///
-    /// A launcher page is not a background player: an orphaned stream with no bar
-    /// would be a track nobody can pause. Reopening the page starts from a clean
-    /// transport instead.
-    pub fn close_music(&mut self) {
-        self.stop_transport();
-        self.screen = Screen::Main;
-    }
-
     /// Rescan the selected version with the current kind. Called on every
     /// selection change: the list must always describe what is under the cursor.
     pub fn reload_music(&mut self) {
@@ -247,47 +228,6 @@ impl App {
         self.reload_music();
     }
 
-    /// Move the version cursor, reloading when it lands somewhere new.
-    pub fn move_music_version(&mut self, delta: i64) {
-        let Some(last) = self.music.versions.len().checked_sub(1) else {
-            return;
-        };
-        // Wrapping is what the main list does; this list is short, so stopping at
-        // the ends would feel broken.
-        let target = if delta > 0 {
-            if self.music.selected >= last {
-                0
-            } else {
-                self.music.selected + 1
-            }
-        } else if self.music.selected == 0 {
-            last
-        } else {
-            self.music.selected - 1
-        };
-        self.select_music_version(target);
-    }
-
-    /// Move the track cursor; the list does not change.
-    pub fn move_music_track(&mut self, delta: i64) {
-        let Some(library) = &self.music.library else {
-            return;
-        };
-        if library.tracks.is_empty() {
-            return;
-        }
-        let last = library.tracks.len() - 1;
-        let cursor = (self.music.cursor as i64 + delta).clamp(0, last as i64) as usize;
-        // Moving the cursor is picking a track: the position and the length have
-        // to follow, or the bar would keep showing the previous disc.
-        self.select_music_track(cursor);
-    }
-
-    /// `t`: discs ⇄ background music.
-    pub fn toggle_music_kind(&mut self) {
-        self.set_music_kind(self.music.kind.toggled());
-    }
-
     /// Pick a track by index and put the transport at its start.
     ///
     /// Moving the cursor is picking a track: the list has no separate "current"
@@ -343,7 +283,7 @@ impl App {
         self.music.playing = true;
     }
 
-    /// The play/pause button, and `Space`.
+    /// The play/pause button.
     pub fn music_play_pause(&mut self) {
         if self.music.selected_track().is_none() {
             self.status = "先选一个已安装的版本".to_string();
@@ -378,7 +318,7 @@ impl App {
         );
     }
 
-    /// `Enter`: the track under the cursor, from the beginning.
+    /// Play the track under the cursor from the beginning.
     pub fn music_play_selected(&mut self) {
         let cursor = self.music.cursor;
         self.select_music_track(cursor);
@@ -495,61 +435,5 @@ impl App {
                 true
             }
         }
-    }
-
-    /// Keys while the music page is open. Returns `true` when consumed.
-    pub fn handle_music_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
-        let _ = modifiers;
-        let on_tracks = self.music.focus == MusicFocus::Tracks;
-        match code {
-            Key::Esc | Key::Char('q') => self.close_music(),
-            // Tab is what the other screens use, but GPUI's focus traversal eats
-            // it before it reaches this handler, so the arrows do the same job and
-            // are what the on-screen hint tells people to press.
-            Key::Tab | Key::BackTab => self.music.focus = self.music.focus.toggled(),
-            Key::Right => self.music.focus = MusicFocus::Tracks,
-            Key::Left => self.music.focus = MusicFocus::Versions,
-            Key::Char('t') => self.toggle_music_kind(),
-            Key::Char('r') => self.reload_music(),
-            Key::Down | Key::Char('j') => {
-                if on_tracks {
-                    self.move_music_track(1);
-                } else {
-                    self.move_music_version(1);
-                }
-            }
-            Key::Up | Key::Char('k') => {
-                if on_tracks {
-                    self.move_music_track(-1);
-                } else {
-                    self.move_music_version(-1);
-                }
-            }
-            Key::Home | Key::Char('g') => {
-                if on_tracks {
-                    self.move_music_track(-(self.music.cursor as i64));
-                } else {
-                    self.select_music_version(0);
-                }
-            }
-            Key::End | Key::Char('G') => {
-                if on_tracks {
-                    let last = self
-                        .music
-                        .library
-                        .as_ref()
-                        .map_or(0, |library| library.tracks.len().saturating_sub(1));
-                    self.move_music_track(last as i64 - self.music.cursor as i64);
-                } else {
-                    let last = self.music.versions.len().saturating_sub(1);
-                    self.select_music_version(last);
-                }
-            }
-            Key::Enter => self.music_play_selected(),
-            Key::Char(' ') => self.music_play_pause(),
-            Key::Char('o') => self.music_toggle_order(),
-            _ => return false,
-        }
-        true
     }
 }

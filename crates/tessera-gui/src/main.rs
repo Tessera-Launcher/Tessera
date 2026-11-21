@@ -25,7 +25,6 @@ use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
     TaskKind, UiRequest, VersionFilter,
 };
-use tessera_core::input::{Key, Modifiers};
 use tessera_core::install::{self, InstallEvent};
 use tessera_core::launch;
 use tessera_core::login::{self, LoginEvent};

@@ -36,11 +36,19 @@ impl Launcher {
                         cx,
                         move |this: &mut Launcher, cx| {
                             this.state.login.choice = index;
-                            this.state.handle_login_key(Key::Enter, Modifiers::NONE);
+                            this.state.confirm_login_choice();
                             this.refresh(cx);
                         },
                     ));
                 }
+                body = body.child(div().h_flex().gap(px(space::MD)).child(button(
+                    "取消",
+                    cx,
+                    |this: &mut Launcher, cx| {
+                        this.state.close_login();
+                        this.refresh(cx);
+                    },
+                )));
                 hint = "选择用哪个身份登录".to_string();
             }
             LoginStep::AppId => {
@@ -86,14 +94,23 @@ impl Launcher {
                             .appearance(true)
                             .text_size(px(font::BODY)),
                     )
-                    .child(div().h_flex().gap(px(space::MD)).child(primary_button(
-                        "用这个 id 登录",
-                        cx,
-                        |this: &mut Launcher, cx| {
-                            this.state.confirm_login_app_id();
-                            this.refresh(cx);
-                        },
-                    )))
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap(px(space::MD))
+                            .child(primary_button(
+                                "用这个 id 登录",
+                                cx,
+                                |this: &mut Launcher, cx| {
+                                    this.state.confirm_login_app_id();
+                                    this.refresh(cx);
+                                },
+                            ))
+                            .child(button("返回", cx, |this: &mut Launcher, cx| {
+                                this.state.back_to_login_choice();
+                                this.refresh(cx);
+                            })),
+                    )
                     .child(list);
                 hint = "选择一份现有凭据，或输入 id".to_string();
             }
@@ -131,14 +148,23 @@ impl Launcher {
                             .child(error.clone()),
                     );
                 }
-                body = body.child(div().h_flex().gap(px(space::MD)).child(primary_button(
-                    "离线登录",
-                    cx,
-                    |this: &mut Launcher, cx| {
-                        this.state.confirm_offline_login();
-                        this.refresh(cx);
-                    },
-                )));
+                body = body.child(
+                    div()
+                        .h_flex()
+                        .gap(px(space::MD))
+                        .child(primary_button(
+                            "离线登录",
+                            cx,
+                            |this: &mut Launcher, cx| {
+                                this.state.confirm_offline_login();
+                                this.refresh(cx);
+                            },
+                        ))
+                        .child(button("返回", cx, |this: &mut Launcher, cx| {
+                            this.state.back_to_login_choice();
+                            this.refresh(cx);
+                        })),
+                );
                 hint = "勾选后点击登录".to_string();
             }
             LoginStep::Waiting { user_code, url } => {

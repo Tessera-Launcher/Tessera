@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn leaving_and_returning_keeps_the_download_picker_where_it_was() {
     let mut app = downloader();
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+    app.set_download_filter(VersionFilter::Release);
     type_search(&mut app, "1.20");
     let picked = app.download.picked;
     assert_eq!(app.download.filter, VersionFilter::Release);
@@ -108,7 +108,7 @@ fn a_loaded_java_list_survives_a_page_switch() {
 fn leaving_and_returning_keeps_the_account_cursor() {
     let (_tmp, mut app) = with_accounts();
     app.open_accounts();
-    app.handle_accounts_key(Key::Down, Modifiers::NONE);
+    app.accounts_ui.selected = 1;
     let selected = app.accounts_ui.selected;
 
     app.show_main();

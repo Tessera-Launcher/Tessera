@@ -69,7 +69,7 @@ impl Launcher {
                         move |this: &mut Launcher, event: &ClickEvent, _window, cx| {
                             this.state.accounts_ui.selected = index;
                             this.state.accounts_ui.confirm_delete = false;
-                            // Double click switches to the account, like Enter.
+                            // Double click switches to the account, like the 切换 button.
                             if event.click_count() > 1 {
                                 this.state.activate_selected_account();
                             }

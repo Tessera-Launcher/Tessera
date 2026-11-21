@@ -57,26 +57,6 @@ fn aria2_effect(app: &App) -> Option<(crate::aria2::Build, String)> {
     })
 }
 
-fn copy_effect(app: &App) -> Option<String> {
-    app.ui_requests()
-        .iter()
-        .rev()
-        .find_map(|request| match request {
-            UiRequest::Copy(text) => Some(text.clone()),
-            _ => None,
-        })
-}
-
-fn browser_effect(app: &App) -> Option<String> {
-    app.ui_requests()
-        .iter()
-        .rev()
-        .find_map(|request| match request {
-            UiRequest::OpenBrowser(url) => Some(url.clone()),
-            _ => None,
-        })
-}
-
 fn has_fetch_versions(app: &App) -> bool {
     app.effects()
         .iter()
@@ -119,30 +99,6 @@ fn app() -> App {
         vec![version("a"), version("b"), version("c")],
         Vec::new(),
     )
-}
-
-#[test]
-fn selection_wraps_both_ways() {
-    let mut app = app();
-    app.select_prev();
-    assert_eq!(app.selected, 2);
-    app.select_next();
-    assert_eq!(app.selected, 0);
-    app.select_last();
-    assert_eq!(app.selected, 2);
-    app.select_first();
-    assert_eq!(app.selected, 0);
-}
-
-#[test]
-fn selection_is_inert_without_versions() {
-    let mut app = App::new("/mc", "/acc", vec![], vec![]);
-    app.select_next();
-    app.select_prev();
-    app.select_last();
-    assert_eq!(app.selected, 0);
-    assert!(app.selected_version().is_none());
-    assert!(app.selected_dir().is_none());
 }
 
 #[test]
@@ -224,6 +180,15 @@ mod picker;
 mod session_refresh;
 mod uninstall;
 
+/// Run the offline login flow the way the login screen does.
+fn offline_login(app: &mut App, name: &str) {
+    app.open_login();
+    app.login.choice = 2;
+    app.confirm_login_choice();
+    app.set_login_offline_name(name);
+    app.confirm_offline_login();
+}
+
 /// Two saved accounts on disk, the second one active.
 fn with_accounts() -> (tempfile::TempDir, App) {
     let tmp = tempfile::tempdir().unwrap();
@@ -287,9 +252,5 @@ fn downloader() -> App {
 }
 
 fn type_search(app: &mut App, text: &str) {
-    app.handle_download_key(Key::Char('/'), Modifiers::NONE);
-    assert_eq!(app.download.focus, PickerFocus::Search);
-    for c in text.chars() {
-        app.handle_download_key(Key::Char(c), Modifiers::NONE);
-    }
+    app.set_download_query(text);
 }

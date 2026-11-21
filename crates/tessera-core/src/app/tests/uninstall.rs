@@ -12,7 +12,10 @@ fn uninstall_asks_once_then_removes_the_directory() {
     select(&mut app, "1.20.1");
 
     app.request_uninstall();
-    assert_eq!(app.uninstall_confirm(), Some("1.20.1"));
+    assert_eq!(
+        app.uninstall_plan().map(|(dir, _, _)| dir).as_deref(),
+        Some("1.20.1")
+    );
     assert!(
         root.join("versions/1.20.1").is_dir(),
         "the first press must only ask"
@@ -22,7 +25,7 @@ fn uninstall_asks_once_then_removes_the_directory() {
     assert!(!root.join("versions/1.20.1").exists());
     assert!(root.join("versions/1.8.9").is_dir(), "neighbour survived");
     assert_eq!(app.versions.len(), 1);
-    assert!(app.uninstall_confirm().is_none());
+    assert!(app.uninstall_plan().is_none());
     assert!(app.status.contains("已卸载"), "{}", app.status);
     assert!(
         app.log.iter().any(|line| line.contains("versions/1.20.1")),
@@ -80,7 +83,10 @@ fn uninstall_targets_the_directory_not_the_profile_id() {
     assert_eq!(app.versions[0].dir, "my-instance");
 
     app.request_uninstall();
-    assert_eq!(app.uninstall_confirm(), Some("my-instance"));
+    assert_eq!(
+        app.uninstall_plan().map(|(dir, _, _)| dir).as_deref(),
+        Some("my-instance")
+    );
     app.request_uninstall();
     assert!(
         !root.join("versions/my-instance").exists(),
@@ -414,32 +420,10 @@ fn a_spawned_game_is_watched_with_its_version_directory() {
 }
 
 #[test]
-fn moving_the_selection_cancels_a_pending_uninstall() {
-    let mut app = app();
-    app.request_uninstall();
-    assert_eq!(app.uninstall_confirm(), Some("a"));
-    app.select_next();
-    assert!(app.uninstall_confirm().is_none());
-
-    app.request_uninstall();
-    app.select_prev();
-    assert!(app.uninstall_confirm().is_none());
-}
-
-#[test]
-fn any_other_key_cancels_a_pending_uninstall() {
-    let mut app = app();
-    app.handle_key(Key::Char('x'), Modifiers::NONE);
-    assert_eq!(app.uninstall_confirm(), Some("a"));
-    app.handle_key(Key::Char('h'), Modifiers::NONE);
-    assert!(app.uninstall_confirm().is_none());
-}
-
-#[test]
 fn uninstall_is_inert_without_versions() {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
     app.request_uninstall();
-    assert!(app.uninstall_confirm().is_none());
+    assert!(app.uninstall_plan().is_none());
     assert_eq!(app.status, "扫描 /mc", "status left untouched");
 }
 
@@ -474,7 +458,7 @@ fn a_missing_directory_reports_failure_and_keeps_the_row() {
 
     assert!(app.status.contains("失败"), "{}", app.status);
     assert_eq!(app.versions.len(), 1);
-    assert!(app.uninstall_confirm().is_none());
+    assert!(app.uninstall_plan().is_none());
 }
 
 #[test]

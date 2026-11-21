@@ -46,9 +46,6 @@ pub struct LoginUi {
 }
 
 impl LoginUi {
-    /// Rows on the identity screen: official, custom app id, offline.
-    pub const CHOICES: usize = 3;
-
     pub fn identity(&self) -> Option<Identity> {
         match self.step {
             // Both live on the same screen: a typed id wins, and an empty field
@@ -136,7 +133,7 @@ impl App {
             }
             Err(message) => {
                 // Not logged here: the screen is built on every open, so a
-                // missing file would otherwise fill the log on every `l`.
+                // missing file would otherwise fill the log on every open.
                 self.login.app_ids.clear();
                 self.login.app_ids_error = Some(message);
             }
@@ -158,133 +155,28 @@ impl App {
         }
     }
 
-    /// Keys while the overlay is open. Returns `true` when the key was consumed.
-    pub fn handle_login_key(&mut self, code: Key, modifiers: Modifiers) -> bool {
-        match &self.login.step {
-            LoginStep::Choose => match code {
-                Key::Esc | Key::Char('q') => self.close_login(),
-                Key::Up | Key::Char('k') | Key::BackTab => {
-                    self.login.choice = self.login.choice.saturating_sub(1);
-                }
-                Key::Down | Key::Char('j') | Key::Tab => {
-                    self.login.choice = (self.login.choice + 1).min(LoginUi::CHOICES - 1);
-                }
-                Key::Char('g') | Key::Home => self.login.choice = 0,
-                Key::Char('G') | Key::End => self.login.choice = LoginUi::CHOICES - 1,
-                Key::Enter | Key::Char(' ') => match self.login.choice {
-                    1 => self.open_app_ids(),
-                    2 => {
-                        self.login.step = LoginStep::OfflineName;
-                        self.login.offline_error = None;
-                        self.status = "登录：输入离线用户名".to_string();
-                    }
-                    _ => {
-                        if let Some(identity) = self.login.identity() {
-                            self.start_login(identity);
-                        }
-                    }
-                },
-                _ => {}
-            },
-            // No `q` on the two typing screens: it is a letter here, not quit.
-            LoginStep::AppId => match code {
-                Key::Esc => {
-                    self.login.step = LoginStep::Choose;
-                    self.status = "登录：选择身份".to_string();
-                }
-                Key::Up | Key::Char('k') => {
-                    self.login.app_id_choice = self.login.app_id_choice.saturating_sub(1);
-                }
-                Key::Down | Key::Char('j') => {
-                    let last = self.login.app_ids.len().saturating_sub(1);
-                    self.login.app_id_choice = (self.login.app_id_choice + 1).min(last);
-                }
-                Key::Home | Key::Char('g') => self.login.app_id_choice = 0,
-                Key::End | Key::Char('G') => {
-                    self.login.app_id_choice = self.login.app_ids.len().saturating_sub(1);
-                }
-                Key::Backspace => {
-                    self.login.app_id.pop();
-                }
-                Key::Enter => match self.login.identity() {
-                    Some(identity) => self.start_login(identity),
-                    None => {
-                        // Neither a typed id nor a readable row: say which one
-                        // is missing instead of starting a login with nothing.
-                        self.status = match self.login.app_ids_error.clone() {
-                            Some(error) => format!("{error}；也可以直接输入 app id"),
-                            None => "请输入 app id，或选一个现有凭据".to_string(),
-                        };
-                    }
-                },
-                Key::Char(c)
-                    if !modifiers.contains(Modifiers::CONTROL) && self.login.app_id.len() < 64 =>
-                {
-                    self.login.app_id.push(c);
-                }
-                _ => {}
-            },
-            LoginStep::OfflineName => match code {
-                Key::Esc => {
-                    self.login.step = LoginStep::Choose;
-                    self.login.offline_error = None;
-                    self.status = "登录：选择身份".to_string();
-                }
-                Key::Tab => {
-                    self.toggle_offline_any();
-                }
-                Key::Backspace => {
-                    self.login.offline_name.pop();
-                    self.login.offline_error = None;
-                }
-                Key::Enter => {
-                    self.apply_offline_login();
-                }
-                Key::Char(c)
-                    if !modifiers.contains(Modifiers::CONTROL)
-                        && self.login.offline_name.chars().count() < 32 =>
-                {
-                    self.login.offline_name.push(c);
-                    self.login.offline_error = None;
-                }
-                _ => {}
-            },
-            LoginStep::Waiting { user_code, url } => {
-                // The code and the link are what the user has to carry to the
-                // browser, so copying and opening them live on this screen.
-                let (user_code, url) = (user_code.clone(), url.clone());
-                // A blank code or link is the "asking Microsoft" placeholder, so
-                // the guards keep the buttons from copying nothing.
-                match code {
-                    Key::Esc | Key::Char('q') => self.close_login(),
-                    Key::Char('c') if !user_code.is_empty() => {
-                        self.request_ui(UiRequest::Copy(user_code.clone()));
-                        self.log(format!("复制设备码：{user_code}"));
-                        self.status = "已复制设备码".to_string();
-                    }
-                    Key::Char('y') if !url.is_empty() => {
-                        self.request_ui(UiRequest::Copy(url.clone()));
-                        self.log(format!("复制链接：{url}"));
-                        self.status = "已复制链接".to_string();
-                    }
-                    Key::Char('o') if !url.is_empty() => {
-                        self.request_ui(UiRequest::OpenBrowser(url.clone()));
-                        self.log(format!("在浏览器打开：{url}"));
-                        self.status = "正在打开浏览器…".to_string();
-                    }
-                    _ => {}
-                }
+    /// Go back to the identity list from the app-id or offline-name screen.
+    pub fn back_to_login_choice(&mut self) {
+        self.login.step = LoginStep::Choose;
+        self.login.offline_error = None;
+        self.status = "登录：选择身份".to_string();
+    }
+
+    /// Confirm the identity choice on the first screen.
+    pub fn confirm_login_choice(&mut self) {
+        match self.login.choice {
+            1 => self.open_app_ids(),
+            2 => {
+                self.login.step = LoginStep::OfflineName;
+                self.login.offline_error = None;
+                self.status = "登录：输入离线用户名".to_string();
             }
-            LoginStep::Done { .. } | LoginStep::Failed(_) => {
-                if matches!(
-                    code,
-                    Key::Esc | Key::Enter | Key::Char('q') | Key::Char(' ')
-                ) {
-                    self.close_login();
+            _ => {
+                if let Some(identity) = self.login.identity() {
+                    self.start_login(identity);
                 }
             }
         }
-        true
     }
 
     /// A text field changed the custom client id on the login screen.
@@ -292,9 +184,17 @@ impl App {
         self.login.app_id = app_id.to_string();
     }
 
-    /// Enter on the custom-app-id screen, or the OK button.
+    /// The OK button on the custom-app-id screen.
     pub fn confirm_login_app_id(&mut self) {
-        self.handle_login_key(Key::Enter, Modifiers::NONE);
+        match self.login.identity() {
+            Some(identity) => self.start_login(identity),
+            None => {
+                self.status = match self.login.app_ids_error.clone() {
+                    Some(error) => format!("{error}；也可以直接输入 app id"),
+                    None => "请输入 app id，或选一个现有凭据".to_string(),
+                };
+            }
+        }
     }
 
     /// A text field changed the offline player name on the login screen.
@@ -303,7 +203,7 @@ impl App {
         self.login.offline_error = None;
     }
 
-    /// Enter on the offline-name screen, or the OK button.
+    /// The OK button on the offline-name screen.
     pub fn confirm_offline_login(&mut self) {
         self.apply_offline_login();
     }

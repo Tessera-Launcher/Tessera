@@ -130,8 +130,8 @@ impl App {
         Ok((version.dir.clone(), version.base_version().to_string()))
     }
 
-    /// Update the search box without touching the network. Enter or the search
-    /// button calls [`App::search_mods`].
+    /// Update the search box without touching the network; the search button
+    /// calls [`App::search_mods`].
     pub fn set_mods_query(&mut self, query: &str) {
         self.mods.query = query.to_string();
     }

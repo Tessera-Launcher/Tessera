@@ -95,11 +95,11 @@ fn the_music_page_lists_discs_by_default() {
 }
 
 #[test]
-fn t_switches_to_background_music_and_rescans() {
+fn switching_to_background_music_rescans() {
     let root = music_home();
     let mut app = music_app(root.path());
     app.open_music();
-    app.handle_music_key(Key::Char('t'), Modifiers::NONE);
+    app.set_music_kind(MusicKind::Bgm);
 
     let library = app.music.library.as_ref().unwrap();
     assert_eq!(library.kind, MusicKind::Bgm);
@@ -113,43 +113,14 @@ fn moving_the_version_cursor_rescans_and_keeps_the_kind() {
     let root = music_home();
     let mut app = music_app(root.path());
     app.open_music();
-    app.handle_music_key(Key::Char('t'), Modifiers::NONE);
+    app.set_music_kind(MusicKind::Bgm);
     let first = app.music.selected_version().unwrap().to_string();
-    app.handle_music_key(Key::Down, Modifiers::NONE);
+    app.select_music_version(1);
 
     assert_ne!(app.music.selected_version().unwrap(), first);
     let library = app.music.library.as_ref().unwrap();
     assert_eq!(library.kind, MusicKind::Bgm, "the kind survives a move");
     assert_eq!(library.version, app.music.selected_version().unwrap());
-}
-
-#[test]
-fn tab_moves_the_cursor_between_the_two_lists() {
-    let root = music_home();
-    let mut app = music_app(root.path());
-    app.open_music();
-    assert_eq!(app.music.focus, MusicFocus::Versions);
-
-    let before = app.music.selected;
-    app.handle_music_key(Key::Down, Modifiers::NONE);
-    assert_ne!(app.music.selected, before, "the version list moves first");
-
-    app.handle_music_key(Key::Tab, Modifiers::NONE);
-    assert_eq!(app.music.focus, MusicFocus::Tracks);
-    let selected = app.music.selected;
-    assert_eq!(app.music.cursor, 0);
-    app.handle_music_key(Key::Down, Modifiers::NONE);
-    assert_eq!(app.music.selected, selected, "the version list stays put");
-    assert_eq!(app.music.cursor, 1, "the track list is the one that moved");
-}
-
-#[test]
-fn esc_returns_to_the_main_screen() {
-    let root = music_home();
-    let mut app = music_app(root.path());
-    app.open_music();
-    app.handle_music_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.screen, Screen::Main);
 }
 
 /// The commands the transport queued this frame.
@@ -212,7 +183,7 @@ fn playing_a_track_starts_it_from_the_beginning() {
     let mut app = music_app(root.path());
     app.open_music();
     // Halfway through with a stopped transport, the way a single click leaves
-    // it; the double click (Enter here) is what starts the sound.
+    // it; the play button is what starts the sound.
     app.music_seek(0.5);
     assert!(!app.music.playing);
     app.take_effects();
@@ -411,8 +382,7 @@ fn moving_the_track_cursor_restarts_the_bar() {
 
     // The next disc starts from its own beginning, not halfway through the
     // previous one.
-    app.handle_music_key(Key::Tab, Modifiers::NONE);
-    app.handle_music_key(Key::Down, Modifiers::NONE);
+    app.select_music_track(1);
     assert_eq!(app.music.cursor, 1);
     assert_eq!(app.music.position, std::time::Duration::ZERO);
     assert!(
@@ -424,21 +394,6 @@ fn moving_the_track_cursor_restarts_the_bar() {
         last_music_command(&app),
         Some(crate::audio::Command::Play { .. })
     ));
-}
-
-#[test]
-fn leaving_the_page_stops_the_sound() {
-    let root = music_home();
-    let mut app = music_app(root.path());
-    app.open_music();
-    app.music_play_pause();
-    assert!(app.music.playing);
-    app.take_effects();
-
-    app.handle_music_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.screen, Screen::Main);
-    assert!(!app.music.playing);
-    assert_eq!(last_music_command(&app), Some(crate::audio::Command::Stop));
 }
 
 #[test]

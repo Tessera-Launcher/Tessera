@@ -15,8 +15,8 @@ fn opening_the_manager_selects_the_active_account() {
 fn enter_switches_the_active_account() {
     let (_tmp, mut app) = with_accounts();
     app.open_accounts();
-    app.handle_accounts_key(Key::Home, Modifiers::NONE);
-    app.handle_accounts_key(Key::Enter, Modifiers::NONE);
+    app.accounts_ui.selected = 0;
+    app.activate_selected_account();
     assert_eq!(app.account.label(), "Alex · Minecraft Launcher");
     assert!(app.log.iter().any(|line| line.contains("切换账户")));
 }
@@ -25,12 +25,12 @@ fn enter_switches_the_active_account() {
 fn deleting_needs_two_presses_and_updates_the_list_and_the_header() {
     let (_tmp, mut app) = with_accounts();
     app.open_accounts();
-    app.handle_accounts_key(Key::Home, Modifiers::NONE); // Alex
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.accounts_ui.selected = 0; // Alex
+    app.remove_selected_account();
     assert!(app.accounts_ui.confirm_delete);
     assert_eq!(app.accounts.len(), 2, "first press only asks");
 
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.remove_selected_account();
     assert_eq!(app.accounts.len(), 1, "second press deletes");
     assert!(!app.accounts_ui.confirm_delete);
     assert_eq!(app.accounts[0].player_name, "Steve");
@@ -42,9 +42,9 @@ fn deleting_needs_two_presses_and_updates_the_list_and_the_header() {
 fn deleting_the_active_account_signs_out() {
     let (_tmp, mut app) = with_accounts();
     app.open_accounts();
-    app.handle_accounts_key(Key::End, Modifiers::NONE); // Steve, active
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.accounts_ui.selected = app.accounts.len() - 1; // Steve, active
+    app.remove_selected_account();
+    app.remove_selected_account();
 
     assert_eq!(app.account, Account::SignedOut);
     assert_eq!(app.accounts.len(), 1);
@@ -55,20 +55,10 @@ fn deleting_the_active_account_signs_out() {
 }
 
 #[test]
-fn moving_the_selection_cancels_a_pending_delete() {
-    let (_tmp, mut app) = with_accounts();
-    app.open_accounts();
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
-    assert!(app.accounts_ui.confirm_delete);
-    app.handle_accounts_key(Key::Down, Modifiers::NONE);
-    assert!(!app.accounts_ui.confirm_delete);
-}
-
-#[test]
 fn deleting_an_empty_list_is_a_no_op() {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
     app.open_accounts();
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.remove_selected_account();
     assert!(app.accounts.is_empty());
     assert!(!app.accounts_ui.confirm_delete);
 }
@@ -77,22 +67,16 @@ fn deleting_an_empty_list_is_a_no_op() {
 fn login_opened_from_the_manager_returns_to_it() {
     let (_tmp, mut app) = with_accounts();
     app.open_accounts();
-    app.handle_accounts_key(Key::Char('l'), Modifiers::NONE);
+    app.open_login();
     assert_eq!(app.screen, Screen::Login);
-    app.handle_login_key(Key::Esc, Modifiers::NONE);
+    app.close_login();
     assert_eq!(app.screen, Screen::Accounts, "not the main screen");
 }
 
 #[test]
 fn an_offline_login_is_written_as_an_account_file() {
     let (tmp, mut app) = with_accounts();
-    app.open_login();
-    app.handle_login_key(Key::End, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
-    for c in "Offline_Guy".chars() {
-        app.handle_login_key(Key::Char(c), Modifiers::NONE);
-    }
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    offline_login(&mut app, "Offline_Guy");
 
     // One JSON file per account, offline included.
     let file = tmp.path().join("Offline_Guy.json");
@@ -119,13 +103,7 @@ fn an_offline_login_is_written_as_an_account_file() {
 #[test]
 fn switching_away_from_offline_and_back_uses_the_stored_file() {
     let (_tmp, mut app) = with_accounts();
-    app.open_login();
-    app.handle_login_key(Key::End, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
-    for c in "Offline_Guy".chars() {
-        app.handle_login_key(Key::Char(c), Modifiers::NONE);
-    }
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    offline_login(&mut app, "Offline_Guy");
     let offline_file = app.account.file().unwrap().to_path_buf();
 
     app.open_accounts();
@@ -136,7 +114,7 @@ fn switching_away_from_offline_and_back_uses_the_stored_file() {
         "the manager opens on the offline row"
     );
 
-    app.handle_accounts_key(Key::Enter, Modifiers::NONE);
+    app.activate_selected_account();
     assert!(matches!(app.account, Account::Offline { .. }));
     assert_eq!(app.account.label(), "Offline_Guy · Offline");
 
@@ -163,23 +141,17 @@ fn switching_away_from_offline_and_back_uses_the_stored_file() {
 #[test]
 fn removing_an_offline_account_deletes_only_its_file() {
     let (tmp, mut app) = with_accounts();
-    app.open_login();
-    app.handle_login_key(Key::End, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
-    for c in "Offline_Guy".chars() {
-        app.handle_login_key(Key::Char(c), Modifiers::NONE);
-    }
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    offline_login(&mut app, "Offline_Guy");
     let offline_file = tmp.path().join("Offline_Guy.json");
     assert!(offline_file.is_file());
 
     app.open_accounts();
     // The cursor is on the active (offline) row already.
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.remove_selected_account();
     assert!(app.accounts_ui.confirm_delete);
     assert!(offline_file.is_file(), "first press only asks");
 
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.remove_selected_account();
     assert!(!offline_file.exists());
     assert_eq!(app.account, Account::SignedOut);
     assert!(

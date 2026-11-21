@@ -9,7 +9,7 @@ fn official_identity_starts_on_enter_without_an_app_id() {
     assert_eq!(app.screen, Screen::Login);
     assert!(app.login.identity().is_some(), "official needs no input");
 
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_login_choice();
     assert_eq!(login_effect(&app), Some(Identity::Official));
     assert!(matches!(app.login.step, LoginStep::Waiting { .. }));
 }
@@ -18,14 +18,14 @@ fn official_identity_starts_on_enter_without_an_app_id() {
 fn custom_identity_opens_an_input_and_refuses_to_start_empty() {
     let mut app = app();
     app.open_login();
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 1;
+    app.confirm_login_choice();
     assert_eq!(app.login.step, LoginStep::AppId);
     assert!(login_effect(&app).is_none());
 
-    // Enter on an empty field must not start a login (and must not fall back
+    // Confirming an empty field must not start a login (and must not fall back
     // to any built-in id).
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_login_app_id();
     assert!(login_effect(&app).is_none(), "empty app id must not start");
     assert!(
         app.status.contains("app id"),
@@ -33,12 +33,8 @@ fn custom_identity_opens_an_input_and_refuses_to_start_empty() {
         app.status
     );
 
-    for c in "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".chars() {
-        app.handle_login_key(Key::Char(c), Modifiers::NONE);
-    }
-    app.handle_login_key(Key::Backspace, Modifiers::NONE);
-    app.handle_login_key(Key::Char('b'), Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.set_login_app_id("c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb");
+    app.confirm_login_app_id();
 
     assert_eq!(
         login_effect(&app),
@@ -46,6 +42,20 @@ fn custom_identity_opens_an_input_and_refuses_to_start_empty() {
             app_id: "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string()
         })
     );
+}
+
+#[test]
+fn the_back_button_returns_to_the_identity_list() {
+    let mut app = app();
+    app.open_login();
+    app.login.choice = 1;
+    app.confirm_login_choice();
+    assert_eq!(app.login.step, LoginStep::AppId);
+
+    app.back_to_login_choice();
+    assert_eq!(app.login.step, LoginStep::Choose);
+    assert_eq!(app.screen, Screen::Login);
+    assert!(login_effect(&app).is_none());
 }
 
 /// Builds the app-id file where `App::app_ids_path` looks for it.
@@ -78,9 +88,8 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
 "#,
     );
     app.open_login();
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    assert_eq!(app.login.choice, 1);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 1;
+    app.confirm_login_choice();
     assert_eq!(app.login.step, LoginStep::AppId);
     assert!(
         app.login.app_ids_error.is_none(),
@@ -95,10 +104,10 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
         "opening the screen must not start a login"
     );
 
-    // The first row is preselected; Down moves to the second. With the field
-    // empty, Enter takes the row.
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    // The first row is preselected; picking the second and confirming with an
+    // empty field takes that row.
+    app.login.app_id_choice = 1;
+    app.confirm_login_app_id();
     assert_eq!(
         login_effect(&app),
         Some(Identity::Saved {
@@ -111,31 +120,6 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
 }
 
 #[test]
-fn the_saved_list_clamps_and_escapes_back_to_the_identity_screen() {
-    let (_tmp, mut app) = saved_app(
-        r#"
-[[api_keys]]
-name = "only"
-key = "aaaaaaaa-0000-0000-0000-000000000000"
-"#,
-    );
-    app.open_login();
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
-
-    // One entry: Down and End cannot walk past it, Up cannot go negative.
-    for code in [Key::Down, Key::End, Key::Up, Key::Home] {
-        app.handle_login_key(code, Modifiers::NONE);
-        assert!(app.login.app_id_choice < app.login.app_ids.len());
-    }
-
-    app.handle_login_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.login.step, LoginStep::Choose);
-    assert_eq!(app.screen, Screen::Login);
-    assert!(login_effect(&app).is_none());
-}
-
-#[test]
 fn a_missing_app_id_file_is_reported_and_never_signs_in() {
     let tmp = tempfile::tempdir().unwrap();
     let accounts = tmp.path().join("凭据").join("账户");
@@ -143,15 +127,14 @@ fn a_missing_app_id_file_is_reported_and_never_signs_in() {
     let mut app = App::new("/mc", accounts, vec![version("a")], Vec::new());
 
     app.open_login();
-    // Second row, not the last one: the last is offline now.
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 1;
+    app.confirm_login_choice();
     assert_eq!(app.login.step, LoginStep::AppId);
     let error = app.login.app_ids_error.clone().expect("an error is shown");
     assert!(error.contains("azure_app_ids.toml"), "{error}");
 
-    // Enter on an empty list says why instead of starting a login.
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    // Confirming an empty list says why instead of starting a login.
+    app.confirm_login_app_id();
     assert!(login_effect(&app).is_none());
     assert!(
         app.status.contains("未找到") || app.status.contains("没有可用"),
@@ -164,20 +147,11 @@ fn a_missing_app_id_file_is_reported_and_never_signs_in() {
 fn a_malformed_app_id_file_is_reported() {
     let (_tmp, mut app) = saved_app("api_keys = 1\n");
     app.open_login();
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 1;
+    app.confirm_login_choice();
     let error = app.login.app_ids_error.clone().expect("an error is shown");
     assert!(error.contains("解析失败"), "{error}");
     assert!(app.login.app_ids.is_empty());
-}
-
-#[test]
-fn escape_leaves_the_overlay_without_starting_anything() {
-    let mut app = app();
-    app.open_login();
-    app.handle_login_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.screen, Screen::Main);
-    assert!(login_effect(&app).is_none());
 }
 
 #[test]
@@ -298,8 +272,8 @@ fn removing_one_session_leaves_the_other_signed_in() {
     app.open_accounts();
     // Remove the first Steve while the second one is active.
     app.accounts_ui.selected = 0;
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.remove_selected_account();
+    app.remove_selected_account();
 
     assert_eq!(app.accounts.len(), 1);
     assert_eq!(
@@ -314,93 +288,13 @@ fn removing_one_session_leaves_the_other_signed_in() {
 fn removing_the_active_session_signs_out_even_if_a_namesake_remains() {
     let (_tmp, mut app) = with_two_steves();
     app.open_accounts();
-    app.handle_accounts_key(Key::End, Modifiers::NONE);
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
-    app.handle_accounts_key(Key::Char('d'), Modifiers::NONE);
+    app.accounts_ui.selected = app.accounts.len() - 1;
+    app.remove_selected_account();
+    app.remove_selected_account();
 
     assert_eq!(app.account, Account::SignedOut);
     assert_eq!(app.accounts.len(), 1, "the namesake is not touched");
     assert_eq!(app.accounts[0].label(), "Steve · Minecraft Launcher");
-}
-
-/// A login sitting on the device-code screen.
-fn waiting_app() -> App {
-    let mut app = app();
-    app.open_login();
-    app.handle_login_event(LoginEvent::DeviceCode {
-        user_code: "ABCD-1234".to_string(),
-        url: "https://www.microsoft.com/link?otc=ABCD1234".to_string(),
-    });
-    app
-}
-
-#[test]
-fn the_device_code_screen_can_copy_and_open_what_it_shows() {
-    let mut app = waiting_app();
-
-    app.handle_login_key(Key::Char('c'), Modifiers::NONE);
-    assert_eq!(
-        copy_effect(&app).as_deref(),
-        Some("ABCD-1234"),
-        "the code, not the link"
-    );
-    assert!(app.status.contains("设备码"), "{}", app.status);
-
-    app.take_effects();
-    app.handle_login_key(Key::Char('y'), Modifiers::NONE);
-    assert_eq!(
-        copy_effect(&app).as_deref(),
-        Some("https://www.microsoft.com/link?otc=ABCD1234")
-    );
-
-    app.take_effects();
-    app.handle_login_key(Key::Char('o'), Modifiers::NONE);
-    assert_eq!(
-        browser_effect(&app).as_deref(),
-        Some("https://www.microsoft.com/link?otc=ABCD1234")
-    );
-    assert!(app.log.iter().any(|line| line.contains("在浏览器打开")));
-
-    // Everything else still cancels, and nothing was started by copying.
-    assert!(login_effect(&app).is_none());
-    app.handle_login_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.screen, Screen::Main);
-}
-
-#[test]
-fn starting_a_login_shows_no_copyable_placeholder() {
-    let mut app = app();
-    app.open_login();
-    app.start_login(Identity::Official);
-    match &app.login.step {
-        LoginStep::Waiting { user_code, url } => {
-            assert!(user_code.is_empty(), "no code before Microsoft answers");
-            assert!(url.is_empty(), "no link before Microsoft answers");
-        }
-        other => panic!("unexpected step: {other:?}"),
-    }
-    // The same guards the screen uses: nothing to copy or open yet.
-    app.handle_login_key(Key::Char('c'), Modifiers::NONE);
-    app.handle_login_key(Key::Char('y'), Modifiers::NONE);
-    app.handle_login_key(Key::Char('o'), Modifiers::NONE);
-    assert!(copy_effect(&app).is_none());
-    assert!(browser_effect(&app).is_none());
-}
-
-#[test]
-fn the_placeholder_code_cannot_be_copied() {
-    // The screen shows "……" before Microsoft answers; that is not a code.
-    let mut app = app();
-    app.open_login();
-    app.login.step = LoginStep::Waiting {
-        user_code: String::new(),
-        url: String::new(),
-    };
-    app.handle_login_key(Key::Char('c'), Modifiers::NONE);
-    app.handle_login_key(Key::Char('y'), Modifiers::NONE);
-    app.handle_login_key(Key::Char('o'), Modifiers::NONE);
-    assert!(copy_effect(&app).is_none());
-    assert!(browser_effect(&app).is_none());
 }
 
 #[test]
@@ -463,24 +357,21 @@ fn offline_screen() -> (tempfile::TempDir, App) {
     let accounts = tmp.path().join("账户");
     let mut app = App::new("/mc", accounts, vec![version("1.20.1")], Vec::new());
     app.open_login();
-    app.handle_login_key(Key::End, Modifiers::NONE);
-    assert_eq!(app.login.choice, 2);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 2;
+    app.confirm_login_choice();
     assert_eq!(app.login.step, LoginStep::OfflineName);
     (tmp, app)
 }
 
 fn type_name(app: &mut App, name: &str) {
-    for c in name.chars() {
-        app.handle_login_key(Key::Char(c), Modifiers::NONE);
-    }
+    app.set_login_offline_name(name);
 }
 
 #[test]
 fn offline_login_accepts_a_vanilla_name_without_the_checkbox() {
     let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "Steve_01");
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_offline_login();
 
     assert_eq!(app.account.label(), "Steve_01 · Offline");
     let file = app.account.file().expect("an account file was written");
@@ -497,7 +388,7 @@ fn offline_login_refuses_names_vanilla_would_not_allow() {
         app.login.offline_name.clear();
         app.login.offline_error = None;
         type_name(&mut app, bad);
-        app.handle_login_key(Key::Enter, Modifiers::NONE);
+        app.confirm_offline_login();
         assert_eq!(
             app.login.step,
             LoginStep::OfflineName,
@@ -513,13 +404,13 @@ fn offline_login_refuses_names_vanilla_would_not_allow() {
 fn the_checkbox_allows_any_name_including_chinese() {
     let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "中文名字 空格");
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_offline_login();
     assert_eq!(app.login.step, LoginStep::OfflineName, "still refused");
 
-    // Tab flips the box; the same name then goes through.
-    app.handle_login_key(Key::Tab, Modifiers::NONE);
+    // The checkbox flips; the same name then goes through.
+    app.toggle_offline_any();
     assert!(app.login.offline_any);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_offline_login();
     assert_eq!(app.account.label(), "中文名字 空格 · Offline");
     assert!(matches!(app.login.step, LoginStep::Done { .. }));
 }
@@ -527,20 +418,11 @@ fn the_checkbox_allows_any_name_including_chinese() {
 #[test]
 fn an_empty_offline_name_is_never_accepted() {
     let (_tmp, mut app) = offline_screen();
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_offline_login();
     assert_eq!(app.login.step, LoginStep::OfflineName);
-    app.handle_login_key(Key::Tab, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.toggle_offline_any();
+    app.confirm_offline_login();
     assert_eq!(app.login.step, LoginStep::OfflineName, "any≠empty");
-}
-
-#[test]
-fn escape_returns_from_the_offline_screen_without_signing_in() {
-    let (_tmp, mut app) = offline_screen();
-    type_name(&mut app, "Steve");
-    app.handle_login_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.login.step, LoginStep::Choose);
-    assert_eq!(app.account.label(), "未登录");
 }
 
 #[test]
@@ -553,15 +435,13 @@ key = "aaaaaaaa-0000-0000-0000-000000000000"
 "#,
     );
     app.open_login();
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 1;
+    app.confirm_login_choice();
     assert_eq!(app.login.app_ids.len(), 1);
 
     // Typing takes over from the listed row: the field is the explicit choice.
-    for c in "bbbbbbbb-1111-1111-1111-111111111111".chars() {
-        app.handle_login_key(Key::Char(c), Modifiers::NONE);
-    }
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.set_login_app_id("bbbbbbbb-1111-1111-1111-111111111111");
+    app.confirm_login_app_id();
     assert_eq!(
         login_effect(&app),
         Some(Identity::Custom {
@@ -584,8 +464,8 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
 "#,
     );
     app.open_login();
-    app.handle_login_key(Key::Down, Modifiers::NONE);
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.login.choice = 1;
+    app.confirm_login_choice();
 
     app.start_saved_app_id(1);
     assert_eq!(
@@ -602,7 +482,7 @@ key = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
 fn the_account_manager_can_start_a_fresh_login_after_an_offline_one() {
     let (_tmp, mut app) = offline_screen();
     type_name(&mut app, "Steve");
-    app.handle_login_key(Key::Enter, Modifiers::NONE);
+    app.confirm_offline_login();
     assert_eq!(app.account.label(), "Steve · Offline");
 
     // Reopening starts at the identity list with the old text gone.

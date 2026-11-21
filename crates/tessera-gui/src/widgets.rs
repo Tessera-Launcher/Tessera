@@ -346,9 +346,7 @@ pub(crate) fn choice_row(
 
 /// A one-line checkbox: a filled square plus a label, toggled by clicking it.
 ///
-/// Drawn from plain divs like `choice_row`, so it needs no widget crate and no
-/// extra focus handling (the keyboard toggles the same state from the state
-/// machine).
+/// Drawn from plain divs like `choice_row`; Tab reaches it like any other row.
 pub(crate) fn checkbox(
     label: &str,
     checked: bool,

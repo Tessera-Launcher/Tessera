@@ -15,8 +15,6 @@ use std::path::{Path, PathBuf};
 
 use std::time::{Duration, Instant};
 
-use crate::input::{Key, Modifiers};
-
 use crate::accounts::{self, Account as SavedAccount};
 use crate::cleanup;
 use crate::discover::{self, LocalVersion};
@@ -318,7 +316,7 @@ mod music;
 pub use self::account_manager::AccountsUi;
 pub use self::aria2::Aria2Ui;
 pub use self::disk::DiskUi;
-pub use self::download::{DownloadStage, DownloadUi, InstallSummary, PickerFocus, VersionFilter};
+pub use self::download::{DownloadStage, DownloadUi, InstallSummary, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
 pub use self::mods::ModsUi;
@@ -338,7 +336,6 @@ pub struct App {
     /// What the list shows. Every install gets a row: a self-contained loader
     /// directory is an install of its own, not a footnote to a vanilla one.
     pub versions: Vec<LocalVersion>,
-    /// Whether loader bases get their own row (toggled with `h`).
     pub accounts: Vec<SavedAccount>,
     pub selected: usize,
     pub status: String,
@@ -348,7 +345,6 @@ pub struct App {
     /// it into `data/日志/tessera.log`; the state machine never touches the disk for
     /// its own log.
     pub pending_log: Vec<String>,
-    pub should_quit: bool,
     pub account: Account,
     pub screen: Screen,
     /// Where the login overlay returns to when it closes.
@@ -388,7 +384,7 @@ pub struct App {
     /// training launches a game, and two JVMs fighting over one version
     /// directory is not a state the rest of this code knows how to describe.
     pub aot: AotProgress,
-    /// Version id awaiting the second `x`, cleared by anything else.
+    /// Version id awaiting the uninstall confirmation, cleared by anything else.
     uninstall_confirm: Option<String>,
     /// True from `start_install` until the worker reports Finished/Failed.
     install_running: bool,
@@ -423,7 +419,6 @@ impl App {
             selected: 0,
             log: VecDeque::new(),
             pending_log: Vec::new(),
-            should_quit: false,
             account: Account::SignedOut,
             screen: Screen::Main,
             login_return: Screen::Main,
@@ -615,79 +610,6 @@ impl App {
         }
     }
 
-    /// All keyboard handling, so every front-end can replay a key and behave
-    /// identically to pressing it.
-    ///
-    /// This lives next to the state it dispatches over, not next to any one
-    /// screen: every screen's keys arrive here first.
-    pub fn handle_key(&mut self, code: Key, modifiers: Modifiers) {
-        if modifiers.contains(Modifiers::CONTROL) && code == Key::Char('c') {
-            self.should_quit = true;
-            return;
-        }
-        match self.screen {
-            Screen::Login => {
-                self.handle_login_key(code, modifiers);
-                return;
-            }
-            Screen::Accounts => {
-                self.handle_accounts_key(code, modifiers);
-                return;
-            }
-            Screen::Download => {
-                self.handle_download_key(code, modifiers);
-                return;
-            }
-            Screen::Java => {
-                self.handle_java_key(code, modifiers);
-                return;
-            }
-            Screen::Music => {
-                self.handle_music_key(code, modifiers);
-                return;
-            }
-            // The desktop Modrinth page drives its own actions; no key list
-            // lives in the state machine for it.
-            Screen::Mods => return,
-            Screen::Settings => {
-                // Nothing on the page is interactive yet; Esc leaves it like the
-                // music page, q quits.
-                match code {
-                    Key::Esc => self.show_main(),
-                    Key::Char('q') => self.should_quit = true,
-                    _ => {}
-                }
-                return;
-            }
-            Screen::Main => {}
-        }
-        match code {
-            Key::Char('q') | Key::Esc => self.should_quit = true,
-            Key::Down | Key::Char('j') => self.select_next(),
-            Key::Up | Key::Char('k') => self.select_prev(),
-            Key::Home | Key::Char('g') => self.select_first(),
-            Key::End | Key::Char('G') => self.select_last(),
-            Key::Char('r') => self.reload(),
-            Key::Char('l') => self.open_login(),
-            Key::Char('a') => self.open_accounts(),
-            Key::Char('d') => self.open_download(),
-            // `j` already moves the selection; the Java screen gets `v` (虚拟机).
-            Key::Char('v') => self.open_java(),
-            Key::Char('m') => self.open_music(),
-            // Two presses, like removing an account: deleting a whole version
-            // directory is not something a single stray key may do.
-            Key::Char('x') | Key::Delete => self.request_uninstall(),
-            Key::Enter => self.request_launch(),
-            _ => {}
-        }
-        // Anything other than the uninstall key itself drops the pending
-        // confirmation, so "press x again" cannot survive the user wandering off
-        // and coming back minutes later.
-        if !matches!(code, Key::Char('x') | Key::Delete) {
-            self.uninstall_confirm = None;
-        }
-    }
-
     /// Rebuild the visible list from what was scanned.
     fn rebuild_version_list(&mut self) {
         self.versions = self.all_versions.clone();
@@ -698,30 +620,6 @@ impl App {
 
     pub fn selected_version(&self) -> Option<&LocalVersion> {
         self.versions.get(self.selected)
-    }
-
-    pub fn select_next(&mut self) {
-        self.uninstall_confirm = None;
-        if !self.versions.is_empty() {
-            self.selected = (self.selected + 1) % self.versions.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        self.uninstall_confirm = None;
-        if !self.versions.is_empty() {
-            self.selected = (self.selected + self.versions.len() - 1) % self.versions.len();
-        }
-    }
-
-    pub fn select_first(&mut self) {
-        self.uninstall_confirm = None;
-        self.selected = 0;
-    }
-
-    pub fn select_last(&mut self) {
-        self.uninstall_confirm = None;
-        self.selected = self.versions.len().saturating_sub(1);
     }
 
     /// Ask the main loop for a side effect.
@@ -805,14 +703,6 @@ impl App {
 
     // ---- uninstalling ----
 
-    /// The version id waiting for a second `x`, if any.
-    ///
-    /// Read by the renderer to repaint that row, and by tests to assert that a
-    /// confirmation is pending (and that everything else cancels it).
-    pub fn uninstall_confirm(&self) -> Option<&str> {
-        self.uninstall_confirm.as_deref()
-    }
-
     /// What a confirmation dialog needs: the version, what depends on it, and
     /// how much disk it occupies.
     pub fn uninstall_plan(&mut self) -> Option<(String, Vec<String>, Option<u64>)> {
@@ -826,7 +716,7 @@ impl App {
         Some((version.dir, dependents, size))
     }
 
-    /// Drop a pending `x` without deleting anything.
+    /// Drop a pending uninstall without deleting anything.
     pub fn cancel_uninstall(&mut self) {
         if self.uninstall_confirm.take().is_some() {
             self.status = "已取消卸载".to_string();
@@ -851,7 +741,7 @@ impl App {
         self.request_ui(UiRequest::OpenFolder(dir));
     }
 
-    /// `x`: ask, then delete on the second press.
+    /// Ask, then delete on the second call.
     ///
     /// Only `versions/<dir>` goes away. Assets, libraries and the JVM are shared
     /// between versions, so a per-version delete has no business touching them.
@@ -868,13 +758,10 @@ impl App {
         if self.uninstall_confirm.as_deref() != Some(version.dir.as_str()) {
             self.uninstall_confirm = Some(version.dir.clone());
             self.status = if dependents.is_empty() {
-                format!(
-                    "再按一次 x 卸载 {}（删除 versions/{}）",
-                    version.dir, version.dir
-                )
+                format!("确认卸载 {}（删除 versions/{}）", version.dir, version.dir)
             } else {
                 format!(
-                    "再按一次 x 卸载 {}，连同依赖它的 {}",
+                    "确认卸载 {}，连同依赖它的 {}",
                     version.dir,
                     dependents.join("、")
                 )
@@ -993,7 +880,7 @@ impl App {
             }
             TaskKind::Session => {
                 // The launch flow is parked on this refresh; without clearing it
-                // every later Enter would answer "正在刷新登录令牌".
+                // every later launch would answer "正在刷新登录令牌".
                 if self.refreshing.take().is_some() {
                     self.status = "令牌刷新失败".to_string();
                 }
@@ -1132,14 +1019,14 @@ impl App {
 
     // ---- launching ----
 
-    /// Enter: launch the selected version.
+    /// Launch the selected version.
     ///
     /// A signed-in account with a saved file is refreshed first — the refreshed
     /// access token is what the game needs, and the rotated refresh token has to
     /// be written back (see [`crate::session`]). Everything else goes straight to
     /// [`App::start_game`] with offline credentials.
     pub fn request_launch(&mut self) {
-        // A second Enter while the first launch is still refreshing must not
+        // A second launch request while the first refresh is still running must not
         // queue another refresh and later start a second game.
         if self.refreshing.is_some() {
             self.status = "正在刷新登录令牌，请稍候".to_string();
@@ -1275,7 +1162,7 @@ impl App {
     /// The expensive part — merging the version chain, picking a Java, running
     /// `java -version` to confirm it, and waiting for the child — happens in
     /// [`launch::spawn_game`] on a worker. This only records what was chosen, so
-    /// pressing Enter never freezes the screen.
+    /// the front-end never freezes on it.
     pub fn start_game(&mut self, credentials: launch::Credentials) {
         let Some(version) = self.selected_version().cloned() else {
             self.log("没有选中的版本");

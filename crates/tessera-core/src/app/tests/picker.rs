@@ -41,53 +41,28 @@ fn the_all_view_folds_a_snapshot_cycle_into_one_row() {
 }
 
 #[test]
-fn the_keyboard_treats_a_folded_group_as_one_stop() {
+fn opening_a_group_reveals_its_members_and_closing_it_collapses_them() {
     let mut app = tree_picker();
-    app.handle_download_key(Key::Down, Modifiers::NONE);
-    assert_eq!(
-        app.download.picked_version().unwrap().id,
-        "1.21.9-pre3",
-        "the folded cycle is one step, not three"
-    );
-    app.handle_download_key(Key::Down, Modifiers::NONE);
-    assert_eq!(app.download.picked_version().unwrap().id, "1.21.7");
-    // Wrapping goes back to the first row.
-    app.handle_download_key(Key::Down, Modifiers::NONE);
-    assert_eq!(app.download.picked_version().unwrap().id, "1.21.8");
-}
-
-#[test]
-fn the_arrow_keys_open_and_close_the_group_under_the_cursor() {
-    let mut app = tree_picker();
-    app.handle_download_key(Key::Down, Modifiers::NONE); // on the folded cycle
-    app.handle_download_key(Key::Right, Modifiers::NONE);
+    // The folded cycle is drawn as one row at index 1.
+    app.toggle_row(1);
     assert_eq!(app.download.expanded.len(), 1);
     assert_eq!(app.download.rows.len(), 6);
 
-    // Inside an opened group the arrows reach the members individually.
-    app.handle_download_key(Key::Down, Modifiers::NONE);
-    assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
-
-    // `←` closes the group this member belongs to.
-    app.handle_download_key(Key::Left, Modifiers::NONE);
+    // Toggling the header again folds it back up.
+    app.toggle_row(1);
     assert!(app.download.expanded.is_empty());
-    assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre3");
+    assert_eq!(app.download.rows.len(), 3);
 
-    // `Space` flips it, and does nothing on a plain version.
-    app.handle_download_key(Key::Char(' '), Modifiers::NONE);
-    assert_eq!(app.download.expanded.len(), 1);
-    app.handle_download_key(Key::Char(' '), Modifiers::NONE);
-    assert!(app.download.expanded.is_empty());
-    app.handle_download_key(Key::Up, Modifiers::NONE); // 1.21.8
+    // A plain release has no children, so toggling it changes nothing.
     let before = app.download.rows.clone();
-    app.handle_download_key(Key::Char(' '), Modifiers::NONE);
+    app.toggle_row(0);
     assert_eq!(app.download.rows, before, "a release has no children");
 }
 
 #[test]
 fn other_filters_and_a_search_keep_every_version_on_its_own_row() {
     let mut app = tree_picker();
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE); // 正式版
+    app.set_download_filter(VersionFilter::Release);
     assert_eq!(app.download.filter, VersionFilter::Release);
     assert_eq!(app.download.rows.len(), app.download.matched());
     assert!(app
@@ -97,14 +72,9 @@ fn other_filters_and_a_search_keep_every_version_on_its_own_row() {
         .all(|row| matches!(row.kind, crate::version_tree::RowKind::Version(_))));
 
     // Back to "全部", then search: a folded group would hide the match.
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+    app.set_download_filter(VersionFilter::All);
     assert_eq!(app.download.filter, VersionFilter::All);
-    app.handle_download_key(Key::Char('/'), Modifiers::NONE);
-    for c in "pre2".chars() {
-        app.handle_download_key(Key::Char(c), Modifiers::NONE);
-    }
+    app.set_download_query("pre2");
     assert_eq!(app.download.matched(), 1);
     assert_eq!(app.download.rows.len(), 1, "the match is its own row");
     assert_eq!(app.download.picked_version().unwrap().id, "1.21.9-pre2");
@@ -113,8 +83,9 @@ fn other_filters_and_a_search_keep_every_version_on_its_own_row() {
 #[test]
 fn installing_from_a_folded_group_installs_its_newest_member() {
     let mut app = tree_picker();
-    app.handle_download_key(Key::Down, Modifiers::NONE);
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.download.picked = 1;
+    app.download.refresh_loaders();
+    app.start_install();
     let (version, _) = install_effect(&app).expect("an install started");
     assert_eq!(version, "1.21.9-pre3");
 }
@@ -154,7 +125,8 @@ fn the_version_list_arrives_and_loaders_are_filtered_per_version() {
     assert!(app.download.loaders.contains(&Loader::None));
 
     // Move to 1.8.9: Fabric does not exist before 1.14, so only vanilla remains.
-    app.handle_download_key(Key::Down, Modifiers::NONE);
+    app.download.picked = 1;
+    app.download.refresh_loaders();
     assert_eq!(app.download.picked, 1);
     assert!(!app.download.loaders.contains(&Loader::Fabric));
     assert_eq!(app.download.loaders, vec![Loader::None]);
@@ -189,48 +161,11 @@ fn the_search_is_case_insensitive_and_matches_inside_the_id() {
 }
 
 #[test]
-fn esc_clears_the_search_before_it_leaves_the_screen() {
-    let mut app = mixed_picker();
-    type_search(&mut app, "1.20");
-    app.handle_download_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(app.screen, Screen::Download, "still here");
-    assert!(app.download.query.is_empty());
-    assert_eq!(app.download.matched(), 4);
-    assert_eq!(app.download.focus, PickerFocus::Search, "caret stays put");
-
-    app.handle_download_key(Key::Esc, Modifiers::NONE);
-    assert_eq!(
-        app.download.focus,
-        PickerFocus::Versions,
-        "second Esc leaves"
-    );
-    assert_eq!(app.screen, Screen::Download);
-
-    app.handle_download_key(Key::Esc, Modifiers::NONE);
-    assert_ne!(app.screen, Screen::Download, "third Esc closes");
-}
-
-#[test]
-fn backspace_widens_the_search_again() {
-    let mut app = mixed_picker();
-    type_search(&mut app, "1.19");
-    app.handle_download_key(Key::Backspace, Modifiers::NONE);
-    // "1.1" still matches only 1.19.2 ... until the dot goes.
-    assert_eq!(app.download.matched(), 1);
-    for _ in 0..2 {
-        app.handle_download_key(Key::Backspace, Modifiers::NONE);
-    }
-    assert_eq!(app.download.query, "1");
-    // A single digit matches any id containing it: "1" is in all four.
-    assert_eq!(app.download.matched(), 4);
-}
-
-#[test]
-fn f_cycles_the_kind_filter() {
+fn the_filter_buttons_pick_each_kind() {
     let mut app = mixed_picker();
     assert_eq!(app.download.matched(), 4);
 
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+    app.set_download_filter(VersionFilter::Release);
     assert_eq!(app.download.filter, VersionFilter::Release);
     assert_eq!(app.settings.download_filter, VersionFilter::Release);
     assert_eq!(app.download.matched(), 2);
@@ -239,15 +174,15 @@ fn f_cycles_the_kind_filter() {
         .versions()
         .all(|v| v.kind == crate::version::VersionKind::Release));
 
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+    app.set_download_filter(VersionFilter::Snapshot);
     assert_eq!(app.download.filter, VersionFilter::Snapshot);
     assert_eq!(app.download.picked_version().unwrap().id, "23w31a");
 
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+    app.set_download_filter(VersionFilter::Old);
     assert_eq!(app.download.filter, VersionFilter::Old);
     assert_eq!(app.download.picked_version().unwrap().id, "a1.2.6");
 
-    app.handle_download_key(Key::Char('f'), Modifiers::NONE);
+    app.set_download_filter(VersionFilter::All);
     assert_eq!(app.download.filter, VersionFilter::All);
     assert_eq!(app.settings.download_filter, VersionFilter::All);
     assert_eq!(app.download.matched(), 4);
@@ -256,7 +191,7 @@ fn f_cycles_the_kind_filter() {
 #[test]
 fn filtering_keeps_the_picked_version_when_it_survives() {
     let mut app = mixed_picker();
-    app.handle_download_key(Key::Down, Modifiers::NONE);
+    app.download.picked = 1;
     assert_eq!(app.download.picked_version().unwrap().id, "1.19.2");
 
     type_search(&mut app, "1.19");
@@ -268,7 +203,7 @@ fn filtering_keeps_the_picked_version_when_it_survives() {
     assert_eq!(app.download.picked, 0);
 
     // Clearing the search restores the full list and re-finds it.
-    app.handle_download_key(Key::Esc, Modifiers::NONE);
+    app.set_download_query("");
     assert_eq!(app.download.matched(), 4);
     assert_eq!(app.download.picked, 1);
 }
@@ -279,7 +214,7 @@ fn filtering_rebuilds_the_loader_list() {
     type_search(&mut app, "1.20");
     assert!(app.download.loaders.contains(&Loader::Fabric));
     // Nothing left to pick: the loader list collapses to vanilla.
-    app.handle_download_key(Key::Char('x'), Modifiers::NONE);
+    app.set_download_query("1.20x");
     assert!(app.download.matched() == 0);
     assert_eq!(app.download.loaders, vec![Loader::None]);
 }
@@ -289,13 +224,13 @@ fn enter_with_no_match_does_not_start_an_install() {
     let mut app = mixed_picker();
     type_search(&mut app, "zzz");
     assert!(app.download.matched() == 0);
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     assert!(install_effect(&app).is_none());
     assert_eq!(app.screen, Screen::Download);
 }
 
 #[test]
-fn the_picker_starts_on_the_official_source_and_s_toggles_it() {
+fn the_source_button_toggles_between_the_two_mirrors() {
     let mut app = downloader();
     assert_eq!(
         app.source,
@@ -304,12 +239,12 @@ fn the_picker_starts_on_the_official_source_and_s_toggles_it() {
     );
     assert_eq!(app.source_label(), "官方源");
 
-    app.handle_download_key(Key::Char('s'), Modifiers::NONE);
+    app.toggle_source();
     assert_eq!(app.source, crate::install::Source::Bmclapi);
     assert_eq!(app.source_label(), "BMCLAPI");
     assert!(app.log.iter().any(|line| line.contains("下载源：BMCLAPI")));
 
-    app.handle_download_key(Key::Char('s'), Modifiers::NONE);
+    app.toggle_source();
     assert_eq!(
         app.source,
         crate::install::Source::Mojang,
@@ -318,40 +253,9 @@ fn the_picker_starts_on_the_official_source_and_s_toggles_it() {
 }
 
 #[test]
-fn tab_cycles_versions_loaders_and_the_search_box() {
-    let mut app = downloader();
-    app.handle_download_key(Key::Tab, Modifiers::NONE);
-    assert_eq!(app.download.focus, PickerFocus::Loaders);
-    app.handle_download_key(Key::Tab, Modifiers::NONE);
-    assert_eq!(app.download.focus, PickerFocus::Search);
-    app.handle_download_key(Key::Tab, Modifiers::NONE);
-    assert_eq!(app.download.focus, PickerFocus::Versions);
-
-    let fabric = app
-        .download
-        .loaders
-        .iter()
-        .position(|l| *l == Loader::Fabric)
-        .expect("fabric listed for 1.20.1");
-    app.download.loader_pick = fabric;
-
-    // Switching panes does not forget the loader.
-    app.handle_download_key(Key::Tab, Modifiers::NONE);
-    assert_eq!(app.download.focus, PickerFocus::Loaders);
-    assert_eq!(app.download.picked_loader(), Loader::Fabric);
-
-    // Dropping to 1.8.9 loses Fabric, so the choice falls back to vanilla.
-    app.handle_download_key(Key::Tab, Modifiers::NONE);
-    app.handle_download_key(Key::Tab, Modifiers::NONE);
-    app.handle_download_key(Key::Down, Modifiers::NONE);
-    assert_eq!(app.download.picked, 1);
-    assert_eq!(app.download.picked_loader(), Loader::None);
-}
-
-#[test]
 fn enter_starts_the_install_and_switches_to_the_progress_screen() {
     let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     assert_eq!(app.screen, Screen::Download);
     assert_eq!(app.download.stage, DownloadStage::Installing);
     assert_eq!(
@@ -361,9 +265,9 @@ fn enter_starts_the_install_and_switches_to_the_progress_screen() {
 }
 
 #[test]
-fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
+fn finishing_reports_the_version_and_closing_returns_to_the_picker() {
     let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     app.handle_install_event(InstallEvent::Finished {
         version: "1.20.1".to_string(),
         loader: Some("Fabric 0.16.0".to_string()),
@@ -375,14 +279,15 @@ fn finishing_reports_the_version_and_returns_to_the_picker_on_escape() {
         Some(("1.20.1".to_string(), Some("Fabric 0.16.0".to_string())))
     );
 
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.close_download();
+    app.reload();
     assert_eq!(app.screen, Screen::Main);
 }
 
 #[test]
 fn finishing_reports_elapsed_time_and_average_download_speed() {
     let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     // Four seconds from confirmation, eight MiB actually transferred.
     app.download.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(4));
     app.handle_install_event(InstallEvent::Finished {
@@ -581,26 +486,26 @@ fn a_second_training_run_is_refused_while_one_is_in_flight() {
 #[test]
 fn a_failure_is_shown_and_can_be_dismissed() {
     let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     app.handle_install_event(InstallEvent::Failed("镜像超时".to_string()));
     assert_eq!(app.download.stage, DownloadStage::Failed);
     assert_eq!(app.download.error.as_deref(), Some("镜像超时"));
     assert!(app.log.iter().any(|line| line.contains("镜像超时")));
 
-    app.handle_download_key(Key::Esc, Modifiers::NONE);
+    app.close_download();
     assert_eq!(app.screen, Screen::Main);
 }
 
 #[test]
-fn escape_while_installing_leaves_the_download_running() {
+fn leaving_the_page_while_installing_keeps_the_download_running() {
     let mut app = downloader();
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
-    app.handle_download_key(Key::Esc, Modifiers::NONE);
+    app.start_install();
+    app.show_main();
     assert_eq!(app.screen, Screen::Main);
     assert_eq!(
         app.download.stage,
         DownloadStage::Installing,
-        "the worker keeps going; only the screen was closed"
+        "the worker keeps going; only the screen was left"
     );
 }
 
@@ -622,7 +527,7 @@ fn a_fabric_install_always_carries_fabric_api() {
         "Fabric Loader & API"
     );
 
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     assert_eq!(
         install_effect(&app),
         Some(("1.20.1".to_string(), Loader::Fabric))
@@ -635,7 +540,7 @@ fn a_vanilla_install_never_carries_fabric_api() {
     let mut app = downloader();
     assert_eq!(app.download.picked_loader(), Loader::None);
 
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
     assert_eq!(
         install_effect(&app),
         Some(("1.20.1".to_string(), Loader::None))
@@ -662,7 +567,7 @@ fn an_uninstallable_loader_refuses_the_install_and_says_why() {
         Some("不可用，需等待 Outlands 适配")
     );
 
-    app.handle_download_key(Key::Enter, Modifiers::NONE);
+    app.start_install();
 
     assert!(
         install_effect(&app).is_none(),

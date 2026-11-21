@@ -1,6 +1,7 @@
 //! The event loop: keys, worker reports and the tasks they spawn.
 
 use super::*;
+use crate::platform::Key;
 
 impl Launcher {
     /// Keyboard navigation for the custom-drawn UI.
@@ -36,7 +37,6 @@ impl Launcher {
                     cx.notify();
                 }
             }
-            _ => {}
         }
     }
 
@@ -47,10 +47,6 @@ impl Launcher {
     /// a report (an AOT training run after an install, a retried refresh) start
     /// without waiting for the next key press.
     pub(crate) fn step(&mut self, cx: &mut Context<Self>) {
-        if self.state.should_quit {
-            self.shutdown(cx);
-            return;
-        }
         if self.blocked {
             // Do not even drain the queues: every effect writes to a data
             // directory someone else is using.
