@@ -1,4 +1,4 @@
-# Tessera
+# Tessera Desktop
 
 **胆大心细、敢想敢做的 Minecraft: Java Edition 启动器。**
 
