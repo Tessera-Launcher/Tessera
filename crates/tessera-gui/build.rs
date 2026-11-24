@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 
 fn main() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Read at run time: cargo does not rerun a cached build script when the
+    // checkout moves, and `env!` would freeze the old path into the binary,
+    // making every later build look for fonts in the previous directory.
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR is set by cargo for build scripts");
+    let root = PathBuf::from(manifest_dir).join("../..");
     let assets = [
         (
             "assets/fonts/tessera-pixel8.ttf.gz",
