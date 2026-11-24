@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 tessera-core = { path = "../tessera-core" }
-gpui-kit = "0.9.0"
+gpui-kit = "0.10.0"
 futures = "0.3"
 # Decompress the embedded bitmap font at startup instead of storing the raw 15 MB OTF.
 flate2 = "1"
