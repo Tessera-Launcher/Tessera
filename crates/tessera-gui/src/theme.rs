@@ -160,7 +160,10 @@ fn apply(mode: ThemeMode, cx: &mut App) {
             colors.border_focus => [ring, drag_border, list_active_border, table_active_border],
             colors.text_primary => [foreground, button_foreground, secondary_foreground, button_secondary_foreground, popover_foreground, sidebar_foreground, sidebar_accent_foreground, tab_active_foreground, table_head_foreground, table_foot_foreground, group_box_foreground],
             colors.text_secondary => [muted_foreground, tab_foreground, scrollbar_thumb_hover, description_list_label_foreground, magenta, magenta_light, chart_4, chart_5],
-            colors.text_accent => [link, link_active, caret],
+            // gpui-kit 0.10 added a separate colour for the part of a row that
+            // matches a search query. Left alone it keeps the library's own
+            // blue, so point it at the accent the rest of the palette uses.
+            colors.text_accent => [link, link_active, caret, list_highlight_foreground],
             colors.text_accent_hover => [link_hover],
             colors.text_on_fill => [primary_foreground, button_primary_foreground, info_foreground, button_info_foreground, success_foreground, button_success_foreground, warning_foreground, button_warning_foreground, danger_foreground, button_danger_foreground, sidebar_primary_foreground, switch_thumb],
             colors.fill_primary => [primary, primary_active, button_primary, button_primary_active, info, info_active, button_info, button_info_active, success, success_active, button_success, button_success_active, sidebar_primary, progress_bar, slider_bar, slider_thumb, blue, green, cyan, chart_1, chart_bullish],
