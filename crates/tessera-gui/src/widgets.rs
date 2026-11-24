@@ -217,8 +217,14 @@ pub(crate) fn footer_bar(colors: &'static color::Palette, status: &str) -> Div {
         .border_color(rgb(colors.border_default))
         .text_size(px(font::CAPTION))
         .child(
+            // The status is usually a path, so it can be longer than the
+            // window: a flex item never shrinks below its min-content width
+            // without `min_w(0)`, and the row then pushes the buttons past
+            // the right edge. Let it shrink and ellipsize instead.
             div()
                 .flex_1()
+                .min_w(px(0.0))
+                .truncate()
                 .text_color(rgb(colors.text_accent))
                 .child(status.to_string()),
         )
@@ -462,6 +468,8 @@ fn action_button(
     let mut button = div()
         .id(label.to_string())
         .h_flex()
+        // A button keeps its size; only the status text next to it gives way.
+        .flex_shrink_0()
         .items_center()
         .justify_center()
         .min_h(px(layout::CONTROL_HEIGHT))
