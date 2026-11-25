@@ -8,14 +8,19 @@ GPL-3.0-or-later。其中 `vendor/mdt-minecraft` 为 MIT，`vendor/minecraft-aut
 
 ## 构建
 
-字体资源不进入 Git。首次构建前先生成两个内嵌字体（拉丁字母用像素字体，
-其余字形落到 Unifont）：
+两个内嵌字体（拉丁字母用像素字体，其余字形落到 Unifont）已经生成并提交在
+`assets/fonts/`，普通构建不需要额外的字体工具链：
+
+```sh
+cargo build -p tessera-gui
+```
+
+只有更新字体时才需要重新生成，并把手动生成的产物一并提交：
 
 ```sh
 python3 -m pip install fonttools
 python3 tools/fetch_pixel_font.py
 python3 tools/fetch_unifont.py
-cargo build -p tessera-gui
 ```
 
 `tools/fetch_unifont.py` 需要系统里有 `fonttosfnt`（Debian 包名相同）。

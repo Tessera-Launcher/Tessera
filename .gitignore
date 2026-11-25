@@ -3,12 +3,5 @@
 # The vendored crates are independent workspaces with their own target dirs.
 /vendor/*/target
 
-# The generated font assets are rebuilt by tools/fetch_pixel_font.py and
-# tools/fetch_unifont.py.
-/assets/fonts/*.otf
-/assets/fonts/*.otf.gz
-/assets/fonts/*.ttf
-/assets/fonts/*.ttf.gz
-
 # Python bytecode from local helper scripts.
 __pycache__/

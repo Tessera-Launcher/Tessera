@@ -3,7 +3,8 @@
 Tessera ships two faces. Latin text uses the pixel face; every glyph it lacks
 (Chinese above all) falls through to Unifont. Both are compiled into the
 executable and renamed, so the host's installed copies can never be selected by
-accident, and neither asset is tracked in Git.
+accident. Both generated assets are committed so a clean checkout can build
+without the font toolchain.
 
 ## Tessera Pixel 8
 
@@ -11,7 +12,8 @@ Pixel Operator 8 with Minecraft's metrics: a glyph's advance is its ink width
 plus one pixel, side bearings are zero, and the line gap is dropped. That is what
 makes Latin text sit as tightly as the game's own font.
 
-The generated `tessera-pixel8.ttf.gz` is not tracked in Git. Rebuild it with:
+`tessera-pixel8.ttf.gz` is committed. Rebuild it only when updating the face,
+then commit the regenerated file:
 
 ```sh
 python3 -m pip install fonttools
@@ -33,7 +35,8 @@ family is renamed to `Tessera Unifont` so the host's installed Unifont can never
 be selected. The font contains the original outlines plus 16 px and 32 px bitmap
 strikes.
 
-The generated `tessera-unifont.otf.gz` is not tracked in Git. Rebuild it with:
+`tessera-unifont.otf.gz` is committed. Rebuild it only when updating the face,
+then commit the regenerated file:
 
 ```sh
 python3 -m pip install fonttools

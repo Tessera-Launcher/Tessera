@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Build the embedded Tessera Unifont asset.
 
-The generated font is deliberately not stored in Git. This script downloads
-GNU Unifont's outline OTF and BDF source, wraps native 16 px and 32 px bitmap
-strikes around the outlines, renames the family to ``Tessera Unifont`` so the
-host's installed Unifont can never be selected, and writes the gzipped result to
+The generated font is committed to Git so the launcher builds without the font
+toolchain; run this script only to update it. It downloads GNU Unifont's outline
+OTF and BDF source, wraps native 16 px and 32 px bitmap strikes around the
+outlines, renames the family to ``Tessera Unifont`` so the host's installed
+Unifont can never be selected, and writes the gzipped result to
 ``assets/fonts/tessera-unifont.otf.gz``.
 
 Requirements:
