@@ -88,7 +88,12 @@ pub enum Effect {
         credentials: launch::Credentials,
     },
     /// Train the AOT cache for the vanilla version the player asked for.
-    TrainAot(String),
+    TrainAot {
+        dir: String,
+        /// The identity to launch the training game with. A real session can
+        /// join online servers while it plays; offline credentials cannot.
+        credentials: launch::Credentials,
+    },
     /// Search Modrinth for Fabric mods matching one game version.
     SearchMods { game_version: String, query: String },
     /// Read one Modrinth project's versions for this game version.
@@ -125,6 +130,13 @@ pub enum UiRequest {
     /// Show a directory in the desktop's file manager.
     OpenFolder(PathBuf),
     Audio(crate::audio::Command),
+}
+
+/// What an in-flight token refresh is preparing.
+#[derive(Debug, Clone)]
+enum PendingLaunch {
+    Play,
+    TrainAot { dir: String },
 }
 
 /// The AOT training run the player started from the version list.
@@ -357,6 +369,8 @@ pub struct App {
     /// The credential file whose refresh is in flight, kept so a failed refresh
     /// can fall back to the token already on disk.
     refreshing: Option<PathBuf>,
+    /// Whether that refresh is for a normal launch or an AOT training run.
+    pending: Option<PendingLaunch>,
     /// Where files come from; shown in the picker title.
     pub source: crate::install::Source,
     /// Launch tuning, applied to the next launch.
@@ -424,6 +438,7 @@ impl App {
             effects: Vec::new(),
             ui_requests: Vec::new(),
             refreshing: None,
+            pending: None,
             source: crate::install::Source::default(),
             launch_options: launch::Options::default(),
             settings: crate::settings::Settings::default(),
@@ -488,6 +503,10 @@ impl App {
             self.status = "已有 AOT 训练在进行".to_string();
             return;
         }
+        if self.refreshing.is_some() {
+            self.status = "正在刷新登录令牌，请稍候".to_string();
+            return;
+        }
         let Some(version) = self.selected_version() else {
             self.status = "未选择版本".to_string();
             return;
@@ -510,7 +529,39 @@ impl App {
         self.log(format!(
             "开始 AOT 训练 {dir}（会启动一次游戏；进游戏后想玩多久就玩多久，准备好了自己退出，缓存会更大）"
         ));
-        self.request(Effect::TrainAot(dir));
+        // The training game is a real launch: refresh a signed-in session first
+        // so it can join online servers while it runs. An offline account has
+        // nothing to refresh, and the log says where that leaves it.
+        match &self.account {
+            Account::SignedIn { file, .. } => {
+                let file = file.clone();
+                self.pending = Some(PendingLaunch::TrainAot { dir });
+                self.refreshing = Some(file.clone());
+                self.status = "刷新登录令牌…".to_string();
+                self.log("训练前刷新登录令牌");
+                self.request(Effect::RefreshSession(file));
+            }
+            Account::Offline { name, .. } => {
+                let name = name.clone();
+                self.log("训练使用离线身份：训练期间无法进入正版服务器");
+                self.begin_aot_training(dir, launch::Credentials::offline(&name));
+            }
+            Account::SignedOut => {
+                self.log("没有账户：训练使用离线身份，训练期间无法进入正版服务器");
+                self.begin_aot_training(dir, launch::Credentials::offline("Player"));
+            }
+        }
+    }
+
+    /// Queue the training run once its identity is settled.
+    fn begin_aot_training(&mut self, dir: String, credentials: launch::Credentials) {
+        let who = if credentials.user_type == "msa" {
+            format!("正版会话（{}）", credentials.username)
+        } else {
+            format!("离线（{}）", credentials.username)
+        };
+        self.log(format!("训练启动身份：{who}"));
+        self.request(Effect::TrainAot { dir, credentials });
     }
 
     /// Apply an AOT training event.
@@ -520,7 +571,7 @@ impl App {
             Event::Preparing { version, .. }
             | Event::Progress { version, .. }
             | Event::Menu { version, .. }
-            | Event::Assembling { version }
+            | Event::Assembling { version, .. }
             | Event::Finished { version, .. }
             | Event::Skipped { version, .. }
             | Event::Failed { version, .. } => version.clone(),
@@ -539,7 +590,10 @@ impl App {
             Event::Progress { loaded, total, .. } => {
                 self.aot.loaded = loaded;
                 self.aot.total = total;
-                self.aot.assembling = false;
+                // The game is gone; the assembler owns the status line now.
+                if self.aot.assembling {
+                    return;
+                }
                 self.status = if self.aot.playing {
                     // The game is running: the class count is no longer the
                     // point, the player quitting is.
@@ -556,11 +610,19 @@ impl App {
                 self.status = "游戏已到主菜单：请自行退出游戏，训练会一直等到你退出".to_string();
                 self.log("游戏已到主菜单：现在开始玩。启动器不会再自动结束游戏——玩得越久，缓存里的类和方法越多。想结束时正常退出游戏即可。");
             }
-            Event::Assembling { .. } => {
+            Event::Assembling { elapsed_secs, .. } => {
+                let first = !self.aot.assembling;
                 self.aot.assembling = true;
+                self.aot.playing = false;
                 self.aot.loaded = self.aot.loaded.max(self.aot.total);
-                self.status = "AOT 训练完成，正在组装缓存…".to_string();
-                self.log("AOT 训练完成，正在组装缓存（可能几分钟）");
+                self.status = format!(
+                    "正在组装 AOT 缓存（JEP 544 编译代码，可能需要十几分钟；已用 {} 分 {} 秒）",
+                    elapsed_secs / 60,
+                    elapsed_secs % 60
+                );
+                if first {
+                    self.log("游戏已退出，正在组装 AOT 缓存（JEP 544 编译代码，可能需要十几分钟）");
+                }
             }
             Event::Finished {
                 loaded,
@@ -878,8 +940,18 @@ impl App {
             TaskKind::Session => {
                 // The launch flow is parked on this refresh; without clearing it
                 // every later launch would answer "正在刷新登录令牌".
+                let pending = self.pending.take();
                 if self.refreshing.take().is_some() {
                     self.status = "令牌刷新失败".to_string();
+                }
+                // A training run waiting for that refresh must not keep the
+                // version directory locked for the rest of the session.
+                if let Some(PendingLaunch::TrainAot { .. }) = pending {
+                    self.aot.playing = false;
+                    self.aot.assembling = false;
+                    self.aot.note = Some("AOT 训练失败：令牌刷新线程意外结束".to_string());
+                    self.aot.training = None;
+                    self.status = "AOT 训练失败".to_string();
                 }
             }
             TaskKind::Login => {
@@ -1023,6 +1095,13 @@ impl App {
     /// be written back (see [`crate::session`]). Everything else goes straight to
     /// [`App::start_game`] with offline credentials.
     pub fn request_launch(&mut self) {
+        // Training owns the version directory and its `latest.log`; a second
+        // game started now would fight the training run over both.
+        if self.aot.training.is_some() {
+            self.status = "AOT 训练正在进行，结束前不能启动游戏".to_string();
+            self.log("AOT 训练正在进行：训练和游戏共用同一个版本目录和日志，等训练结束再启动");
+            return;
+        }
         // A second launch request while the first refresh is still running must not
         // queue another refresh and later start a second game.
         if self.refreshing.is_some() {
@@ -1066,6 +1145,7 @@ impl App {
             // times and only the file says which session's tokens get refreshed.
             Account::SignedIn { file, .. } => {
                 let file = file.clone();
+                self.pending = Some(PendingLaunch::Play);
                 self.status = "刷新登录令牌…".to_string();
                 self.log(format!("启动前刷新 {} 的令牌", version.dir));
                 self.refreshing = Some(file.clone());
@@ -1089,7 +1169,8 @@ impl App {
 
     /// Apply the result of the refresh worker.
     pub fn handle_session_event(&mut self, event: SessionEvent) {
-        let pending = self.refreshing.take();
+        let pending_file = self.refreshing.take();
+        let pending = self.pending.take().unwrap_or(PendingLaunch::Play);
         match event {
             SessionEvent::Ready {
                 username,
@@ -1105,35 +1186,68 @@ impl App {
                 }
                 // Re-read the account list: the refresh rotated the stored token.
                 self.accounts = accounts::list(&self.accounts_dir);
-                self.start_game(launch::Credentials {
+                let credentials = launch::Credentials {
                     username,
                     uuid,
                     access_token,
                     user_type: "msa".to_string(),
                     xuid,
-                });
+                };
+                match pending {
+                    PendingLaunch::Play => self.start_game(credentials),
+                    PendingLaunch::TrainAot { dir } => self.begin_aot_training(dir, credentials),
+                }
             }
             SessionEvent::NeedsSignIn { username, reason } => {
                 self.status = "需要重新登录".to_string();
                 self.log(format!("登录已失效（{reason}）"));
-                if !username.is_empty() {
-                    self.log("到账户页重新登录；现在用离线身份启动".to_string());
+                match pending {
+                    PendingLaunch::TrainAot { dir } => {
+                        self.log("训练改用离线身份：训练期间无法进入正版服务器");
+                        let name = if username.is_empty() {
+                            "Player".to_string()
+                        } else {
+                            username
+                        };
+                        self.begin_aot_training(dir, launch::Credentials::offline(&name));
+                    }
+                    PendingLaunch::Play => {
+                        if !username.is_empty() {
+                            self.log("到账户页重新登录；现在用离线身份启动".to_string());
+                        }
+                        self.launch_offline_or_login(username);
+                    }
                 }
-                self.launch_offline_or_login(username);
             }
             SessionEvent::Failed { username, reason } => {
                 // A network hiccup must not block playing: fall back to whatever
                 // token is already on disk.
                 self.log(format!("刷新失败（{reason}），使用已保存的令牌"));
-                let fallback = match &pending {
+                let fallback = match &pending_file {
                     Some(file) => launch::Credentials::from_account_file(file),
                     None => Err(crate::error::Error::invalid("没有账户文件")),
                 };
                 match fallback {
-                    Ok(credentials) => self.start_game(credentials),
+                    Ok(credentials) => match pending {
+                        PendingLaunch::Play => self.start_game(credentials),
+                        PendingLaunch::TrainAot { dir } => {
+                            self.begin_aot_training(dir, credentials)
+                        }
+                    },
                     Err(error) => {
                         self.log(format!("已保存的令牌不可用：{error}"));
-                        self.launch_offline_or_login(username);
+                        match pending {
+                            PendingLaunch::TrainAot { dir } => {
+                                self.log("训练改用离线身份：训练期间无法进入正版服务器");
+                                let name = if username.is_empty() {
+                                    "Player".to_string()
+                                } else {
+                                    username
+                                };
+                                self.begin_aot_training(dir, launch::Credentials::offline(&name));
+                            }
+                            PendingLaunch::Play => self.launch_offline_or_login(username),
+                        }
                     }
                 }
             }
@@ -1161,6 +1275,11 @@ impl App {
     /// [`launch::spawn_game`] on a worker. This only records what was chosen, so
     /// the front-end never freezes on it.
     pub fn start_game(&mut self, credentials: launch::Credentials) {
+        if self.aot.training.is_some() {
+            self.status = "AOT 训练正在进行，结束前不能启动游戏".to_string();
+            self.log("AOT 训练正在进行，已取消这次启动");
+            return;
+        }
         let Some(version) = self.selected_version().cloned() else {
             self.log("没有选中的版本");
             return;

@@ -251,14 +251,17 @@ impl Launcher {
                     self.tasks
                         .watch(TaskKind::ModRemove, rx, deliver_mod_remove, mod_remove_done);
                 }
-                Effect::TrainAot(version) => {
+                Effect::TrainAot { dir, credentials } => {
                     let cancel = self.tasks.stop_flag();
                     let rx = aot::spawn(
-                        self.state.root.clone(),
-                        self.state.runtimes.clone(),
-                        self.state.launch_options.clone(),
-                        self.state.settings.github_proxy.clone(),
-                        version,
+                        aot::Training {
+                            root: self.state.root.clone(),
+                            runtimes: self.state.runtimes.clone(),
+                            options: self.state.launch_options.clone(),
+                            proxy: self.state.settings.github_proxy.clone(),
+                            version: dir,
+                            credentials,
+                        },
                         cancel,
                     );
                     self.tasks.watch(TaskKind::Aot, rx, deliver_aot, aot_done);

@@ -218,3 +218,69 @@ fn a_failed_refresh_without_a_usable_file_still_starts_offline() {
         app.log
     );
 }
+
+#[test]
+fn a_signed_in_training_run_refreshes_and_uses_the_real_session() {
+    let mut app = signed_in_app(PathBuf::from("/acc/Steve.json"));
+    app.start_aot_training();
+    assert_eq!(refresh_effect(&app), Some(PathBuf::from("/acc/Steve.json")));
+    assert!(
+        !app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::TrainAot { .. })),
+        "training waits for the refreshed token: {:?}",
+        app.effects()
+    );
+
+    app.handle_session_event(SessionEvent::Ready {
+        username: "Steve".into(),
+        uuid: "uuid".into(),
+        access_token: "fresh-token".into(),
+        xuid: Some("42".into()),
+        refreshed: true,
+    });
+    let (dir, credentials) = app
+        .take_effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::TrainAot { dir, credentials } => Some((dir, credentials)),
+            _ => None,
+        })
+        .expect("the training game starts after the refresh");
+    assert_eq!(dir, "1.20.1");
+    assert_eq!(credentials.username, "Steve");
+    assert_eq!(credentials.user_type, "msa");
+    assert_eq!(credentials.access_token, "fresh-token");
+    assert_eq!(credentials.xuid.as_deref(), Some("42"));
+}
+
+#[test]
+fn an_offline_training_run_uses_the_offline_name_and_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (file, copy) = crate::accounts::save_offline(tmp.path(), "Steve").unwrap();
+    let mut app = App::new("/mc", "/acc", vec![version("1.20.1")], vec![]);
+    app.account = Account::Offline {
+        name: "Steve".to_string(),
+        copy,
+        file,
+    };
+    app.start_aot_training();
+
+    let credentials = app
+        .take_effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::TrainAot { credentials, .. } => Some(credentials),
+            _ => None,
+        })
+        .expect("offline training starts without a refresh");
+    assert_eq!(credentials.username, "Steve");
+    assert_eq!(credentials.user_type, "legacy");
+    assert!(
+        app.log
+            .iter()
+            .any(|line| line.contains("无法进入正版服务器")),
+        "{:?}",
+        app.log
+    );
+}

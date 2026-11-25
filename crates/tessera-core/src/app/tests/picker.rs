@@ -331,7 +331,7 @@ fn installing_never_trains_aot_behind_the_players_back() {
     assert!(
         !app.effects()
             .iter()
-            .any(|effect| matches!(effect, Effect::TrainAot(_))),
+            .any(|effect| matches!(effect, Effect::TrainAot { .. })),
         "training is voluntary: the install ends at Done and nothing else"
     );
     assert!(app.aot.training.is_none());
@@ -376,7 +376,7 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
     assert_eq!(app.aot.training.as_deref(), Some("26.3"));
     assert!(matches!(
         app.effects().last(),
-        Some(Effect::TrainAot(version)) if version == "26.3"
+        Some(Effect::TrainAot { dir, .. }) if dir == "26.3"
     ));
 
     app.handle_aot_event(crate::aot::Event::Progress {
@@ -409,8 +409,17 @@ fn aot_progress_and_completion_land_on_the_main_screen() {
 
     app.handle_aot_event(crate::aot::Event::Assembling {
         version: "26.3".to_string(),
+        elapsed_secs: 0,
     });
     assert!(app.aot.assembling);
+    assert!(app.status.contains("组装"), "{}", app.status);
+    // A late class-count report must not bury the assembly status.
+    app.handle_aot_event(crate::aot::Event::Progress {
+        version: "26.3".to_string(),
+        loaded: 185,
+        total: 200,
+    });
+    assert!(app.status.contains("组装"), "{}", app.status);
 
     app.handle_aot_event(crate::aot::Event::Finished {
         version: "26.3".to_string(),
@@ -445,7 +454,7 @@ fn only_vanilla_versions_can_be_trained() {
     assert!(
         !app.effects()
             .iter()
-            .any(|effect| matches!(effect, Effect::TrainAot(_))),
+            .any(|effect| matches!(effect, Effect::TrainAot { .. })),
         "a loader install gets no cache, so no training run"
     );
     assert!(app.status.contains("原版"), "{}", app.status);
@@ -462,7 +471,7 @@ fn a_launchwrapper_version_can_be_trained_too() {
     assert!(
         app.effects()
             .iter()
-            .any(|effect| matches!(effect, Effect::TrainAot(version) if version == "1.5.2")),
+            .any(|effect| matches!(effect, Effect::TrainAot { dir, .. } if dir == "1.5.2")),
         "the agent keeps these versions archivable"
     );
 }
@@ -477,7 +486,7 @@ fn a_second_training_run_is_refused_while_one_is_in_flight() {
     assert!(!app
         .effects()
         .iter()
-        .any(|effect| matches!(effect, Effect::TrainAot(_))));
+        .any(|effect| matches!(effect, Effect::TrainAot { .. })));
 }
 
 #[test]
@@ -541,5 +550,32 @@ fn a_vanilla_install_never_carries_fabric_api() {
     assert_eq!(
         install_effect(&app),
         Some(("1.20.1".to_string(), Loader::None))
+    );
+}
+
+#[test]
+fn a_launch_is_refused_while_a_training_run_owns_the_version_directory() {
+    let mut app = App::new("/mc", "/acc", vec![version("26.3")], Vec::new());
+    app.start_aot_training();
+    app.take_effects();
+
+    app.request_launch();
+    assert!(app.status.contains("AOT 训练正在进行"), "{}", app.status);
+    assert!(
+        !app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::Launch { .. } | Effect::RefreshSession(_))),
+        "nothing may be launched or refreshed during training: {:?}",
+        app.effects()
+    );
+
+    // The same guard covers the paths that call `start_game` directly.
+    app.start_game(crate::launch::Credentials::offline("Steve"));
+    assert!(
+        !app.effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::Launch { .. })),
+        "a direct start is refused too: {:?}",
+        app.effects()
     );
 }
