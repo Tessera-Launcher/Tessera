@@ -1,5 +1,11 @@
 //! Background device-code login.
 //!
+//! The official title identity signs in with `wl.offline_access` and then swaps
+//! that refresh token for the `MBI_SSL` ticket. A title token minted by the
+//! device-code grant with `MBI_SSL` alone is not refreshable: login.live.com
+//! answers its first refresh with `500 server_error`/`foci:1`. Other identities
+//! already request an offline-capable scope directly.
+//!
 //! The UI thread must keep drawing while Microsoft waits for the user, so the
 //! whole flow runs on its own thread with its own current-thread runtime and
 //! reports progress over a channel. Nothing here touches the UI, and the
@@ -19,6 +25,10 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Identity {
     /// The official launcher's title client id (device token + SISU).
+    ///
+    /// Sign-in uses `wl.offline_access` — the only Live scope that yields a
+    /// refreshable token — and immediately trades it for the `MBI_SSL` ticket;
+    /// the saved session carries the ticket's refreshable refresh token.
     Official,
     /// Another launcher's Azure application client id (user + XSTS).
     Custom { app_id: String },
@@ -86,23 +96,32 @@ async fn run(
     accounts_dir: PathBuf,
     sender: Sender<LoginEvent>,
 ) -> Result<()> {
-    let application = match &identity {
-        Identity::Official => AuthApplication::official_launcher(),
+    // The official title identity has two configs: `wl.offline_access` for the
+    // device-code grant (the only Live scope that yields a refreshable token)
+    // and `MBI_SSL` for the session SISU consumes.
+    let official = matches!(identity, Identity::Official);
+    let (login_application, session_application) = match &identity {
+        Identity::Official => (
+            AuthApplication::official_launcher_login(),
+            AuthApplication::official_launcher(),
+        ),
         Identity::Custom { app_id } => {
-            AuthApplication::azure_application("自定义启动器", app_id.trim())
+            let application = AuthApplication::azure_application("自定义启动器", app_id.trim());
+            (application.clone(), application)
         }
         Identity::Saved { name, app_id } => {
             // `azure_application` rejects a blank or malformed id before any
             // request is made, so a bad file entry fails without a device code.
-            AuthApplication::azure_application(name.trim(), app_id.trim())
+            let application = AuthApplication::azure_application(name.trim(), app_id.trim());
+            (application.clone(), application)
         }
     };
-    let application_label = application.label.clone();
-    let app_id = application.config.client_id.clone();
+    let application_label = session_application.label.clone();
+    let app_id = session_application.config.client_id.clone();
 
     let code_sender = sender.clone();
-    let manager = JavaAuthManager::builder(client)
-        .application(&application)
+    let login_manager = JavaAuthManager::builder(client.clone())
+        .application(&login_application)
         .login_device_code(move |code| {
             let _ = code_sender.send(LoginEvent::DeviceCode {
                 user_code: code.user_code.clone(),
@@ -111,6 +130,29 @@ async fn run(
         })
         .await
         .map_err(|error| Error::network(format!("登录失败: {error}")))?;
+
+    let manager = if official {
+        // One scope-changing refresh: the token it returns is refreshable, so
+        // every later launch can renew the MBI_SSL ticket directly.
+        let offline = login_manager
+            .msa_token()
+            .await
+            .map_err(|error| Error::network(format!("登录失败: {error}")))?;
+        let refresh_token = offline
+            .refresh_token
+            .as_deref()
+            .ok_or_else(|| Error::network("登录失败: 微软没有返回可刷新的令牌，请重试"))?;
+        let ticket =
+            minecraft_auth::msa::refresh_token(&client, &session_application.config, refresh_token)
+                .await
+                .map_err(|error| Error::network(format!("登录失败: 换取游戏令牌失败: {error}")))?;
+        JavaAuthManager::builder(client)
+            .application(&session_application)
+            .login_msa_token(ticket)
+            .map_err(|error| Error::network(format!("登录失败: {error}")))?
+    } else {
+        login_manager
+    };
 
     // `launch_session` resolves the profile (name + uuid) and the access token.
     let session = manager

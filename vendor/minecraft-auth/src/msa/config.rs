@@ -7,6 +7,11 @@ pub mod constants {
     pub const SCOPE_TITLE_AUTH: &str = "service::user.auth.xboxlive.com::MBI_SSL";
     pub const SCOPE_NO_OFFLINE_ACCESS: &str = "XboxLive.signin";
     pub const SCOPE_OFFLINE_ACCESS: &str = "XboxLive.signin XboxLive.offline_access";
+    /// The Live scope that makes a title-client token refreshable. It must be
+    /// requested alone: combining it with `MBI_SSL` is rejected with
+    /// `invalid_scope`, so the `MBI_SSL` ticket is minted by a second,
+    /// scope-changing refresh. See [`MsaApplicationConfig::java_login_default`].
+    pub const SCOPE_WL_OFFLINE_ACCESS: &str = "wl.offline_access";
 }
 
 /// Which Microsoft endpoints a client id belongs to.
@@ -112,9 +117,24 @@ impl MsaApplicationConfig {
         config
     }
 
-    /// The application config used by the official Minecraft Java launcher.
+    /// The application config used by the official Minecraft Java launcher's
+    /// *session*: the `MBI_SSL` ticket SISU consumes.
     pub fn java_default() -> Self {
         Self::new(constants::JAVA_TITLE_ID, constants::SCOPE_TITLE_AUTH)
+    }
+
+    /// The config used to *sign in* as the official Minecraft Java launcher.
+    ///
+    /// The title client cannot get a refreshable `MBI_SSL` token straight from
+    /// the device-code grant. `login.live.com` issues a `_SN1` artifact for it
+    /// that the first refresh answers with `500 server_error`/`foci:1`.
+    /// `wl.offline_access` is the Live scope that produces a refreshable grant
+    /// (a `_BAY` artifact). It cannot be combined with `MBI_SSL`, so the flow
+    /// is: sign in with this config, refresh the result once with
+    /// [`Self::java_default`] to mint the ticket, and persist *that* session.
+    /// Later refreshes then use the `MBI_SSL` config directly.
+    pub fn java_login_default() -> Self {
+        Self::new(constants::JAVA_TITLE_ID, constants::SCOPE_WL_OFFLINE_ACCESS)
     }
 
     pub fn with_chain(mut self, chain: XblChain) -> Self {
@@ -172,6 +192,15 @@ mod tests {
     fn java_title_id_is_not_a_dashed_uuid() {
         let config = MsaApplicationConfig::java_default();
         assert_eq!(config.xbl_chain(), XblChain::Title);
+    }
+
+    #[test]
+    fn the_official_login_uses_the_refreshable_live_scope() {
+        let config = MsaApplicationConfig::java_login_default();
+        assert_eq!(config.scope, constants::SCOPE_WL_OFFLINE_ACCESS);
+        assert_eq!(config.environment, MsaEnvironment::Live);
+        assert_eq!(config.xbl_chain(), XblChain::Title);
+        config.validate().unwrap();
     }
 
     #[test]

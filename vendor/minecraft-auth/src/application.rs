@@ -52,15 +52,28 @@ impl AuthApplication {
         )
     }
 
-    /// The official Minecraft launcher's identity: its title client id, the
-    /// `MBI_SSL` scope and the device-token + SISU chain.
+    /// The official Minecraft launcher's *session* identity: its title client
+    /// id, the `MBI_SSL` scope and the device-token + SISU chain.
     ///
-    /// Sign-in and refresh were verified against the live services on
-    /// 2026-11-07 with two accounts, and the resulting token was accepted by an
-    /// online-mode server from a real client on 2026-11-08 (see
-    /// `known_applications` and `AGENTS.md`).
+    /// This is what a saved session carries. Sign-in itself uses
+    /// [`Self::official_launcher_login`], because a title token minted by the
+    /// device-code grant with `MBI_SSL` alone is not refreshable; see
+    /// [`MsaApplicationConfig::java_login_default`].
     pub fn official_launcher() -> Self {
         Self::new("Minecraft Launcher", MsaApplicationConfig::java_default())
+    }
+
+    /// The official launcher's *login* identity.
+    ///
+    /// `wl.offline_access` is the only Live scope that yields a refreshable
+    /// title token. Sign in with this, refresh the result once with
+    /// [`Self::official_launcher`] to mint the `MBI_SSL` ticket, and persist
+    /// the session produced by that second manager. See `AGENTS.md`.
+    pub fn official_launcher_login() -> Self {
+        Self::new(
+            "Minecraft Launcher",
+            MsaApplicationConfig::java_login_default(),
+        )
     }
 
     /// True when `config` describes this same application and would therefore
@@ -93,7 +106,7 @@ impl From<AuthApplication> for MsaApplicationConfig {
 pub fn known_applications() -> Vec<AuthApplication> {
     // Sign-in and refresh both checked against the live services; the date is
     // the last time that happened, not the last time the code changed.
-    vec![AuthApplication::official_launcher().verified("2026-11-08")]
+    vec![AuthApplication::official_launcher().verified("2026-11-26")]
 }
 
 #[cfg(test)]
@@ -107,7 +120,22 @@ mod tests {
         assert_eq!(official.config.xbl_chain(), XblChain::Title);
         assert_eq!(official.config.environment, MsaEnvironment::Live);
         assert_eq!(official.config.client_id, constants::JAVA_TITLE_ID);
+        assert_eq!(official.config.scope, constants::SCOPE_TITLE_AUTH);
         official.config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_official_login_and_session_share_a_client_id_but_not_a_scope() {
+        let login = AuthApplication::official_launcher_login();
+        let session = AuthApplication::official_launcher();
+        assert_eq!(login.config.client_id, session.config.client_id);
+        assert_eq!(login.config.scope, constants::SCOPE_WL_OFFLINE_ACCESS);
+        assert_eq!(session.config.scope, constants::SCOPE_TITLE_AUTH);
+        // Identity matching is by client id, so a swapped session still belongs
+        // to the same application.
+        assert!(login.is_same_application(&session.config));
+        login.config.validate().unwrap();
+        session.config.validate().unwrap();
     }
 
     #[test]

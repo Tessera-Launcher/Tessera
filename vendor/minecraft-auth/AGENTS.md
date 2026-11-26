@@ -119,8 +119,8 @@ A launcher keeps one session per identity. The pieces are:
 | Azure application identity, `consumers`, device code | **verified** 2026-11-07 (Prism Launcher's client id), re-checked after the trimming refactor: sign-in, refresh, and a refresh of the rotated token |
 | Azure application identity on `login.live.com` | device code issued, rest unverified — allowed, not blocked |
 | Title client id on `consumers` | known to fail (`AADSTS700016`), rejected before any request |
-| Official launcher identity (title id + device + SISU), sign-in | **verified** 2026-11-07: device code → SISU → `login_with_xbox` → profile all succeeded against a real account |
-| Official launcher identity, MSA refresh | **verified** 2026-11-07 on a second account: a freshly issued token refreshes, and the rotated token refreshes again |
+| Official launcher identity (title id + device + SISU), sign-in | **verified** 2026-11-07: device code → SISU → `login_with_xbox` → profile all succeeded against a real account; re-verified 2026-11-26 through the `wl.offline_access` → `MBI_SSL` switch |
+| Official launcher identity, MSA refresh | **title tokens from a device-code login are only refreshable via the `wl.offline_access` → `MBI_SSL` scope switch; verified 2026-11-26** (the `MBI_SSL`-only token fails its first refresh with 500/foci:1) |
 | Official launcher identity, online-mode multiplayer | **verified** 2026-11-08 (reported by the launcher project: a real client signed in with the title identity joined an online-mode server) |
 | Third-party identity, online-mode multiplayer | unverified — same test, not yet run with an Azure application id |
 
@@ -131,34 +131,47 @@ identity.
 Online-mode multiplayer was confirmed with the official launcher identity on
 2026-11-08: the token is accepted by a real server, not just by single-player.
 
-### Refresh behaviour, and one misleading error
+### Refresh behaviour: the `MBI_SSL` device-code trap
 
-Refreshing a title-identity session works: `login.live.com/oauth20_token.srf`
-returns a new access token and a rotated refresh token, for both the token
-issued by the sign-in and the one issued by a refresh. The example exercises
-both paths on every run.
-
-One old token did not, though, and it is worth remembering how it failed. The
-request was byte-for-byte what MinecraftAuth sends, reproduced with two
-independent HTTP clients, POST and GET, with and without `redirect_uri`, with
-`client_info`, with MSAL headers, and with every plausible scope — and
-`login.live.com` answered:
+A title-client session is only refreshable if its grant came with
+`wl.offline_access`. A device-code login that requests `MBI_SSL` alone returns a
+`_SN1` artifact that `login.live.com` answers to on the **first** refresh with:
 
 ```
 500 {"error":"server_error","foci":"1","correlation_id":"…"}
 ```
 
-Calibration pinned it on the token, not the request: a garbage or truncated
-token, and the same token with the wrong client id, all got clean
-`400 invalid_grant` responses ("The token was issued for a different client
-id"), while the real token passed that binding check and then died inside
-Microsoft's FOCI redemption. So a token can be dead in a way that surfaces as
-`500 server_error` instead of `invalid_grant`.
+This happens seconds after sign-in and before any Xbox call, so it is not token
+age, SISU, or a lost rotation. A garbage or wrong-client token gets a clean
+`400 invalid_grant`; the real token passes the binding and scope checks and then
+dies inside Microsoft's FOCI redemption.
 
-Consequence for callers: `Error::needs_sign_in()` classifies `invalid_grant` and
-friends, and deliberately not `server_error` — but a 5xx from the token endpoint
-should be retried once and then treated as "sign in again", never retried
-forever.
+`wl.offline_access` and `MBI_SSL` cannot be combined (`400 invalid_scope`). The
+working sequence, verified end to end on 2026-11-26:
+
+1. device-code login with `wl.offline_access` — this grant is refreshable
+   (`M.C514_BAY…`, a `wl.offline_access` access token plus a refresh token);
+2. one refresh with the `MBI_SSL` config (a scope switch) — returns the
+   `MBI_SSL` ticket **and** a refresh token that is itself refreshable;
+3. persist that session; later launches refresh it with `MBI_SSL` directly.
+
+The second refresh of the switched token, a refresh after SISU, and a refresh
+from the next launch all succeeded. The Minecraft access token's `aid` stays
+`00000000-0000-0000-0000-0000402b5328`, i.e. the official identity.
+
+The configs mirror the split:
+
+- `MsaApplicationConfig::java_login_default()` / `AuthApplication::official_launcher_login()`
+  — `wl.offline_access`, used only to start the sign-in;
+- `MsaApplicationConfig::java_default()` / `AuthApplication::official_launcher()`
+  — `MBI_SSL`, what a saved session carries and refreshes with.
+
+Consequence for callers: a refresh token can be well-formed and client-bound
+yet unredeemable, and Microsoft reports that as a **500**, not `invalid_grant`.
+`Error::needs_sign_in()` deliberately does not classify `server_error`, so a
+launcher must retry once and then ask for a new sign-in; treating it as a
+transient outage and launching with the cached access token hides the problem
+until the player joins a server.
 
 ### How to verify the official launcher chain
 

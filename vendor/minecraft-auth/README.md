@@ -104,11 +104,13 @@ let session = auth_manager.launch_session().await?;
 
 ## Verifying the official launcher identity
 
-Sign-in and refresh with the title client id both work end to end (device code
-→ SISU → `login_with_xbox` → profile, and a forced refresh of the saved
-session), verified 2026-11-07 on two accounts. Still unverified: a real client
-joining an online-mode server with the resulting token. See
-[AGENTS.md](AGENTS.md) for what was checked and how.
+Sign-in with the title client id works end to end (device code → SISU →
+`login_with_xbox` → profile). A title token is only refreshable when its grant
+carries `wl.offline_access`: a device-code login that asks for `MBI_SSL` alone
+returns a token whose first refresh is answered with `500 server_error`/`foci:1`.
+The official identity therefore signs in with `wl.offline_access` and swaps it
+once for the `MBI_SSL` ticket; see [AGENTS.md](AGENTS.md). A real client joining
+an online-mode server with the resulting token was confirmed 2026-11-08.
 `examples/verify_login.rs` is the tool for that — it is a verification aid, not
 part of the library API, and it talks to the real services. It verifies any
 identity, including a third-party one:
