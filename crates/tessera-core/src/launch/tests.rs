@@ -1197,6 +1197,36 @@ fn account_files_give_up_a_session_or_an_explanation() {
 }
 
 #[test]
+fn an_expired_saved_token_is_not_offered_as_a_launch_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("Steve.json");
+    let write = |minecraft_token: serde_json::Value| {
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "player": { "name": "Steve", "uuid": "uuid" },
+                "session": { "minecraft_token": minecraft_token }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+
+    write(serde_json::json!({ "access_token": "fresh", "expire_time_ms": i64::MAX }));
+    let creds = Credentials::from_account_file_if_fresh(&path).unwrap();
+    assert_eq!(creds.access_token, "fresh");
+
+    write(serde_json::json!({ "access_token": "expired", "expire_time_ms": 0 }));
+    let error = Credentials::from_account_file_if_fresh(&path).unwrap_err();
+    assert!(error.to_string().contains("已过期"), "{error}");
+
+    // A file from before the field existed cannot prove it is still fresh.
+    write(serde_json::json!({ "access_token": "unproven" }));
+    let error = Credentials::from_account_file_if_fresh(&path).unwrap_err();
+    assert!(error.to_string().contains("已过期"), "{error}");
+}
+
+#[test]
 fn a_chain_that_loops_is_an_error_not_a_stack_of_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
     write_version(

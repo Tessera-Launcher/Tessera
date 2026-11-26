@@ -61,15 +61,34 @@ impl Credentials {
 
     /// Read the saved account document written by the login flow.
     ///
-    /// The access token is taken as-is: an expired one still starts the game and
-    /// only fails when joining a server, so refreshing is left to the login flow
-    /// instead of blocking a launch on the network.
+    /// The access token is taken as-is. A launch that is about to happen should
+    /// use [`Self::from_account_file_if_fresh`] instead: replaying a token whose
+    /// expiry has passed only starts the game to fail at the first server join.
     pub fn from_account_file(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|error| Error::io(format!("读取凭据 {}", path.display()), error))?;
-        let doc: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))?;
+        Self::from_document(&read_document(path)?)
+    }
 
+    /// Like [`Self::from_account_file`], but refuses an expired Minecraft token.
+    ///
+    /// A refresh can fail transiently while the token on disk is still valid;
+    /// that token is a safe fallback. Once its recorded `expire_time_ms` has
+    /// passed it is not: the game starts, claims a signed-in session, and then
+    /// gets 401 from the session server.
+    pub fn from_account_file_if_fresh(path: &Path) -> Result<Self> {
+        let document = read_document(path)?;
+        let expires = document
+            .get("session")
+            .and_then(|session| session.get("minecraft_token"))
+            .and_then(|token| token.get("expire_time_ms"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        if expires <= now_ms() {
+            return Err(Error::invalid("已保存的登录令牌已过期，请重新登录"));
+        }
+        Self::from_document(&document)
+    }
+
+    fn from_document(doc: &serde_json::Value) -> Result<Self> {
         let player = doc
             .get("player")
             .ok_or_else(|| Error::invalid("凭据缺少 player 字段"))?;
@@ -109,6 +128,13 @@ impl Credentials {
                 .map(str::to_string),
         })
     }
+}
+
+/// Read and parse one account document.
+fn read_document(path: &Path) -> Result<serde_json::Value> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| Error::io(format!("读取凭据 {}", path.display()), error))?;
+    serde_json::from_str(&text).map_err(|error| Error::invalid(format!("凭据格式错误: {error}")))
 }
 
 /// Everything the launcher lets a user tune for now.
@@ -320,6 +346,13 @@ pub fn spawn_game(
 /// then forced to 3/`10xx`, which is what makes it look like a v3 uuid; deriving
 /// the rest from SHA-1 produces a value no server has ever seen, so the same
 /// player would be a stranger there.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub fn offline_uuid(name: &str) -> String {
     use md5::Digest;
     let mut hasher = md5::Md5::new();

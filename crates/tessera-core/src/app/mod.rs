@@ -1220,20 +1220,24 @@ impl App {
                 }
             }
             SessionEvent::Failed { username, reason } => {
-                // A network hiccup must not block playing: fall back to whatever
-                // token is already on disk.
-                self.log(format!("刷新失败（{reason}），使用已保存的令牌"));
+                // A network hiccup must not block playing, but only a token that
+                // is still valid is a fallback. An expired one would start the
+                // game as `msa` and then 401 at the first server join.
+                self.log(format!("刷新失败（{reason}），检查已保存的令牌"));
                 let fallback = match &pending_file {
-                    Some(file) => launch::Credentials::from_account_file(file),
+                    Some(file) => launch::Credentials::from_account_file_if_fresh(file),
                     None => Err(crate::error::Error::invalid("没有账户文件")),
                 };
                 match fallback {
-                    Ok(credentials) => match pending {
-                        PendingLaunch::Play => self.start_game(credentials),
-                        PendingLaunch::TrainAot { dir } => {
-                            self.begin_aot_training(dir, credentials)
+                    Ok(credentials) => {
+                        self.log("已保存的令牌仍然有效，直接使用");
+                        match pending {
+                            PendingLaunch::Play => self.start_game(credentials),
+                            PendingLaunch::TrainAot { dir } => {
+                                self.begin_aot_training(dir, credentials)
+                            }
                         }
-                    },
+                    }
                     Err(error) => {
                         self.log(format!("已保存的令牌不可用：{error}"));
                         match pending {

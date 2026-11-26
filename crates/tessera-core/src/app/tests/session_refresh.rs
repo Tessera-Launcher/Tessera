@@ -169,7 +169,12 @@ fn a_failed_refresh_uses_the_token_already_on_disk() {
         &file,
         serde_json::json!({
             "player": { "name": "Steve", "uuid": "uuid" },
-            "session": { "minecraft_token": { "access_token": "stored" } }
+            "session": {
+                "minecraft_token": {
+                    "access_token": "stored",
+                    "expire_time_ms": i64::MAX
+                }
+            }
         })
         .to_string(),
     )
@@ -198,6 +203,57 @@ fn a_failed_refresh_uses_the_token_already_on_disk() {
         "stored"
     );
     assert!(app.log.iter().any(|line| line.contains("网络超时")));
+}
+
+#[test]
+fn a_failed_refresh_with_an_expired_token_starts_offline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("Steve.json");
+    std::fs::write(
+        &file,
+        serde_json::json!({
+            "player": { "name": "Steve", "uuid": "uuid" },
+            "session": {
+                "minecraft_token": {
+                    "access_token": "expired",
+                    "expire_time_ms": 0
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut app = signed_in_app(file);
+    app.request_launch();
+    app.take_effects();
+    app.handle_session_event(SessionEvent::Failed {
+        username: "Steve".into(),
+        reason: "网络超时".into(),
+    });
+
+    // The expired token must not be replayed as a signed-in session.
+    assert!(
+        app.log
+            .iter()
+            .any(|line| line.contains("准备启动 1.20.1 · 离线（Steve）")),
+        "{:?}",
+        app.log
+    );
+    assert!(
+        app.log
+            .iter()
+            .any(|line| line.contains("已保存的登录令牌已过期")),
+        "{:?}",
+        app.log
+    );
+    assert!(
+        !app.log
+            .iter()
+            .any(|line| line.contains("正版会话（Steve）")),
+        "an expired token must not claim to be a real session: {:?}",
+        app.log
+    );
 }
 
 #[test]

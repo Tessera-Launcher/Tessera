@@ -6,8 +6,10 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 
 use minecraft_auth::java::JavaAuthManager;
+use minecraft_auth::Error as AuthError;
 
 use crate::error::{Error, Result};
 
@@ -81,7 +83,30 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> 
     // still-valid session costs no network at all.
     let token = match manager.minecraft_token().await {
         Ok(token) => token,
+        // Microsoft answers a refresh token it will not redeem with
+        // `500 server_error`/`foci:1`, not with `invalid_grant`. Retry once, then
+        // stop pretending the session is usable: an expired token would only get
+        // the player as far as the server list.
+        Err(error) if is_server_error(&error) => {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            match manager.minecraft_token().await {
+                Ok(token) => token,
+                Err(retry) => {
+                    persist_rotated(&manager, &session, &mut document, &account_file).await?;
+                    let reason = if is_server_error(&retry) {
+                        format!("微软令牌服务连续两次返回服务端错误: {retry}")
+                    } else {
+                        retry.to_string()
+                    };
+                    let _ = sender.send(SessionEvent::NeedsSignIn { username, reason });
+                    return Ok(());
+                }
+            }
+        }
         Err(error) if error.needs_sign_in() => {
+            // A refresh may have succeeded before a later stage failed; keep the
+            // rotated token so the next launch does not start from a dead one.
+            persist_rotated(&manager, &session, &mut document, &account_file).await?;
             let _ = sender.send(SessionEvent::NeedsSignIn {
                 username,
                 reason: error.to_string(),
@@ -89,6 +114,7 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> 
             return Ok(());
         }
         Err(error) => {
+            persist_rotated(&manager, &session, &mut document, &account_file).await?;
             let _ = sender.send(SessionEvent::Failed {
                 username,
                 reason: error.to_string(),
@@ -97,18 +123,9 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> 
         }
     };
 
-    let refreshed = manager
-        .to_json()
-        .await
-        .map_err(|error| Error::internal(format!("序列化会话失败: {error}")))?;
-
     // Refresh tokens rotate, so a changed document has to be persisted before the
     // caller launches; an unchanged one means the cached token was still valid.
-    let renewed = refreshed != session;
-    if renewed {
-        document["session"] = refreshed;
-        write_atomic(&account_file, &document)?;
-    }
+    let renewed = persist_rotated(&manager, &session, &mut document, &account_file).await?;
 
     let uuid = document
         .get("player")
@@ -135,6 +152,36 @@ async fn run(account_file: PathBuf, sender: Sender<SessionEvent>) -> Result<()> 
     Ok(())
 }
 
+/// True when Microsoft's token endpoint answered with a server error.
+///
+/// A dead-but-well-formed refresh token is reported as 5xx/`foci`, so this is
+/// the one refresh failure worth an automatic retry.
+fn is_server_error(error: &AuthError) -> bool {
+    matches!(error, AuthError::Msa { status, .. } if status.is_server_error())
+}
+
+/// Write the session back when the manager holds freshly rotated tokens.
+///
+/// Called on success and on every failure after a refresh may have run: losing
+/// a rotation turns the next launch into an unrecoverable error.
+async fn persist_rotated(
+    manager: &JavaAuthManager,
+    previous: &serde_json::Value,
+    document: &mut serde_json::Value,
+    account_file: &Path,
+) -> Result<bool> {
+    let current = manager
+        .to_json()
+        .await
+        .map_err(|error| Error::internal(format!("序列化会话失败: {error}")))?;
+    if &current == previous {
+        return Ok(false);
+    }
+    document["session"] = current;
+    write_atomic(account_file, document)?;
+    Ok(true)
+}
+
 /// Replace a credential file without ever leaving a truncated one behind.
 fn write_atomic(path: &Path, document: &serde_json::Value) -> Result<()> {
     let body = serde_json::to_vec_pretty(document)
@@ -149,6 +196,20 @@ fn write_atomic(path: &Path, document: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_token_endpoint_5xx_is_the_only_retryable_refresh_failure() {
+        use reqwest::StatusCode;
+        let msa = |status| AuthError::Msa {
+            status,
+            error: "server_error".to_string(),
+            error_description: String::new(),
+        };
+        assert!(is_server_error(&msa(StatusCode::INTERNAL_SERVER_ERROR)));
+        assert!(is_server_error(&msa(StatusCode::SERVICE_UNAVAILABLE)));
+        assert!(!is_server_error(&msa(StatusCode::BAD_REQUEST)));
+        assert!(!is_server_error(&AuthError::InvalidState("x")));
+    }
 
     #[test]
     fn atomic_write_replaces_the_file_and_leaves_no_temp() {
