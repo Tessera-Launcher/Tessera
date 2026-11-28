@@ -106,18 +106,14 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked -p tessera-gui
 
-      - name: Package Windows artifact
+      - name: Pack the executable with UPX
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/tessera.exe dist/
-          Copy-Item README.md, LICENSE dist/
-          Compress-Archive -Path dist/* -DestinationPath Tessera-Windows-x64.zip -Force
+        run: ./scripts/pack-upx.ps1 target/release/tessera.exe
 
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
-          $files = @("Tessera-Windows-x64.zip", "target/release/tessera.exe")
+          $files = @("target/release/tessera.exe")
           $lines = foreach ($file in $files) {
             $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
             $name = Split-Path $file -Leaf
@@ -131,7 +127,6 @@ jobs:
         with:
           subject-path: |
             target/release/tessera.exe
-            Tessera-Windows-x64.zip
             SHA256SUMS
 
       - name: Publish GitHub Release
@@ -144,4 +139,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --verify-tag --generate-notes --title "Tessera $tag"
           }
-          gh release upload $tag "Tessera-Windows-x64.zip" "target/release/tessera.exe" "SHA256SUMS" --clobber
+          gh release upload $tag "target/release/tessera.exe" "SHA256SUMS" --clobber
