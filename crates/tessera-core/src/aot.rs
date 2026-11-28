@@ -692,9 +692,19 @@ fn aot_failure_detail(path: &Path) -> String {
     let Ok(text) = fs::read_to_string(path) else {
         return "没有组装日志".to_string();
     };
-    text.lines()
+    let lines: Vec<&str> = text.lines().collect();
+    lines
+        .iter()
         .rev()
-        .find(|line| line.contains("[error]") || line.contains("Child process failed"))
+        .find(|line| line.contains("different from runtime"))
+        .or_else(|| lines.iter().rev().find(|line| line.contains("[error")))
+        .or_else(|| lines.iter().rev().find(|line| line.contains("[warning")))
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| line.contains("Child process failed"))
+        })
         .map(|line| line.trim().to_string())
         .unwrap_or_else(|| "游戏或组装进程异常退出".to_string())
 }
@@ -760,6 +770,21 @@ mod tests {
         .unwrap();
         let detail = aot_failure_detail(&path);
         assert!(detail.contains("Child process failed"), "{detail}");
+    }
+
+    #[test]
+    fn a_padded_warning_explains_a_configuration_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("aot-cache.log");
+        std::fs::write(
+            &path,
+            "[0.006s][warning][aot] Unable to use AOT configuration file.\n\
+             [                    ] The saved state of UseCompressedOops (0) is different from runtime (1), CDS will be disabled.\n\
+             [0.006s][error  ][aot] Loading AOT configuration file failed.\n",
+        )
+        .unwrap();
+        let detail = aot_failure_detail(&path);
+        assert!(detail.contains("different from runtime"), "{detail}");
     }
 
     #[test]
