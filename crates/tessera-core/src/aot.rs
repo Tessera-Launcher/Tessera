@@ -32,6 +32,9 @@
 //! fails. Every JVM-facing AOT file therefore lives under an ASCII-only path
 //! relative to the version directory, which is the JVM's working directory.
 //!
+//! The assembly JVM also has to run with the training run's GC and heap options:
+//! ZGC disables compressed oops, and the configuration records that state.
+//!
 //! A new cache is assembled under an ASCII scratch directory inside the
 //! version folder and only replaces the previous cache once the assembly JVM
 //! has exited and the file is complete. A cancelled or failed run therefore
