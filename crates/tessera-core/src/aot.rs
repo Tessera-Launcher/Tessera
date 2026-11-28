@@ -242,6 +242,9 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     command
         .args(&args)
         .current_dir(&prepared.command.cwd)
+        // The launcher is a GUI process, so a console child would allocate a
+        // visible console window for the whole training run.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(unix)]
@@ -251,6 +254,15 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         // its own process group means a cancel can take both down instead of
         // orphaning an assembler that keeps writing after the window is gone.
         command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // `java.exe` is a console binary. Without this flag Windows gives it a
+        // fresh console window next to the launcher even though both of its
+        // stdio streams are redirected. The game's own window is unaffected.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = command
         .spawn()
