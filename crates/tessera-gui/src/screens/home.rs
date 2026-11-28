@@ -278,8 +278,20 @@ impl Launcher {
         panel_fit(colors, "详情", body)
     }
 
-    fn log_panel(&mut self, colors: &'static color::Palette) -> impl IntoElement {
-        log_pane(colors, "log", "日志", &self.state.log, &mut self.log)
+    fn log_panel(
+        &mut self,
+        colors: &'static color::Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        log_pane(
+            colors,
+            cx,
+            LogPane::Home,
+            "log",
+            "日志",
+            &self.state.log,
+            &mut self.log,
+        )
     }
 
     pub(crate) fn main_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -316,9 +328,16 @@ impl Launcher {
             )
             // The log is a full-width strip under both columns: its lines are
             // paths, which need the room far more than the detail column does.
-            .child(div().h(px(150.0)).child(self.log_panel(colors)))
             .child(
-                footer_bar(colors, &self.state.status)
+                // Folded, the strip drops to the height of its own heading.
+                if self.log.collapsed() {
+                    div().child(self.log_panel(colors, cx))
+                } else {
+                    div().h(px(150.0)).child(self.log_panel(colors, cx))
+                },
+            )
+            .child({
+                let footer = footer_bar(colors, &self.state.status)
                     // Training is voluntary: it costs a game start and a cache
                     // the size of the client, and has to be redone after a Java
                     // upgrade, so it never happens behind the player's back.
@@ -333,8 +352,16 @@ impl Launcher {
                     .child(primary_button("启动", cx, |this: &mut Launcher, cx| {
                         this.state.request_launch();
                         this.refresh(cx);
-                    })),
-            )
+                    }));
+                // Folded, the log heading's rule is the only line above the
+                // footer, and it sits the same 8 px under the text it did before
+                // folding. Drawing the footer's border too would make it two.
+                if self.log.collapsed() {
+                    footer.border_t(px(0.0))
+                } else {
+                    footer
+                }
+            })
     }
 
     // ---- uninstall confirmation ----

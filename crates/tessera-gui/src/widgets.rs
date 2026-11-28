@@ -16,6 +16,9 @@ pub(crate) struct LogView {
     pub(crate) scroll: ScrollHandle,
     follow: bool,
     seen: Pixels,
+    /// Folded down to its heading. The state lives here, with the pane it
+    /// belongs to, so each screen remembers its own.
+    collapsed: bool,
 }
 
 impl Default for LogView {
@@ -24,11 +27,19 @@ impl Default for LogView {
             scroll: ScrollHandle::default(),
             follow: true,
             seen: px(0.0),
+            collapsed: false,
         }
     }
 }
 
 impl LogView {
+    pub(crate) fn collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    pub(crate) fn toggle(&mut self) {
+        self.collapsed = !self.collapsed;
+    }
     /// Update the follow state for this frame.
     ///
     /// GPUI stores the offset as a negative distance from the top, so it is
@@ -54,17 +65,86 @@ impl LogView {
     }
 }
 
+/// Which screen's log pane a control belongs to.
+///
+/// The click handler is `'static`, so it cannot carry the `&mut LogView` the
+/// pane was drawn from; it names the screen instead and the launcher hands the
+/// view back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LogPane {
+    Home,
+    Install,
+    Mods,
+}
+
+impl Launcher {
+    fn log_view_mut(&mut self, pane: LogPane) -> &mut LogView {
+        match pane {
+            LogPane::Home => &mut self.log,
+            LogPane::Install => &mut self.install_log,
+            LogPane::Mods => &mut self.mods_log,
+        }
+    }
+
+    fn toggle_log(&mut self, pane: LogPane, cx: &mut Context<Self>) {
+        self.log_view_mut(pane).toggle();
+        cx.notify();
+    }
+}
+
 /// The scrolling log pane shared by the home screen and the install screen.
+///
+/// The heading carries one control on its right end: folding the pane down to
+/// nothing but that heading. Each screen owns its own [`LogView`], so the state
+/// is per pane.
 pub(crate) fn log_pane(
     colors: &'static color::Palette,
+    cx: &mut Context<Launcher>,
+    pane: LogPane,
     id: &str,
     title: &str,
     lines: &VecDeque<String>,
     view: &mut LogView,
-) -> impl IntoElement {
+) -> AnyElement {
     view.track();
-    let scroll = &view.scroll;
+    let collapsed = view.collapsed();
+    let focused = focus::register_row(cx, move |this: &mut Launcher, cx| {
+        this.toggle_log(pane, cx);
+    });
+    let toggle = div()
+        .id(format!("log-fold-{id}"))
+        .h_flex()
+        .items_center()
+        .px(px(space::XS))
+        .text_size(px(font::CAPTION))
+        .line_height(relative(font::LINE_HEIGHT_CAPTION))
+        .text_color(rgb(if focused {
+            colors.text_accent
+        } else {
+            colors.text_secondary
+        }))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(colors.hover)))
+        .on_click(
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| {
+                this.toggle_log(pane, cx);
+            }),
+        )
+        .child(if collapsed { "展开" } else { "折叠" });
+    let heading = section_header_with(colors, title, div().flex_1(), toggle);
 
+    if collapsed {
+        // Heading only. The strip that holds the pane sets its own height, so a
+        // collapsed pane must not keep reserving it.
+        return div()
+            .v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .child(heading)
+            .into_any_element();
+    }
+
+    let scroll = &view.scroll;
     let mut body = div()
         .id(id.to_string())
         .v_flex()
@@ -99,7 +179,16 @@ pub(crate) fn log_pane(
                 .viewport_from_layout(),
         ),
     );
-    panel(colors, title, shell, true)
+    div()
+        .v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .flex_1()
+        .h_full()
+        .child(heading)
+        .child(div().flex_1().min_h(px(0.0)).child(shell))
+        .into_any_element()
 }
 
 /// A section heading: a quiet label over a single hairline.
@@ -122,6 +211,16 @@ fn section_header(colors: &'static color::Palette, title: &str) -> Div {
                 .text_color(rgb(colors.text_secondary))
                 .child(title.to_string()),
         )
+}
+
+/// A section heading with a control on its right end.
+fn section_header_with(
+    colors: &'static color::Palette,
+    title: &str,
+    spacer: Div,
+    trailing: impl IntoElement,
+) -> Div {
+    section_header(colors, title).child(spacer).child(trailing)
 }
 
 /// A panel whose height follows its content (no fixed body height).

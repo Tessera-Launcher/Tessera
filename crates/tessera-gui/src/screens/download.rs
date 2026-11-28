@@ -430,9 +430,15 @@ impl Launcher {
             )
     }
 
-    fn activity_log(&mut self, colors: &'static color::Palette) -> impl IntoElement {
+    fn activity_log(
+        &mut self,
+        colors: &'static color::Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         log_pane(
             colors,
+            cx,
+            LogPane::Install,
             "install-log",
             "活动",
             &self.state.log,
@@ -495,7 +501,7 @@ impl Launcher {
             .min_h(px(0.0))
             .gap(px(space::MD))
             .child(screen_title(colors, "安装"))
-            .child(self.activity_log(colors))
+            .child(self.activity_log(colors, cx))
             .child(panel_fit(colors, "结果", body))
             .child(footer_bar(colors, &self.state.status).child(button(
                 "返回",

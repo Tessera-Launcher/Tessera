@@ -267,10 +267,14 @@ impl Launcher {
             .child(
                 div()
                     .h_flex()
+                    // Fixed: the installed panel next to the log keeps its
+                    // height whether or not the log is folded.
                     .h(px(150.0))
                     .gap(px(space::MD))
                     .child(div().flex_1().h_full().child(log_pane(
                         colors,
+                        cx,
+                        LogPane::Mods,
                         "mods-log",
                         "活动",
                         &self.state.log,

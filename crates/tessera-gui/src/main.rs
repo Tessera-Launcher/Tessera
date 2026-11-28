@@ -557,9 +557,20 @@ fn titlebar_menu_popup(
             cx,
             |this, cx| this.open_data_folder(cx),
         )),
-        // The other three are still labels with nothing behind them. Say so in
+        TitlebarMenu::Account => popup.child(titlebar_menu_row(
+            "titlebar-menu-login",
+            "登录(L)…",
+            colors,
+            cx,
+            |this, cx| {
+                this.titlebar_menu = None;
+                this.state.open_login();
+                this.refresh(cx);
+            },
+        )),
+        // 运行 and 帮助 are still labels with nothing behind them. Say so in
         // the menu instead of opening an empty rectangle.
-        TitlebarMenu::Account | TitlebarMenu::Run | TitlebarMenu::Help => {
+        TitlebarMenu::Run | TitlebarMenu::Help => {
             popup.child(titlebar_menu_note("暂无可用项", colors))
         }
     };
@@ -604,10 +615,20 @@ impl Launcher {
     /// Returns whether the key belonged to the menu bar, so the focus walk never
     /// sees a mnemonic it would otherwise ignore.
     fn on_mnemonic(&mut self, letter: char, cx: &mut Context<Self>) -> bool {
-        // An open menu picks its own letters first: 文件 → 打开数据目录(O)…
-        if self.titlebar_menu == Some(TitlebarMenu::File) && letter == 'O' {
-            self.open_data_folder(cx);
-            return true;
+        // An open menu picks its own letters first: 文件 → 打开数据目录(O)…,
+        // 账户 → 登录(L)…
+        match (self.titlebar_menu, letter) {
+            (Some(TitlebarMenu::File), 'O') => {
+                self.open_data_folder(cx);
+                return true;
+            }
+            (Some(TitlebarMenu::Account), 'L') => {
+                self.titlebar_menu = None;
+                self.state.open_login();
+                self.refresh(cx);
+                return true;
+            }
+            _ => {}
         }
         let menu = match letter {
             'F' => TitlebarMenu::File,
@@ -727,9 +748,16 @@ impl Render for Launcher {
                             .h_flex()
                             .h_full()
                             .items_center()
-                            .gap(px(space::SM))
+                            // No gap: each entry's padding is the whole space
+                            // between two labels, so the highlight boxes touch.
                             .pl(px(space::MD))
-                            .child(titlebar_label(colors, "Tessera Desktop"))
+                            // The title keeps the same distance to the first
+                            // menu that it has to the window edge.
+                            .child(
+                                div()
+                                    .pr(px(space::MD))
+                                    .child(titlebar_label(colors, "Tessera Desktop")),
+                            )
                             .child(self.titlebar_menu_entry(
                                 "titlebar-menu-file",
                                 "文件(F)",
