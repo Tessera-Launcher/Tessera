@@ -545,26 +545,57 @@ fn aot_work_name(version_dir: &Path) -> String {
 
 /// Copy the JVM options that decide AOT compatibility from the training run.
 ///
-/// The configuration records whether compressed oops were available. ZGC
-/// disables them, so an assembly JVM started without the game's GC flags
-/// rejects the configuration with "saved state of UseCompressedOops (0) is
-/// different from runtime (1)".
-///
-/// Profile JVM arguments put `-cp` *before* the launcher appends its forced GC
-/// and heap flags, so scan the whole command line; only the matching options
-/// are copied, never the class path or game arguments.
+/// The configuration records compressed oops availability and the module graph.
+/// ZGC disables compressed oops, and profiles pass `--add-exports` for
+/// `jdk.internal.misc`; starting the assembly without either makes the create
+/// JVM reject the configuration. Profile JVM arguments also put `-cp` before
+/// the launcher appends its forced GC and heap flags, so scan the whole command
+/// line and copy only the options that shape the JVM, never the class path or
+/// game arguments.
 fn assembly_jvm_options(args: &[String]) -> Vec<String> {
-    args.iter()
-        .filter(|arg| {
-            arg.starts_with("-Xmx")
-                || arg.starts_with("-Xms")
-                || arg.starts_with("-Xmn")
-                || arg.starts_with("-Xss")
-                || arg.starts_with("-XX:")
-        })
-        .filter(|arg| !arg.starts_with("-Xlog"))
-        .cloned()
-        .collect()
+    let mut options = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let option = &args[index];
+        let vm_option = (option.starts_with("-Xmx")
+            || option.starts_with("-Xms")
+            || option.starts_with("-Xmn")
+            || option.starts_with("-Xss")
+            || option.starts_with("-XX:"))
+            && !option.starts_with("-Xlog");
+        let module_option = option.starts_with("--add-")
+            || option.starts_with("--enable-")
+            || option.starts_with("--limit-modules")
+            || option.starts_with("--patch-module");
+        if vm_option || module_option {
+            options.push(option.clone());
+            // `--add-exports foo/bar=ALL-UNNAMED` and friends use a separate
+            // value argument; `--add-exports=...` carries it in the same one.
+            if module_option_takes_value(option) {
+                if let Some(value) = args.get(index + 1) {
+                    if !value.starts_with('-') {
+                        options.push(value.clone());
+                        index += 1;
+                    }
+                }
+            }
+        }
+        index += 1;
+    }
+    options
+}
+
+fn module_option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--add-exports"
+            | "--add-opens"
+            | "--add-reads"
+            | "--add-modules"
+            | "--enable-native-access"
+            | "--limit-modules"
+            | "--patch-module"
+    )
 }
 
 /// How many classes the classpath could contribute, so the bar has a ceiling.
@@ -733,12 +764,15 @@ mod tests {
     }
 
     #[test]
-    fn the_assembly_keeps_the_training_gc_and_heap_options() {
+    fn the_assembly_keeps_the_training_gc_heap_and_module_options() {
         // This is the order the launcher produces: the profile's `-cp` comes
         // before the forced GC policy and heap size are appended.
         let args = vec![
             "-Djava.library.path=ignored".to_string(),
             "-XX:+UnlockDiagnosticVMOptions".to_string(),
+            "--add-exports".to_string(),
+            "java.base/jdk.internal.misc=ALL-UNNAMED".to_string(),
+            "--enable-native-access=ALL-UNNAMED".to_string(),
             "-cp".to_string(),
             "game.jar".to_string(),
             "-XX:+UseZGC".to_string(),
@@ -753,6 +787,9 @@ mod tests {
             assembly_jvm_options(&args),
             [
                 "-XX:+UnlockDiagnosticVMOptions",
+                "--add-exports",
+                "java.base/jdk.internal.misc=ALL-UNNAMED",
+                "--enable-native-access=ALL-UNNAMED",
                 "-XX:+UseZGC",
                 "-XX:+ZAdaptiveHeapSizing",
                 "-Xmx4096M",
