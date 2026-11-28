@@ -1,7 +1,7 @@
 //! Version JSON parsing and merging.
 //!
 //! This module turns a `versions/<dir>/<dir>.json` chain into the flat view a
-//! launch needs: classpath, arguments, rules, asset index and javaVersion. It
+//! launch needs: classpath, arguments, rules and asset index. It
 //! is pure data handling and never starts a process.
 
 use std::collections::HashMap;
@@ -26,8 +26,6 @@ pub(super) struct RawVersion {
     asset_index: Option<AssetIndex>,
     #[serde(rename = "assets", default)]
     assets: Option<String>,
-    #[serde(rename = "javaVersion", default)]
-    java_version: Option<JavaVersion>,
     /// Present on a self-contained loader profile: `{"id": "fabric", "version": "…"}`.
     #[serde(rename = "mdtLoader", default)]
     loader_marker: Option<serde_json::Value>,
@@ -52,12 +50,6 @@ struct RawArguments {
 struct AssetIndex {
     #[serde(default)]
     id: String,
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-struct JavaVersion {
-    #[serde(rename = "majorVersion", default)]
-    major: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -114,7 +106,6 @@ pub(super) struct Merged {
     pub(super) jvm_args: Vec<serde_json::Value>,
     libraries: Vec<RawLibrary>,
     pub(super) asset_index_id: Option<String>,
-    pub(super) java_version: u32,
     pub(super) version_type: String,
     pub(super) parents: Vec<String>,
     /// A mod-loader profile, self-contained or inheriting: it launches on the
@@ -458,13 +449,6 @@ pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged>
                 }
             }
         }
-        if merged.java_version == 0 {
-            if let Some(java) = &version.java_version {
-                if let Some(major) = java.major {
-                    merged.java_version = major;
-                }
-            }
-        }
         if let Some(arguments) = &version.arguments {
             merged.game_args.extend(arguments.game.iter().cloned());
             merged.jvm_args.extend(arguments.jvm.iter().cloned());
@@ -475,9 +459,6 @@ pub(super) fn merge_chain(root: &Path, version_dir_name: &str) -> Result<Merged>
     if merged.main_class.is_empty() {
         return Err(Error::invalid("版本 JSON 没有 mainClass"));
     }
-    // `java_version` stays 0 when no profile in the chain declares one: the
-    // caller derives it from the version id instead (see [`crate::launch::required_java`]), which
-    // is the only place that knows both the id and the merge result.
     Ok(merged)
 }
 

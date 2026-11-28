@@ -1,27 +1,14 @@
 //! Java runtime selection and probing.
 //!
-//! The launcher only considers the JREs it downloaded itself; there is no
-//! `JAVA_HOME` or `PATH` fallback. Every profile — plain, LaunchWrapper-era or
-//! with a loader on top — launches on Java 28 EA, the only runtime the shims
-//! have been tested on and the only one that can replay an AOT cache.
+//! The launcher only runs on the Java 28 EA it downloaded itself. There is no
+//! `JAVA_HOME`, no `PATH` fallback and no per-version choice: the launch shims
+//! have only been tested on this JVM, and it is the only one that can replay an
+//! AOT cache.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-
-/// The runtime every profile launches on.
-///
-/// Java 28 EA is the only JVM the launch shims (the applet renamer, the
-/// LaunchWrapper entry point, the netty workaround, the ASCII natives mirror)
-/// have been tested against. Loader profiles used to keep the pin in their
-/// metadata (Forge wants exactly 8, Fabric 17, …), which meant every loader was
-/// a second, untested JVM configuration; they now follow everyone else. A
-/// profile that asks for something **newer** than this is refused instead of
-/// being run on a JVM below its own minimum.
-///
-/// AOT training already forces this same runtime, and a cache only replays on
-/// the JVM that wrote it, so the launch path and the cache path agree.
-pub const LAUNCH_JAVA: u32 = crate::java::FEATURE;
+use crate::java::FEATURE;
 
 /// The main class LaunchWrapper installs run on.
 pub const LAUNCHWRAPPER: &str = "net.minecraft.launchwrapper.Launch";
@@ -59,23 +46,6 @@ pub fn launch_path(is_loader: bool, main_class: Option<&str>) -> LaunchPath {
     }
 }
 
-/// The runtime major a launch would pick, without touching the disk.
-///
-/// [`find_java`] and the version list both go through this, so the "Java 28" on
-/// a row is the version that will actually start.
-pub fn pick_major(installed: &[u32], required: u32) -> Option<u32> {
-    // Locked, not preferred: a profile that needs a runtime newer than the one
-    // the shims were tested on cannot be run correctly here at all, so this
-    // fails rather than running it below its own minimum.
-    if required > LAUNCH_JAVA {
-        return None;
-    }
-    installed
-        .iter()
-        .copied()
-        .find(|major| *major == LAUNCH_JAVA)
-}
-
 /// Whether this profile boots through LaunchWrapper.
 ///
 /// It only says how the game starts: a bare LaunchWrapper profile gets the
@@ -85,100 +55,31 @@ pub fn uses_launchwrapper(main_class: Option<&str>) -> bool {
     main_class == Some(LAUNCHWRAPPER)
 }
 
-/// Find the Java every profile launches on among the runtimes this launcher
-/// manages.
+/// Find the Java 28 EA this launcher installed, and check that it runs.
 ///
-/// Only `data/依赖/java` is consulted: there is no `JAVA_HOME`, no `PATH`, no
-/// `--java`. Whatever the game runs on was downloaded here on purpose, so the
-/// version on disk is a fact the launcher owns and can explain.
-///
-/// One rule for every profile: [`LAUNCH_JAVA`] (28 EA) or nothing. That is the
-/// one runtime the shims have been tested on and the one that can replay an AOT
-/// cache; a profile asking for a newer minimum is refused. `required` only
-/// decides which explanation the user gets.
-///
-/// The result is probed once so a half-unpacked runtime fails with a message
-/// instead of a confusing game crash.
-pub fn find_java(runtimes: &Path, required: u32) -> Result<(PathBuf, u32)> {
-    let installed = crate::java::installed(runtimes);
-    if installed.is_empty() {
+/// Only `data/依赖/java` is consulted. The runtime is probed once so a
+/// half-unpacked download fails with a message instead of a confusing game crash.
+pub fn find_java(runtimes: &Path) -> Result<(PathBuf, u32)> {
+    let Some((major, path)) = crate::java::installed(runtimes)
+        .into_iter()
+        .find(|(major, _)| *major == FEATURE)
+    else {
         return Err(Error::missing(format!(
-            "还没有下载 Java：所有版本统一跑 Java {} EA（去依赖页装一个，{}）",
-            LAUNCH_JAVA,
+            "还没有下载 Java {FEATURE} EA（去依赖页装一个，{}）",
             runtimes.display()
         )));
-    }
-
-    let majors: Vec<u32> = installed.iter().map(|(major, _)| *major).collect();
-    let pick =
-        pick_major(&majors, required).and_then(|major| installed.iter().find(|(m, _)| *m == major));
-
-    let Some((major, path)) = pick else {
-        let seen = installed
-            .iter()
-            .map(|(major, _)| format!("Java {major}"))
-            .collect::<Vec<_>>()
-            .join("、");
-        return Err(Error::missing(
-            // Distinguish "too new" from "28 not installed": the first is a
-            // version this launcher cannot run, the second is a download.
-            if required > LAUNCH_JAVA {
-                format!(
-                    "这个版本需要 Java {required}，比支持的最高版本 Java {LAUNCH_JAVA} 还新（现在只有 {seen}）"
-                )
-            } else {
-                format!("所有版本统一跑 Java {LAUNCH_JAVA} EA，现在只有 {seen}（去依赖页装一个）")
-            },
-        ));
     };
 
-    match probe_java(path) {
-        Some(probed) if probed == *major => Ok((path.clone(), probed)),
+    match probe_java(&path) {
+        Some(probed) if probed == major => Ok((path, probed)),
         Some(probed) => Err(Error::invalid(format!(
             "{} 报告自己是 Java {probed}，但目录写着 Java {major}（到依赖页重新下载）",
             path.display()
         ))),
         None => Err(Error::invalid(format!(
-            "{} 跑不起来（到依赖页重新下载 Java {major}）",
+            "{} 跑不起来（到依赖页重新下载 Java {FEATURE} EA）",
             path.display()
         ))),
-    }
-}
-
-/// The Java a version needs, when its own metadata does not say.
-///
-/// Every profile Mojang publishes carries `javaVersion`, but hand-written ones and
-/// old metadata may not — and old metadata is exactly what needs the legacy rules.
-/// The cut-offs are Mojang's own:
-///
-/// | Minecraft | Java |
-/// |---|---|
-/// | 1.20.5 and newer | 21 |
-/// | 1.18 – 1.20.4 | 17 |
-/// | 1.17 | 16 |
-/// | 1.16.5 and older | 8 |
-///
-/// Nothing here picks a runtime — every profile runs on [`LAUNCH_JAVA`] — so the
-/// number only decides whether the profile is too new to run at all.
-pub fn required_java(version_id: &str, declared: Option<u32>) -> u32 {
-    if let Some(major) = declared.filter(|major| *major > 0) {
-        return major;
-    }
-    match crate::version::McVersion::parse(version_id) {
-        Some(version) => {
-            if version.at_least(1, 20, 5) {
-                21
-            } else if version.at_least(1, 18, 0) {
-                17
-            } else if version.major == 1 && version.minor == 17 {
-                16
-            } else {
-                8
-            }
-        }
-        // Old alphas and betas do not parse; neither do the pre-1.13 snapshots,
-        // and those are all Java 8 anyway.
-        None => 8,
     }
 }
 

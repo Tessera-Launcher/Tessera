@@ -120,7 +120,7 @@ fn managed_runtime(root: &Path, major: u32) -> PathBuf {
 fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
-    let runtimes = managed_runtime(tmp.path(), 8);
+    let runtimes = managed_runtime(tmp.path(), 28);
     let version_dir = tmp.path().join("versions/1.8.9");
     let cache = version_dir.join("1.8.9.aot");
     let unsigned = version_dir.join("1.8.9.unsigned.jar");
@@ -134,13 +134,13 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
     std::fs::write(&agent, b"agent").unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
-        r#"{"java_major":8,"java_version":"8.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
     )
     .unwrap();
     let ready = aot_status(&version_dir, "1.8.9", &runtimes)
         .unwrap()
         .unwrap();
-    assert!(ready.contains("Java 8"), "{ready}");
+    assert!(ready.contains("Java 28"), "{ready}");
 
     std::fs::remove_file(&unsigned).unwrap();
     let broken = aot_status(&version_dir, "1.8.9", &runtimes)
@@ -191,7 +191,7 @@ fn prepare_uses_a_downloaded_runtime_when_it_has_one() {
 fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
-    let runtimes = managed_runtime(tmp.path(), 8);
+    let runtimes = managed_runtime(tmp.path(), 28);
     let version_dir = tmp.path().join("versions/1.8.9");
     let cache = version_dir.join("1.8.9.aot");
     let unsigned = version_dir.join("1.8.9.unsigned.jar");
@@ -201,13 +201,13 @@ fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
     std::fs::write(&agent, b"agent").unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
-        r#"{"java_major":8,"java_version":"8.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
     )
     .unwrap();
 
     let found = aot_cache(&version_dir, "1.8.9", &runtimes).expect("cache + metadata");
     assert_eq!(found.cache, cache);
-    assert_eq!(found.java_major, 8);
+    assert_eq!(found.java_major, 28);
     assert_eq!(found.unsigned_jar, unsigned);
 
     let options = Options {
@@ -239,72 +239,7 @@ fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
         "{:?}",
         launch.command.args
     );
-    assert_eq!(launch.java_major, 8);
-}
-
-#[test]
-fn only_managed_runtimes_are_considered() {
-    let tmp = tempfile::tempdir().unwrap();
-    let runtimes = tmp.path().join("依赖").join("java");
-    // Nothing installed: the error says what to do, not "install Java on PATH".
-    let error = find_java(&runtimes, 21).unwrap_err();
-    assert!(error.to_string().contains("依赖页"), "{error}");
-    assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
-
-    managed_runtime(tmp.path(), 8);
-    managed_runtime(tmp.path(), 21);
-
-    // Other majors on disk are not a substitute, and the message lists them.
-    let error = find_java(&runtimes, 21).unwrap_err();
-    assert!(error.to_string().contains("Java 21"), "{error}");
-    assert!(error.to_string().contains("Java 8"), "{error}");
-
-    managed_runtime(tmp.path(), 28);
-    assert_eq!(find_java(&runtimes, 8).unwrap().1, 28);
-    assert_eq!(find_java(&runtimes, 21).unwrap().1, 28);
-}
-
-#[test]
-fn every_profile_runs_on_java_28() {
-    let tmp = tempfile::tempdir().unwrap();
-    managed_runtime(tmp.path(), 8);
-    managed_runtime(tmp.path(), 17);
-    managed_runtime(tmp.path(), 28);
-    let runtimes = tmp.path().join("依赖").join("java");
-
-    // Whatever the profile asks for, 28 is what starts it: it is the only
-    // runtime the launch shims have been tested on.
-    assert_eq!(find_java(&runtimes, 8).unwrap().1, 28);
-    assert_eq!(find_java(&runtimes, 17).unwrap().1, 28);
-    assert_eq!(find_java(&runtimes, 26).unwrap().1, 28);
-    // A newer minimum than 28 cannot be run here, and the message says why.
-    let error = find_java(&runtimes, 30).unwrap_err();
-    assert!(error.to_string().contains("30"), "{error}");
-}
-
-#[test]
-fn a_launch_without_java_28_asks_for_java_28() {
-    let tmp = tempfile::tempdir().unwrap();
-    let error = find_java(&tmp.path().join("依赖").join("java"), 8).unwrap_err();
-    assert!(error.to_string().contains("Java 28"), "{error}");
-
-    // A 21 on disk is not a substitute: 28 is the only runtime that launches.
-    managed_runtime(tmp.path(), 8);
-    managed_runtime(tmp.path(), 21);
-    let error = find_java(&tmp.path().join("依赖").join("java"), 8).unwrap_err();
-    assert!(error.to_string().contains("Java 28"), "{error}");
-}
-
-#[test]
-fn an_applet_era_version_runs_on_java_28_too() {
-    let tmp = tempfile::tempdir().unwrap();
-    managed_runtime(tmp.path(), 8);
-    managed_runtime(tmp.path(), 25);
-    let runtimes = managed_runtime(tmp.path(), 28);
-
-    // Up to 1.5.2 the game is an applet, but the legacy agent makes that a
-    // non-issue, so the Java is the same as everywhere else.
-    assert_eq!(find_java(&runtimes, 8).unwrap().1, 28);
+    assert_eq!(launch.java_major, 28);
 }
 
 #[test]
@@ -375,8 +310,6 @@ fn only_1_8_counts_as_the_netty_4_line() {
 fn a_vanilla_1_8_launch_disables_the_broken_netty_epoll_transport() {
     let tmp = tempfile::tempdir().unwrap();
     fixture(tmp.path());
-    // 8 for the loader profile, 28 for the vanilla one.
-    managed_runtime(tmp.path(), 8);
     let runtimes = managed_runtime(tmp.path(), 28);
     let options = Options {
         runtimes: Some(runtimes),
@@ -447,24 +380,6 @@ fn a_vanilla_launch_does_not_carry_the_legacy_agent() {
         "{:?}",
         launch.command.args
     );
-}
-
-#[test]
-fn the_requirement_comes_from_the_profile_or_the_version_number() {
-    // What the profile says wins.
-    assert_eq!(required_java("1.8.9", Some(17)), 17);
-    // Modern versions all carry `javaVersion`; these rules are the fallback.
-    assert_eq!(required_java("1.16.5", None), 8);
-    assert_eq!(required_java("1.17.1", None), 16);
-    assert_eq!(required_java("1.18.2", None), 17);
-    assert_eq!(required_java("1.20.4", None), 17);
-    assert_eq!(required_java("1.20.5", None), 21);
-    assert_eq!(required_java("1.21.9-pre9", None), 21);
-    assert_eq!(required_java("26.4-snapshot-7", None), 21);
-    // Anything that does not parse is ancient: alphas, betas, web builds.
-    assert_eq!(required_java("a1.2.6", None), 8);
-    assert_eq!(required_java("b1.7.3", None), 8);
-    assert_eq!(required_java("25w37a", None), 8);
 }
 
 #[test]
@@ -695,7 +610,6 @@ fn a_loader_profile_merges_its_parent_and_wins_the_classpath_order() {
         launch.main_class,
         "net.fabricmc.loader.impl.launch.knot.KnotClient"
     );
-    assert_eq!(launch.required_major, 8);
     assert_eq!(launch.classpath_entries, 4, "3 libraries + client jar");
 
     let classpath = launch
@@ -882,8 +796,6 @@ fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
     std::fs::write(version_dir.join(format!("{id}.jar")), EMPTY_JAR).unwrap();
     std::fs::create_dir_all(version_dir.join(format!("{id}-natives"))).unwrap();
 
-    // Both runtimes: the loader still starts on 28, not on its 21 pin.
-    managed_runtime(root, 21);
     let options = Options {
         runtimes: Some(managed_runtime(root, 28)),
         ..Options::default()
@@ -893,10 +805,6 @@ fn a_self_contained_loader_profile_needs_no_vanilla_directory() {
     assert!(
         !root.join("versions/1.20.1").exists(),
         "nothing must have to exist beside the loader directory"
-    );
-    assert_eq!(
-        launch.required_major, 21,
-        "the pin is still what it asks for"
     );
     assert_eq!(launch.java_major, 28, "every profile runs on 28");
     assert_eq!(
@@ -1014,9 +922,6 @@ fn a_profile_whose_id_disagrees_with_its_directory_still_uses_the_directory() {
         "game arguments are substituted from the profile: {:?}",
         launch.command.args
     );
-    // No `javaVersion` in the JSON, so the id it declares (1.20.1 → 17) has to
-    // drive the runtime choice, not the folder name.
-    assert_eq!(launch.required_major, 17);
 }
 
 #[test]
@@ -1085,65 +990,24 @@ fn a_missing_client_jar_is_reported() {
 }
 
 #[test]
-fn a_profile_without_java_version_gets_it_from_the_version_number() {
+fn find_java_only_considers_the_managed_java_28() {
     let tmp = tempfile::tempdir().unwrap();
-    // 1.20.5 is the first release that needs 21; the metadata here has no
-    // `javaVersion`, so only the version id can decide.
-    write_version(
-        tmp.path(),
-        "1.20.5",
-        serde_json::json!({
-            "id": "1.20.5",
-            "type": "release",
-            "mainClass": "net.minecraft.client.main.Main",
-            "assetIndex": { "id": "19" },
-            "libraries": []
-        }),
-    );
-    std::fs::write(tmp.path().join("versions/1.20.5/1.20.5.jar"), EMPTY_JAR).unwrap();
-    let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 28)),
-        ..Options::default()
-    };
-    let launch = prepare(
-        tmp.path(),
-        "1.20.5",
-        &Credentials::offline("Steve"),
-        &options,
-    )
-    .unwrap();
-    assert_eq!(launch.required_major, 21, "1.20.5 needs 21");
-    // The minimum says 21, but vanilla is locked to 28 either way.
-    assert_eq!(launch.java_major, 28);
-}
+    let runtimes = tmp.path().join("依赖").join("java");
 
-#[test]
-fn a_profile_newer_than_java_28_is_refused_with_what_was_found() {
-    let tmp = tempfile::tempdir().unwrap();
-    fixture(tmp.path());
-    let options = Options {
-        runtimes: Some(managed_runtime(tmp.path(), 28)),
-        ..Options::default()
-    };
-    // A profile that wants a runtime newer than the one the shims know about
-    // cannot be guessed at: 28 would reject the class files anyway.
-    write_version(
-        tmp.path(),
-        "1.30",
-        serde_json::json!({
-            "id": "1.30",
-            "type": "release",
-            "mainClass": "net.minecraft.client.main.Main",
-            "javaVersion": { "majorVersion": 30 },
-            "libraries": []
-        }),
-    );
-    // Give it a jar so only the Java decision is under test.
-    std::fs::write(tmp.path().join("versions/1.30/1.30.jar"), EMPTY_JAR).unwrap();
-    let error = prepare(tmp.path(), "1.30", &Credentials::offline("Steve"), &options)
-        .expect_err("Java 28 cannot run a 30 profile");
-    assert!(error.to_string().contains("Java 30"), "{error}");
+    // Nothing installed: the error says what to do, not "install Java on PATH".
+    let error = super::java::find_java(&runtimes).unwrap_err();
+    assert!(error.to_string().contains("依赖页"), "{error}");
     assert!(error.to_string().contains("Java 28"), "{error}");
+    assert!(!error.to_string().contains("JAVA_HOME"), "{error}");
+
+    // Other majors on disk are not a substitute.
+    managed_runtime(tmp.path(), 8);
+    managed_runtime(tmp.path(), 21);
+    let error = super::java::find_java(&runtimes).unwrap_err();
+    assert!(error.to_string().contains("Java 28"), "{error}");
+
+    managed_runtime(tmp.path(), 28);
+    assert_eq!(super::java::find_java(&runtimes).unwrap().1, 28);
 }
 
 #[test]
@@ -1154,8 +1018,7 @@ fn a_vanilla_profile_below_28_still_asks_for_28() {
         runtimes: Some(managed_runtime(tmp.path(), 21)),
         ..Options::default()
     };
-    // A 21 runtime meets every minimum here and is still not used: vanilla is
-    // locked to the one runtime the shims were tested on.
+    // A 21 runtime is not Java 28, so it is not used.
     let error = prepare(
         tmp.path(),
         "1.8.9",
@@ -1164,7 +1027,6 @@ fn a_vanilla_profile_below_28_still_asks_for_28() {
     )
     .expect_err("a 21 runtime is not Java 28");
     assert!(error.to_string().contains("Java 28"), "{error}");
-    assert!(error.to_string().contains("Java 21"), "{error}");
     assert!(error.to_string().contains("依赖页"), "{error}");
 }
 

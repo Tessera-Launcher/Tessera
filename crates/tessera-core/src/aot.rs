@@ -170,7 +170,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     // Forced Java 28 EA: no fallback to 25, because the cache is JVM-bound.
     let java = match java::installed_runtimes(runtimes)
         .into_iter()
-        .find(|runtime| runtime.major == 28)
+        .find(|runtime| runtime.major == java::FEATURE)
     {
         Some(java) => java,
         None => {

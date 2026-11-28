@@ -84,6 +84,15 @@ fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Ao
     let Ok(meta) = serde_json::from_str::<AotMeta>(&text) else {
         return AotLookup::Broken("AOT 元数据损坏".to_string());
     };
+    // Only Java 28 EA is ever used. A cache trained on anything else is stale,
+    // and running it would silently fall back to a different JVM.
+    if meta.java_major != crate::java::FEATURE {
+        return AotLookup::Broken(format!(
+            "训练时使用的是 Java {}，现在只用 Java {} EA，请重新训练",
+            meta.java_version,
+            crate::java::FEATURE
+        ));
+    }
     let Some(java) = crate::java::installed_runtimes(runtimes)
         .into_iter()
         .find(|runtime| runtime.version == meta.java_version && runtime.major == meta.java_major)

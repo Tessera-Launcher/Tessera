@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 
 use super::agents::{ensure_asset, LEGACY_AGENT};
 use super::aot_cache::aot_cache;
-use super::java::{find_java, launch_path, required_java, LaunchPath, LEGACY_MAIN};
+use super::java::{find_java, launch_path, LaunchPath, LEGACY_MAIN};
 use super::manifest::{client_jar, features, merge_chain, resolve_argument, substitute};
 use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
 use super::{Command, Credentials, Launch, Options};
@@ -140,13 +140,6 @@ pub(super) fn prepare_inner(
     java_override: Option<(PathBuf, u32)>,
 ) -> Result<Launch> {
     let merged = merge_chain(root, version_dir_name)?;
-    // The profile's own `javaVersion` wins; older metadata gets the legacy rules.
-    // The JSON id is the better fallback than the folder name: a folder may be
-    // named anything (`my-instance`) while the id still says `1.20.1`.
-    let required = required_java(
-        &merged.id,
-        (merged.java_version > 0).then_some(merged.java_version),
-    );
     let runtimes = options
         .runtimes
         .clone()
@@ -155,6 +148,7 @@ pub(super) fn prepare_inner(
     // A finished AOT training run stores the exact JVM build it used. Launching
     // with a different JVM would make the cache silently unusable, so the cache
     // also chooses the Java here. Training itself passes an explicit override.
+    // Otherwise every profile runs on the managed Java 28 EA.
     // The cache is keyed by the class path, and training an LWJGL 3 install uses
     // that same path (the modern-LWJGL profile lives in the install itself), so
     // the cache is not rejected merely because the profile carries `mdtLwjgl3`.
@@ -169,7 +163,7 @@ pub(super) fn prepare_inner(
     } else if let Some(override_java) = java_override {
         override_java
     } else {
-        find_java(&runtimes, required)?
+        find_java(&runtimes)?
     };
     // A loader profile has no jar of its own (it inherits from the vanilla
     // version, whose client jar it borrows), so the lookup walks the parent
@@ -473,7 +467,6 @@ pub(super) fn prepare_inner(
             cwd: game_dir,
         },
         java_major,
-        required_major: required,
         classpath_entries: classpath.len(),
         natives,
         main_class,
