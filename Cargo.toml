@@ -52,5 +52,14 @@ opt-level = 3
 #   `GlyphInfo::getShadowOffset` in the game. Doing it here keeps every glyph in
 #   the app in step, including the ones gpui-component draws for menus and
 #   fields.
+#
+# The Windows platform crate is vendored for one local change:
+#
+# - DirectWrite only looked for the requested fallback families in the system
+#   font collection. Embedded faces live in the app's custom collection, so the
+#   Unifont fallback was never mapped and DirectWrite replaced Chinese text
+#   with Microsoft YaHei. The patched builder searches both collections and
+#   attaches the collection that supplied each family to its mapping.
 [patch.crates-io]
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
