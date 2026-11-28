@@ -106,6 +106,27 @@ impl InstallSummary {
     }
 }
 
+/// What a finished repair checked and fixed, for the progress page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepairSummary {
+    pub version: String,
+    pub checked: usize,
+    pub repaired: usize,
+    pub elapsed: Duration,
+}
+
+impl RepairSummary {
+    /// One line for the result page.
+    pub fn text(&self) -> String {
+        format!(
+            "检查 {} 个文件 · 修复 {} 个 · 用时 {:.1} 秒",
+            self.checked,
+            self.repaired,
+            self.elapsed.as_secs_f64()
+        )
+    }
+}
+
 /// The download picker and the progress screen share this state.
 #[derive(Debug)]
 pub struct DownloadUi {
@@ -134,6 +155,10 @@ pub struct DownloadUi {
     pub started: Option<Instant>,
     /// The result shown once the install finishes (time, size, average speed).
     pub summary: Option<InstallSummary>,
+    /// The instance being checked and repaired, when the current run is a repair.
+    pub repairing: Option<String>,
+    /// The result shown once a repair finishes.
+    pub repair: Option<RepairSummary>,
     fetching: bool,
 }
 
@@ -154,6 +179,8 @@ impl Default for DownloadUi {
             installed: None,
             started: None,
             summary: None,
+            repairing: None,
+            repair: None,
             fetching: false,
         }
     }
@@ -310,7 +337,7 @@ impl App {
         // must not hide it behind a fresh picker.
         if self.install_running {
             self.screen = Screen::Download;
-            self.status = "安装进行中，请等待完成".to_string();
+            self.status = "下载任务进行中，请等待完成".to_string();
             return;
         }
         self.screen = Screen::Download;
@@ -339,6 +366,8 @@ impl App {
             self.download.summary = None;
             self.download.started = None;
             self.download.error = None;
+            self.download.repairing = None;
+            self.download.repair = None;
         }
     }
 
@@ -404,6 +433,8 @@ impl App {
         self.download.stage = DownloadStage::Installing;
         self.download.installed = None;
         self.download.summary = None;
+        self.download.repairing = None;
+        self.download.repair = None;
         self.download.started = Some(Instant::now());
         self.download.error = None;
         self.screen = Screen::Download;
@@ -413,6 +444,79 @@ impl App {
             loader.display_label(&version)
         ));
         self.request(Effect::Install { version, loader });
+    }
+
+    /// Check one installed instance and repair only the files that are wrong.
+    ///
+    /// The progress screen is the install page: both runs move files through
+    /// aria2 and report per-file lines into the same log. `install_running`
+    /// guards the slot they share, so a repair cannot start beside an install.
+    pub fn start_repair(&mut self, dir: String) {
+        if self.install_running {
+            self.status = "已有下载任务正在进行".to_string();
+            self.log(self.status.clone());
+            return;
+        }
+        if !self.all_versions.iter().any(|version| version.dir == dir) {
+            self.status = format!("版本 {dir} 已不在列表中，无法修复");
+            self.log(self.status.clone());
+            return;
+        }
+        self.install_running = true;
+        self.download.stage = DownloadStage::Installing;
+        self.download.installed = None;
+        self.download.summary = None;
+        self.download.repairing = Some(dir.clone());
+        self.download.repair = None;
+        self.download.started = Some(Instant::now());
+        self.download.error = None;
+        self.screen = Screen::Download;
+        self.status = format!("正在检查 {dir} 的文件完整性…");
+        self.log(format!("开始检查并修复 {dir}"));
+        self.request(Effect::Repair { dir });
+    }
+
+    /// Apply an event from the repair worker.
+    pub fn handle_repair_event(&mut self, event: crate::repair::Event) {
+        match event {
+            crate::repair::Event::Log(line) => self.log(line),
+            crate::repair::Event::Finished {
+                version,
+                repaired,
+                checked,
+                seconds,
+            } => {
+                self.install_running = false;
+                let elapsed = self
+                    .download
+                    .started
+                    .take()
+                    .map_or(Duration::from_secs_f64(seconds), |started| {
+                        started.elapsed()
+                    });
+                let summary = RepairSummary {
+                    version: version.clone(),
+                    checked,
+                    repaired,
+                    elapsed,
+                };
+                self.download.repair = Some(summary.clone());
+                self.download.stage = DownloadStage::Done;
+                self.download.error = None;
+                self.reload();
+                self.status = format!("修复完成：{version} · {}", summary.text());
+                self.log(self.status.clone());
+            }
+            crate::repair::Event::Failed(message) => {
+                self.install_running = false;
+                self.download.started = None;
+                self.download.repair = None;
+                self.download.stage = DownloadStage::Failed;
+                self.download.error = Some(message.clone());
+                self.status = "修复失败".to_string();
+                self.log(format!("修复失败：{message}"));
+            }
+        }
     }
 
     /// Apply an event from the download worker.

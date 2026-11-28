@@ -16,6 +16,15 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // F1 is the direct shortcut for Help → About, beside Alt+H then A.
+        if event.keystroke.key.eq_ignore_ascii_case("f1")
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.platform
+        {
+            self.open_about(cx);
+            return;
+        }
         // Menu mnemonics come first: Alt+F must reach the title bar, not the
         // focused text field or the focus walk.
         if let Some(letter) = gui_mnemonic(&event.keystroke) {
@@ -40,9 +49,11 @@ impl Launcher {
                 }
             }
             Key::Escape => {
-                // The only thing Escape has to undo so far is an open title bar
-                // menu; a page or a dialog of its own would take precedence.
-                if self.titlebar_menu.take().is_some() {
+                // A dialog takes precedence over the title bar menu.
+                if self.about_open {
+                    self.close_about(cx);
+                    cx.notify();
+                } else if self.titlebar_menu.take().is_some() {
                     cx.notify();
                 }
             }
@@ -156,6 +167,18 @@ impl Launcher {
                     );
                     self.tasks
                         .watch(TaskKind::Install, rx, deliver_install, install_done);
+                }
+                Effect::Repair { dir } => {
+                    let rx = repair::spawn(
+                        self.state.root.clone(),
+                        self.state.dependencies.clone(),
+                        self.state.cache.clone(),
+                        self.state.source,
+                        self.state.settings.github_proxy.clone(),
+                        dir,
+                    );
+                    self.tasks
+                        .watch(TaskKind::Repair, rx, deliver_repair, repair_done);
                 }
                 Effect::Launch { dir, credentials } => {
                     let rx = launch::spawn_game(
@@ -492,6 +515,13 @@ fn install_done(event: &InstallEvent) -> bool {
     )
 }
 
+fn repair_done(event: &repair::Event) -> bool {
+    matches!(
+        event,
+        repair::Event::Finished { .. } | repair::Event::Failed(_)
+    )
+}
+
 fn java_done(event: &java::Event) -> bool {
     matches!(
         event,
@@ -625,6 +655,10 @@ fn deliver_login(launcher: &mut Launcher, event: LoginEvent) {
 
 fn deliver_install(launcher: &mut Launcher, event: InstallEvent) {
     launcher.state.handle_install_event(event);
+}
+
+fn deliver_repair(launcher: &mut Launcher, event: repair::Event) {
+    launcher.state.handle_repair_event(event);
 }
 
 fn deliver_java(launcher: &mut Launcher, event: java::Event) {

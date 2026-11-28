@@ -30,6 +30,7 @@ pub mod music;
 pub mod patch;
 pub mod paths;
 pub mod profile;
+pub mod repair;
 pub mod session;
 pub mod settings;
 pub mod task;

@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 /// Replace `path` with `body` atomically.
@@ -57,6 +58,25 @@ pub fn write_atomic(path: &Path, body: &[u8], private: bool) -> std::io::Result<
 pub fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// SHA-1 of one file, streamed in 64 KiB chunks.
+///
+/// The download metadata names files by SHA-1, so every on-disk check — an
+/// install's verification and a repair's baseline alike — needs the same
+/// streaming helper instead of reading a jar into memory.
+pub fn sha1_file(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha1::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
@@ -121,6 +141,17 @@ mod tests {
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn sha1_matches_the_known_digest_of_abc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("x");
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha1_file(&path).unwrap(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
     }
 
     #[test]

@@ -84,6 +84,19 @@ pub(crate) fn open_folder_menu_item(weak: WeakEntity<Launcher>, dir: String) -> 
     })
 }
 
+/// Check the instance and re-download only the files that are wrong.
+///
+/// The item belongs to the row menu only: the empty-space menu has no instance
+/// to repair, which is why this is not added to the list backdrop.
+pub(crate) fn repair_menu_item(weak: WeakEntity<Launcher>, dir: String) -> PopupMenuItem {
+    item("修复…", weak, move |this| {
+        if !select_row(this, &dir, "修复") {
+            return;
+        }
+        this.state.start_repair(dir.clone());
+    })
+}
+
 pub(crate) fn uninstall_menu_item(weak: WeakEntity<Launcher>, dir: String) -> PopupMenuItem {
     item("卸载", weak, move |this| {
         if !select_row(this, &dir, "卸载") {

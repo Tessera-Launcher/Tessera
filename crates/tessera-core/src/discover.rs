@@ -63,25 +63,33 @@ impl LocalVersion {
         if let Some(parent) = &self.inherits {
             return parent;
         }
-        if let Some((mc, _)) = self.id.split_once('+') {
+        base_from_id(&self.id)
+    }
+}
+
+/// The Minecraft version encoded in a loader profile's id.
+///
+/// Both spellings the installer has used are understood: `1.20.1+Fabric0.15.11`
+/// and the self-contained `1.20.1-fabric-0.15.11`.
+pub(crate) fn base_from_id(id: &str) -> &str {
+    if let Some((mc, _)) = id.split_once('+') {
+        return mc;
+    }
+    // The loader's display name is not part of the marker, but the id's
+    // middle segment is the loader id the installer used.
+    const MARKERS: [&str; 5] = [
+        "-fabric-",
+        "-forge-",
+        "-neoforge-",
+        "-quilt-",
+        "-liteloader-",
+    ];
+    for marker in MARKERS {
+        if let Some((mc, _)) = id.split_once(marker) {
             return mc;
         }
-        // The loader's display name is not part of the marker, but the id's
-        // middle segment is the loader id the installer used.
-        const MARKERS: [&str; 5] = [
-            "-fabric-",
-            "-forge-",
-            "-neoforge-",
-            "-quilt-",
-            "-liteloader-",
-        ];
-        for marker in MARKERS {
-            if let Some((mc, _)) = self.id.split_once(marker) {
-                return mc;
-            }
-        }
-        self.id.as_str()
     }
+    id
 }
 
 /// List every version under `<root>/versions`.

@@ -226,6 +226,7 @@ impl Launcher {
                                 let dir = dir.clone();
                                 menu.item(launch_menu_item(weak.clone(), dir.clone()))
                                     .item(open_folder_menu_item(weak.clone(), dir.clone()))
+                                    .item(repair_menu_item(weak.clone(), dir.clone()))
                                     .item(uninstall_menu_item(weak.clone(), dir))
                                     .separator()
                                     .item(refresh_menu_item(weak.clone()))

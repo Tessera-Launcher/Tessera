@@ -44,7 +44,7 @@ impl Source {
         }
     }
 
-    fn to_mdt(self) -> MdtMirror {
+    pub(crate) fn to_mdt(self) -> MdtMirror {
         match self {
             Source::Bmclapi => MdtMirror::BMCLAPI,
             Source::Mojang => MdtMirror::Mojang,
@@ -409,6 +409,11 @@ pub fn spawn_install(
             let _ = sender.send(InstallEvent::Log(format!(
                 "游戏语言：简体中文（lang:{language}）"
             )));
+
+            // Record the final hash of every jar now that normalization and the
+            // 1.8.9 patch are done. A repair checks jars against this file; the
+            // plan's Mojang SHA-1 only describes the raw download.
+            crate::repair::record_install_jars(client.root_dir(), &plan)?;
 
             let _ = sender.send(InstallEvent::Finished {
                 version,

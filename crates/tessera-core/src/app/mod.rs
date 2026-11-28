@@ -60,6 +60,8 @@ pub enum Effect {
     FetchVersions,
     /// Install one version, optionally with a loader.
     Install { version: String, loader: Loader },
+    /// Check one installed version and download only the files that are wrong.
+    Repair { dir: String },
     /// Refresh the saved session in this credential file before launching.
     RefreshSession(PathBuf),
     /// Ask Adoptium for the latest JRE of every offered feature.
@@ -201,6 +203,8 @@ pub enum TaskKind {
     Versions,
     /// One version install (and the loader it carries).
     Install,
+    /// One installed version being checked and repaired.
+    Repair,
     /// The device-code login flow.
     Login,
     /// A token refresh before launch.
@@ -243,6 +247,7 @@ impl TaskKind {
         match self {
             TaskKind::Versions => "版本列表",
             TaskKind::Install => "安装",
+            TaskKind::Repair => "修复",
             TaskKind::Login => "登录",
             TaskKind::Session => "令牌刷新",
             TaskKind::JavaList => "依赖列表",
@@ -348,7 +353,7 @@ mod music;
 pub use self::account_manager::AccountsUi;
 pub use self::aria2::Aria2Ui;
 pub use self::disk::DiskUi;
-pub use self::download::{DownloadStage, DownloadUi, InstallSummary, VersionFilter};
+pub use self::download::{DownloadStage, DownloadUi, InstallSummary, RepairSummary, VersionFilter};
 pub use self::java::{JavaStage, JavaUi};
 pub use self::login::{LoginStep, LoginUi};
 pub use self::mods::ModsUi;
@@ -949,7 +954,7 @@ impl App {
         let label = kind.label();
         self.log(format!("{label}后台任务意外结束，没有报告结果"));
         match kind {
-            TaskKind::Install => {
+            TaskKind::Install | TaskKind::Repair => {
                 if self.install_running {
                     self.install_running = false;
                     self.download.stage = DownloadStage::Failed;

@@ -25,7 +25,7 @@ use gpui_kit::component::{TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
 use crate::platform::{copy_to_clipboard, open_browser, open_folder};
-use crate::widgets::LogView;
+use crate::widgets::{button, LogView};
 use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
     TaskKind, UiRequest, VersionFilter,
@@ -36,7 +36,7 @@ use tessera_core::login::{self, LoginEvent};
 use tessera_core::version::VersionKind;
 use tessera_core::{
     accounts, aot, aria2, audio, cleanup, discover, instance, java, logfile, modrinth, music,
-    paths::Paths, session, version_tree::RowKind,
+    paths::Paths, repair, session, version_tree::RowKind,
 };
 
 use crate::design_tokens::{color, font, layout, radius, space, stroke, weight};
@@ -157,6 +157,8 @@ struct Launcher {
     data_root: std::path::PathBuf,
     /// The open title bar menu, if one is down.
     titlebar_menu: Option<TitlebarMenu>,
+    /// The Help → About dialog is on screen.
+    about_open: bool,
     /// The settings last written to disk, so a repaint that changes nothing does
     /// not rewrite the file.
     settings_saved: tessera_core::settings::Settings,
@@ -317,6 +319,7 @@ impl Launcher {
             cache_dir,
             data_root,
             titlebar_menu: None,
+            about_open: false,
             settings_saved,
             focus_screen,
         }
@@ -520,19 +523,6 @@ fn titlebar_menu_row(
         .child(label)
 }
 
-/// A row that only says the menu has nothing in it yet.
-fn titlebar_menu_note(label: &'static str, colors: &'static color::Palette) -> impl IntoElement {
-    div()
-        .h_flex()
-        .h(px(layout::CONTROL_HEIGHT))
-        .items_center()
-        .px(px(space::MD))
-        .text_size(px(font::BODY))
-        .line_height(relative(font::LINE_HEIGHT_TITLE))
-        .text_color(rgb(colors.text_secondary))
-        .child(label)
-}
-
 /// The dropdown below one menu bar entry.
 fn titlebar_menu_popup(
     menu: TitlebarMenu,
@@ -590,9 +580,13 @@ fn titlebar_menu_popup(
                     this.export_script(cx);
                 },
             )),
-        // 帮助 is still a label with nothing behind it. Say so in the menu
-        // instead of opening an empty rectangle.
-        TitlebarMenu::Help => popup.child(titlebar_menu_note("暂无可用项", colors)),
+        TitlebarMenu::Help => popup.child(titlebar_menu_row(
+            "titlebar-menu-about",
+            "关于 Tessera Desktop(A)…",
+            colors,
+            cx,
+            |this, cx| this.open_about(cx),
+        )),
     };
     popup
 }
@@ -659,6 +653,10 @@ impl Launcher {
                 self.export_script(cx);
                 return true;
             }
+            (Some(TitlebarMenu::Help), 'A') => {
+                self.open_about(cx);
+                return true;
+            }
             _ => {}
         }
         let menu = match letter {
@@ -670,6 +668,20 @@ impl Launcher {
         };
         self.toggle_titlebar_menu(menu, cx);
         true
+    }
+
+    /// Help → About, also reachable with F1.
+    fn open_about(&mut self, cx: &mut Context<Self>) {
+        self.titlebar_menu = None;
+        self.about_open = true;
+        // The dialog owns the keyboard while it is open.
+        focus::reset(cx);
+        self.refresh(cx);
+    }
+
+    fn close_about(&mut self, cx: &mut Context<Self>) {
+        self.about_open = false;
+        self.refresh(cx);
     }
 
     /// 运行 → 导出启动脚本(E)…
@@ -724,6 +736,84 @@ impl Launcher {
             .request_ui(UiRequest::OpenFolder(self.data_root.clone()));
         self.refresh(cx);
     }
+
+    // ---- about ----
+
+    /// The Help → About dialog.
+    ///
+    /// It carries the title exactly as the title bar draws it, the licence and
+    /// the project link; nothing else belongs in it.
+    pub(crate) fn about_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.about_open {
+            return None;
+        }
+        let colors = theme::colors(cx);
+        // The dialog owns the keyboard while it is open.
+        focus::reset(cx);
+        const GITHUB: &str = "https://github.com/Tessera-Launcher/TesseraDesktop";
+        let link = div()
+            .id("about-github")
+            .text_size(px(font::BODY))
+            .text_color(rgb(colors.text_accent))
+            .cursor_pointer()
+            .hover(move |style| style.text_color(rgb(colors.text_accent_hover)))
+            .on_click(cx.listener(|this: &mut Launcher, _event, _window, cx| {
+                this.state
+                    .request_ui(UiRequest::OpenBrowser(GITHUB.to_string()));
+                this.refresh(cx);
+            }))
+            .child(GITHUB);
+        let body = div()
+            .v_flex()
+            .gap(px(space::MD))
+            .p(px(space::XL))
+            .rounded(px(radius::MD))
+            .bg(rgb(colors.surface))
+            .border(px(stroke::THIN))
+            .border_color(rgb(colors.border_default))
+            .w(px(layout::DIALOG))
+            .child(titlebar_label(colors, "Tessera Desktop"))
+            .child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.text_primary))
+                    .child("许可证：GPL-3.0-or-later"),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .gap(px(space::XXS))
+                    .child(
+                        div()
+                            .text_size(px(font::BODY))
+                            .text_color(rgb(colors.text_secondary))
+                            .child("GitHub："),
+                    )
+                    .child(link),
+            )
+            .child(div().h_flex().justify_end().child(button(
+                "关闭",
+                cx,
+                |this: &mut Launcher, cx| {
+                    this.close_about(cx);
+                },
+            )));
+        Some(
+            div()
+                .id("about-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(colors.backdrop))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, _| {}))
+                .on_mouse_down(MouseButton::Right, cx.listener(|_, _, _, _| {}))
+                .child(body)
+                .into_any_element(),
+        )
+    }
 }
 
 impl Render for Launcher {
@@ -757,7 +847,9 @@ impl Render for Launcher {
             }
         };
 
-        let overlay = self.uninstall_overlay(cx);
+        let overlay = self
+            .about_overlay(cx)
+            .or_else(|| self.uninstall_overlay(cx));
         let content = div()
             .v_flex()
             .flex_1()

@@ -177,6 +177,7 @@ mod mods;
 mod music;
 mod page_state;
 mod picker;
+mod repair;
 mod session_refresh;
 mod uninstall;
 

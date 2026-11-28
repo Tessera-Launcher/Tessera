@@ -451,6 +451,7 @@ impl Launcher {
     fn download_progress(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
         let download = &self.state.download;
+        let repairing = download.repairing.is_some();
         let mut body = div()
             .id("install-result")
             .v_flex()
@@ -467,7 +468,21 @@ impl Launcher {
                     .child(error.clone()),
             );
         }
-        if let Some((version, loader)) = &download.installed {
+        if let Some(repair) = &download.repair {
+            body = body
+                .child(
+                    div()
+                        .text_size(px(font::BODY))
+                        .text_color(rgb(colors.text_accent))
+                        .child(format!("修复完成：{}", repair.version)),
+                )
+                .child(
+                    div()
+                        .text_size(px(font::CAPTION))
+                        .text_color(rgb(colors.text_secondary))
+                        .child(repair.text()),
+                );
+        } else if let Some((version, loader)) = &download.installed {
             body = body.child(
                 div()
                     .text_size(px(font::BODY))
@@ -486,12 +501,16 @@ impl Launcher {
                     .child(summary.text()),
             );
         }
-        if download.summary.is_none() && download.error.is_none() {
+        if download.summary.is_none() && download.repair.is_none() && download.error.is_none() {
             body = body.child(
                 div()
                     .text_size(px(font::CAPTION))
                     .text_color(rgb(colors.text_secondary))
-                    .child("下载中，进度见上方日志"),
+                    .child(if repairing {
+                        "正在检查并修复文件，进度见上方日志"
+                    } else {
+                        "下载中，进度见上方日志"
+                    }),
             );
         }
 
@@ -500,7 +519,10 @@ impl Launcher {
             .flex_1()
             .min_h(px(0.0))
             .gap(px(space::MD))
-            .child(screen_title(colors, "安装"))
+            .child(screen_title(
+                colors,
+                if repairing { "修复" } else { "安装" },
+            ))
             .child(self.activity_log(colors, cx))
             .child(panel_fit(colors, "结果", body))
             .child(footer_bar(colors, &self.state.status).child(button(
