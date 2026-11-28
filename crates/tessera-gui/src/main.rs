@@ -5,6 +5,11 @@
 //! login, downloads, the game process) report through channels, and the state
 //! machine turns those reports into the next status line.
 
+// Explorer launches the executable directly instead of through a terminal.
+// Without this, Windows gives the console subsystem's window its own cmd box
+// next to the launcher.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
