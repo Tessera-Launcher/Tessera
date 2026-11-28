@@ -10,6 +10,7 @@ pub(crate) enum Key {
     Tab,
     BackTab,
     Enter,
+    Escape,
     Left,
     Right,
 }
@@ -23,10 +24,28 @@ pub(crate) fn gui_key(keystroke: &Keystroke) -> Option<Key> {
         "tab" => Key::Tab,
         "backtab" | "shift-tab" => Key::BackTab,
         "enter" => Key::Enter,
+        "escape" => Key::Escape,
         "left" => Key::Left,
         "right" => Key::Right,
         _ => return None,
     })
+}
+
+/// The Alt+letter mnemonics the menu bar prints in its labels, as an upper-case
+/// ASCII letter.
+///
+/// AltGr arrives as Alt+Ctrl on some layouts and `keystroke.key` is the composed
+/// character there, so anything that is not a single letter is left alone.
+pub(crate) fn gui_mnemonic(keystroke: &Keystroke) -> Option<char> {
+    if !keystroke.modifiers.alt || keystroke.modifiers.control || keystroke.modifiers.platform {
+        return None;
+    }
+    let mut letters = keystroke.key.chars();
+    let letter = letters.next()?;
+    if letters.next().is_some() || !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(letter.to_ascii_uppercase())
 }
 
 // ---- platform bits ----

@@ -1,7 +1,7 @@
 //! The event loop: keys, worker reports and the tasks they spawn.
 
 use super::*;
-use crate::platform::Key;
+use crate::platform::{gui_key, gui_mnemonic, Key};
 
 impl Launcher {
     /// Keyboard navigation for the custom-drawn UI.
@@ -16,6 +16,14 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Menu mnemonics come first: Alt+F must reach the title bar, not the
+        // focused text field or the focus walk.
+        if let Some(letter) = gui_mnemonic(&event.keystroke) {
+            if self.on_mnemonic(letter, cx) {
+                cx.notify();
+            }
+            return;
+        }
         let Some(code) = gui_key(&event.keystroke) else {
             return;
         };
@@ -28,6 +36,13 @@ impl Launcher {
             }
             Key::Enter => {
                 if focus::activate(cx, self, window) {
+                    cx.notify();
+                }
+            }
+            Key::Escape => {
+                // The only thing Escape has to undo so far is an open title bar
+                // menu; a page or a dialog of its own would take precedence.
+                if self.titlebar_menu.take().is_some() {
                     cx.notify();
                 }
             }

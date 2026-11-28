@@ -24,7 +24,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue}
 use gpui_kit::component::{TitleBar, TITLE_BAR_HEIGHT};
 use gpui_kit::*;
 
-use crate::platform::{copy_to_clipboard, gui_key, open_browser, open_folder};
+use crate::platform::{copy_to_clipboard, open_browser, open_folder};
 use crate::widgets::LogView;
 use tessera_core::app::{
     App as State, DownloadStage, Effect, JavaStage, LoginStep, MusicFocus, MusicKind, Screen,
@@ -153,6 +153,10 @@ struct Launcher {
     settings_path: std::path::PathBuf,
     /// `data/缓存`, the directory the settings page's cache button clears.
     cache_dir: std::path::PathBuf,
+    /// `data/`, the folder 文件 → 打开数据目录 shows.
+    data_root: std::path::PathBuf,
+    /// The open title bar menu, if one is down.
+    titlebar_menu: Option<TitlebarMenu>,
     /// The settings last written to disk, so a repaint that changes nothing does
     /// not rewrite the file.
     settings_saved: tessera_core::settings::Settings,
@@ -262,6 +266,7 @@ impl Launcher {
         }
         let settings_saved = state.settings.clone();
         let focus_screen = state.screen;
+        let data_root = data.root().to_path_buf();
         Self {
             state,
             client,
@@ -310,10 +315,21 @@ impl Launcher {
             memory_slider_sub: None,
             settings_path,
             cache_dir,
+            data_root,
+            titlebar_menu: None,
             settings_saved,
             focus_screen,
         }
     }
+}
+
+/// The menu bar entries. Only 文件 has rows so far; the rest open a note.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TitlebarMenu {
+    File,
+    Account,
+    Run,
+    Help,
 }
 
 #[derive(Clone, Copy)]
@@ -422,6 +438,200 @@ fn titlebar_button(
     button.child(titlebar_icon(icon, color))
 }
 
+/// The app name in the title bar.
+///
+/// Unifont ships one weight, so `font_weight` never changed a pixel here. For a
+/// bitmap face the honest bold is a second pass shifted one pixel right: the
+/// stems double in width and every edge stays on the device grid, which an
+/// emboldened outline could not promise. The characters are laid out one by one
+/// with a one pixel gap, because that second pass would otherwise fill the gap
+/// between two stems. One device pixel is the whole point here, so it is neither
+/// a spacing nor a border token.
+fn titlebar_label(colors: &'static color::Palette, text: &str) -> impl IntoElement {
+    let letters: Vec<String> = text.chars().map(|letter| letter.to_string()).collect();
+    div()
+        .h_flex()
+        .flex_shrink_0()
+        .gap(px(1.0))
+        .text_size(px(font::BODY))
+        .line_height(relative(font::LINE_HEIGHT_TITLE))
+        .text_color(rgb(colors.text_accent))
+        .children(letters.into_iter().map(|letter| {
+            div()
+                .relative()
+                .child(letter.clone())
+                .child(div().absolute().top(px(0.0)).left(px(1.0)).child(letter))
+        }))
+}
+
+/// One entry of the menu bar.
+///
+/// The label carries its mnemonic in parentheses — 文件(F) — and that is also
+/// what Alt+F presses.
+fn titlebar_menu(
+    id: &'static str,
+    label: &'static str,
+    colors: &'static color::Palette,
+    open: bool,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .h_full()
+        .flex()
+        .items_center()
+        .px(px(space::SM))
+        .text_size(px(font::BODY))
+        .line_height(relative(font::LINE_HEIGHT_TITLE))
+        .text_color(rgb(colors.text_primary))
+        .cursor_pointer()
+        .bg(rgb(if open { colors.hover } else { colors.canvas }))
+        .hover(move |style| style.bg(rgb(colors.hover)))
+        .on_click(cx.listener(move |this: &mut Launcher, _event, _window, cx| action(this, cx)))
+        .child(label)
+}
+
+/// One row of an open title bar menu.
+fn titlebar_menu_row(
+    id: &'static str,
+    label: &'static str,
+    colors: &'static color::Palette,
+    cx: &mut Context<Launcher>,
+    action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .h_flex()
+        .h(px(layout::CONTROL_HEIGHT))
+        .items_center()
+        .px(px(space::MD))
+        .text_size(px(font::BODY))
+        .line_height(relative(font::LINE_HEIGHT_TITLE))
+        .text_color(rgb(colors.text_primary))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(colors.hover)))
+        // Press, not click: the root closes an open menu on the same press, and
+        // the row has to run before that happens.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this: &mut Launcher, _event, _window, cx| action(this, cx)),
+        )
+        .child(label)
+}
+
+/// A row that only says the menu has nothing in it yet.
+fn titlebar_menu_note(label: &'static str, colors: &'static color::Palette) -> impl IntoElement {
+    div()
+        .h_flex()
+        .h(px(layout::CONTROL_HEIGHT))
+        .items_center()
+        .px(px(space::MD))
+        .text_size(px(font::BODY))
+        .line_height(relative(font::LINE_HEIGHT_TITLE))
+        .text_color(rgb(colors.text_secondary))
+        .child(label)
+}
+
+/// The dropdown below one menu bar entry.
+fn titlebar_menu_popup(
+    menu: TitlebarMenu,
+    colors: &'static color::Palette,
+    cx: &mut Context<Launcher>,
+) -> impl IntoElement {
+    let mut popup = div()
+        .absolute()
+        .top(TITLE_BAR_HEIGHT)
+        .left(px(0.0))
+        .v_flex()
+        .bg(rgb(colors.surface))
+        .border(px(stroke::THIN))
+        .border_color(rgb(colors.border_default))
+        .rounded(px(radius::SM))
+        .py(px(space::XS));
+    popup = match menu {
+        TitlebarMenu::File => popup.child(titlebar_menu_row(
+            "titlebar-menu-open-data",
+            "打开数据目录(O)…",
+            colors,
+            cx,
+            |this, cx| this.open_data_folder(cx),
+        )),
+        // The other three are still labels with nothing behind them. Say so in
+        // the menu instead of opening an empty rectangle.
+        TitlebarMenu::Account | TitlebarMenu::Run | TitlebarMenu::Help => {
+            popup.child(titlebar_menu_note("暂无可用项", colors))
+        }
+    };
+    popup
+}
+
+impl Launcher {
+    /// One menu bar entry with its dropdown when it is the open one.
+    fn titlebar_menu_entry(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        menu: TitlebarMenu,
+        colors: &'static color::Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.titlebar_menu == Some(menu);
+        let mut entry = div().relative().h_full().child(titlebar_menu(
+            id,
+            label,
+            colors,
+            open,
+            cx,
+            move |this, cx| this.toggle_titlebar_menu(menu, cx),
+        ));
+        if open {
+            // Deferred: the menu hangs over the page below, not under it in
+            // paint order.
+            entry = entry.child(deferred(titlebar_menu_popup(menu, colors, cx)));
+        }
+        entry
+    }
+
+    /// Toggle a title bar menu.
+    fn toggle_titlebar_menu(&mut self, menu: TitlebarMenu, cx: &mut Context<Self>) {
+        self.titlebar_menu = (self.titlebar_menu != Some(menu)).then_some(menu);
+        cx.notify();
+    }
+
+    /// Alt+letter, as printed in the menu labels.
+    ///
+    /// Returns whether the key belonged to the menu bar, so the focus walk never
+    /// sees a mnemonic it would otherwise ignore.
+    fn on_mnemonic(&mut self, letter: char, cx: &mut Context<Self>) -> bool {
+        // An open menu picks its own letters first: 文件 → 打开数据目录(O)…
+        if self.titlebar_menu == Some(TitlebarMenu::File) && letter == 'O' {
+            self.open_data_folder(cx);
+            return true;
+        }
+        let menu = match letter {
+            'F' => TitlebarMenu::File,
+            'A' => TitlebarMenu::Account,
+            'R' => TitlebarMenu::Run,
+            'H' => TitlebarMenu::Help,
+            _ => return false,
+        };
+        self.toggle_titlebar_menu(menu, cx);
+        true
+    }
+
+    /// 文件 → 打开数据目录(O)…
+    ///
+    /// The folder is the one holding 游戏/依赖/凭据, i.e. exactly what a user is
+    /// looking for when they want to inspect or move the launcher's data.
+    fn open_data_folder(&mut self, cx: &mut Context<Self>) {
+        self.titlebar_menu = None;
+        self.state
+            .request_ui(UiRequest::OpenFolder(self.data_root.clone()));
+        self.refresh(cx);
+    }
+}
+
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::colors(cx);
@@ -494,7 +704,10 @@ impl Render for Launcher {
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|_, _, _, cx| {
+                cx.listener(|this, _, _, cx| {
+                    // A click anywhere closes an open title bar menu. Rows act on
+                    // the mouse-down themselves, so they run before this does.
+                    let _ = this.titlebar_menu.take();
                     // A mouse click leaves keyboard mode; the pointer stays visible.
                     focus::clear(cx);
                 }),
@@ -512,11 +725,46 @@ impl Render for Launcher {
                     .child(
                         div()
                             .h_flex()
-                            .flex_1()
                             .h_full()
                             .items_center()
                             .gap(px(space::SM))
                             .pl(px(space::MD))
+                            .child(titlebar_label(colors, "Tessera Desktop"))
+                            .child(self.titlebar_menu_entry(
+                                "titlebar-menu-file",
+                                "文件(F)",
+                                TitlebarMenu::File,
+                                colors,
+                                cx,
+                            ))
+                            .child(self.titlebar_menu_entry(
+                                "titlebar-menu-account",
+                                "账户(A)",
+                                TitlebarMenu::Account,
+                                colors,
+                                cx,
+                            ))
+                            .child(self.titlebar_menu_entry(
+                                "titlebar-menu-run",
+                                "运行(R)",
+                                TitlebarMenu::Run,
+                                colors,
+                                cx,
+                            ))
+                            .child(self.titlebar_menu_entry(
+                                "titlebar-menu-help",
+                                "帮助(H)",
+                                TitlebarMenu::Help,
+                                colors,
+                                cx,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .id("titlebar-drag")
+                            .h_flex()
+                            .flex_1()
+                            .h_full()
                             // X11 and Wayland ignore `window_control_area` for
                             // dragging, so move the window on the mouse-down
                             // like gpui-component's own title bar does. Windows
@@ -524,38 +772,19 @@ impl Render for Launcher {
                             // `start_window_move` is a no-op, so keeping both
                             // paths is safe.
                             .window_control_area(WindowControlArea::Drag)
-                            .on_mouse_down(MouseButton::Left, |_, window, _| {
-                                window.start_window_move();
+                            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                // The second press of a double click is the
+                                // maximise gesture: grabbing the window for a
+                                // move would swallow it.
+                                if event.click_count < 2 {
+                                    window.start_window_move();
+                                }
                             })
-                            .child(
-                                // Unifont ships one weight, so `font_weight`
-                                // never changed a pixel here. For a bitmap face
-                                // the honest bold is a second pass shifted one
-                                // pixel right: the stems double in width and
-                                // every edge stays on the device grid, which an
-                                // emboldened outline could not promise. The
-                                // characters are laid out one by one with a one
-                                // pixel gap, because that second pass would
-                                // otherwise fill the gap between two stems. One
-                                // device pixel is the whole point here, so it is
-                                // neither a spacing nor a border token.
-                                div()
-                                    .h_flex()
-                                    .gap(px(1.0))
-                                    .text_size(px(font::BODY))
-                                    .line_height(relative(font::LINE_HEIGHT_TITLE))
-                                    .text_color(rgb(colors.text_accent))
-                                    .children("Tessera".chars().map(|letter| {
-                                        let letter = letter.to_string();
-                                        div().relative().child(letter.clone()).child(
-                                            div()
-                                                .absolute()
-                                                .top(px(0.0))
-                                                .left(px(1.0))
-                                                .child(letter),
-                                        )
-                                    })),
-                            ),
+                            .on_click(|event, window, _| {
+                                if event.click_count() == 2 {
+                                    window.zoom_window();
+                                }
+                            }),
                     )
                     .child(titlebar_button(
                         "titlebar-minimize",
