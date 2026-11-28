@@ -1,4 +1,5 @@
-//! Normalize downloaded jars: drop signatures and sealed-package attributes.
+//! Normalize downloaded jars: drop signatures, sealed-package attributes and
+//! the per-entry manifest sections that signing left behind.
 //!
 //! MDT used to rewrite every jar while it still moved the bytes itself. Since
 //! downloads moved to aria2, the raw Mojang jar is what lands on disk — signed,
@@ -24,12 +25,15 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-/// Strip JAR signatures and `Sealed:` attributes from `path`, in place.
+/// Strip JAR signatures, `Sealed:` attributes and per-entry manifest sections
+/// from `path`, in place.
 ///
 /// Returns `true` when the file was rewritten. Signature entries (`META-INF/*.SF`,
-/// `*.RSA`, `*.DSA`, `*.EC`) are dropped; the manifest keeps everything except
-/// its `Sealed:` lines. Entry order and compression are preserved. The original
-/// jar is replaced, not copied aside.
+/// `*.RSA`, `*.DSA`, `*.EC`) are dropped. The manifest keeps only its main
+/// section, without `Sealed:` lines: the `Name:` sections that carry per-entry
+/// digests are signing residue, and a training run on a jar that still has them
+/// stalls in the JVM's AOT recorder. Entry order and compression are preserved.
+/// The original jar is replaced, not copied aside. A second run is a no-op.
 pub(crate) fn normalize(path: &Path) -> Result<bool> {
     let archive = zip::ZipArchive::new(BufReader::new(open(path)?))
         .map_err(|error| Error::invalid(format!("无法解析 {}: {error}", path.display())))?;
@@ -57,7 +61,7 @@ fn needs_normalizing(mut archive: zip::ZipArchive<BufReader<File>>) -> Result<bo
             entry
                 .read_to_string(&mut text)
                 .map_err(|error| Error::invalid(format!("无法读取 {name}: {error}")))?;
-            if seals_a_package(&text) {
+            if needs_cleaning(&text) {
                 return Ok(true);
             }
         }
@@ -139,7 +143,7 @@ fn write_normalized(source: &Path, tmp: &Path) -> Result<()> {
                 .start_file(&name, options)
                 .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
             writer
-                .write_all(unsealed(&text).as_bytes())
+                .write_all(cleaned_manifest(&text).as_bytes())
                 .map_err(|error| Error::invalid(format!("无法写入 jar 条目 {name}: {error}")))?;
             continue;
         }
@@ -238,20 +242,46 @@ fn is_signature_entry(name: &str) -> bool {
             || upper.ends_with(".EC"))
 }
 
-fn seals_a_package(manifest: &str) -> bool {
-    manifest
-        .lines()
-        .any(|line| line.trim().to_ascii_lowercase().starts_with("sealed:"))
+fn is_sealed(line: &str) -> bool {
+    line.trim().to_ascii_lowercase().starts_with("sealed:")
 }
 
-/// The manifest without its `Sealed:` lines, newline endings preserved.
-fn unsealed(manifest: &str) -> String {
+/// A `Name:` header starts a per-entry section; it never begins a continuation
+/// line, which is always indented.
+fn is_section_header(line: &str) -> bool {
+    line.as_bytes()
+        .get(..5)
+        .is_some_and(|head| head.eq_ignore_ascii_case(b"name:"))
+}
+
+/// Whether the manifest has anything [`cleaned_manifest`] would remove.
+fn needs_cleaning(manifest: &str) -> bool {
+    manifest
+        .lines()
+        .any(|line| is_sealed(line) || is_section_header(line))
+}
+
+/// The manifest's main section without `Sealed:` lines, newline endings kept.
+///
+/// The main section ends at the first blank line; everything after it is a
+/// per-entry section and is dropped. Nothing is added to the main section, so
+/// `Main-Class` and this launcher's own attributes survive unchanged.
+fn cleaned_manifest(manifest: &str) -> String {
     let mut out = String::with_capacity(manifest.len());
     for line in manifest.split_inclusive('\n') {
-        if line.trim().to_ascii_lowercase().starts_with("sealed:") {
+        if line.trim_end_matches(['\r', '\n']).is_empty() {
+            break;
+        }
+        if is_sealed(line) {
             continue;
         }
         out.push_str(line);
+    }
+    if out.is_empty() {
+        return "Manifest-Version: 1.0\n".to_string();
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
     }
     out
 }
@@ -312,9 +342,60 @@ mod tests {
         let text = manifest(&path);
         assert!(!text.to_ascii_lowercase().contains("sealed:"));
         assert!(
-            text.contains("SHA-256-Digest"),
-            "digests are harmless alone"
+            !text.contains("Name:"),
+            "per-entry sections are gone: {text}"
         );
+        assert!(!text.contains("SHA-256-Digest"), "{text}");
+        assert!(text.contains("Manifest-Version: 1.0"), "{text}");
+    }
+
+    #[test]
+    fn per_entry_digest_sections_are_removed_from_an_unsigned_jar() {
+        // The Mojang client jar has per-entry digests and no signature files.
+        // Those sections alone stall the JVM's AOT recorder, so they go too.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("client.jar");
+        jar(
+            &path,
+            &[
+                (
+                    "META-INF/MANIFEST.MF",
+                    b"Manifest-Version: 1.0\r\nMain-Class: net.minecraft.client.Main\r\n\r\nName: a/B.class\r\nSHA-384-Digest: x\r\n\r\n",
+                ),
+                ("a/B.class", b"CAFEBABE"),
+            ],
+        );
+
+        assert!(normalize(&path).unwrap());
+
+        let text = manifest(&path);
+        assert_eq!(
+            text,
+            "Manifest-Version: 1.0\r\nMain-Class: net.minecraft.client.Main\r\n"
+        );
+        assert!(names(&path).contains(&"a/B.class".to_string()));
+    }
+
+    #[test]
+    fn normalizing_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("client.jar");
+        jar(
+            &path,
+            &[
+                (
+                    "META-INF/MANIFEST.MF",
+                    b"Manifest-Version: 1.0\nSealed: true\n\nName: a.class\nSHA-256-Digest: x\n",
+                ),
+                ("META-INF/MOJANGCS.RSA", b"\x30\x82"),
+                ("a.class", b"CAFEBABE"),
+            ],
+        );
+
+        assert!(normalize(&path).unwrap());
+        let once = fs::read(&path).unwrap();
+        assert!(!normalize(&path).unwrap(), "already clean: no rewrite");
+        assert_eq!(fs::read(&path).unwrap(), once);
     }
 
     #[test]

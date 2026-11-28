@@ -67,6 +67,10 @@ struct AotMeta {
     /// Caches trained by older launchers recorded absolute class paths.
     #[serde(default)]
     classpath_relative: bool,
+    /// Size of the client jar when training ran. A jar rewritten since (the
+    /// normalization that drops signing residue) no longer matches the cache.
+    #[serde(default)]
+    unsigned_jar_size: Option<u64>,
 }
 
 fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> AotLookup {
@@ -104,8 +108,14 @@ fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Ao
     };
     let unsigned_jar = version_dir.join(&meta.unsigned_jar);
     let agent = version_dir.join(&meta.agent);
-    if !unsigned_jar.is_file() {
+    let Ok(jar_meta) = std::fs::metadata(&unsigned_jar) else {
         return AotLookup::Broken(format!("缺少 {}", meta.unsigned_jar));
+    };
+    if meta.unsigned_jar_size != Some(jar_meta.len()) {
+        return AotLookup::Broken(format!(
+            "{} 在训练后被改写过，AOT 缓存已过期，请重新训练",
+            meta.unsigned_jar
+        ));
     }
     if !agent.is_file() {
         return AotLookup::Broken(format!("缺少 {}", meta.agent));

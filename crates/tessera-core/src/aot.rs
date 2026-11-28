@@ -423,10 +423,17 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         .map_err(|error| Error::io(format!("无法替换 {}", cache.display()), error))?;
     let _ = fs::remove_dir_all(&work_abs);
 
+    // The class path check compares the jar the JVM sees with the one it was
+    // trained on, so the size is recorded. Launch refuses a cache whose jar has
+    // changed since, instead of letting the JVM reject it silently.
+    let unsigned_jar_size = fs::metadata(&training_jar)
+        .map_err(|error| Error::io(format!("无法读取 {}", training_jar.display()), error))?
+        .len();
     let meta = serde_json::json!({
         "java_major": java.major,
         "java_version": java.version,
         "unsigned_jar": training_jar.file_name().and_then(|name| name.to_str()),
+        "unsigned_jar_size": unsigned_jar_size,
         "agent": agent.file_name().and_then(|name| name.to_str()),
         "code_entries": code_entries,
         "classpath_relative": true,
@@ -932,7 +939,11 @@ mod tests {
         let mut tail = TextTail::default();
         std::fs::write(&path, format!("a{}", "中".repeat(10))).unwrap();
         assert!(!tail.contains(&path, "Sound engine started"));
-        std::fs::write(&path, format!("a{}\nSound engine started\n", "中".repeat(10))).unwrap();
+        std::fs::write(
+            &path,
+            format!("a{}\nSound engine started\n", "中".repeat(10)),
+        )
+        .unwrap();
         assert!(tail.contains(&path, "Sound engine started"));
     }
 

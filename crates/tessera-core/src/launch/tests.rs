@@ -134,7 +134,7 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
     std::fs::write(&agent, b"agent").unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
-        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar","unsigned_jar_size":22}"#,
     )
     .unwrap();
     let ready = aot_status(&version_dir, "1.8.9", &runtimes)
@@ -156,13 +156,36 @@ fn aot_status_explains_why_a_trained_cache_would_be_ignored() {
     std::fs::write(&unsigned, EMPTY_JAR).unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
-        r#"{"java_major":25,"java_version":"25.0.5+8","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        r#"{"java_major":25,"java_version":"25.0.5+8","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar","unsigned_jar_size":22}"#,
     )
     .unwrap();
     let missing = aot_status(&version_dir, "1.8.9", &runtimes)
         .unwrap()
         .unwrap_err();
     assert!(missing.to_string().contains("25.0.5+8"), "{missing}");
+}
+
+#[test]
+fn a_cache_whose_jar_was_rewritten_since_training_is_stale() {
+    let tmp = tempfile::tempdir().unwrap();
+    fixture(tmp.path());
+    let runtimes = managed_runtime(tmp.path(), 28);
+    let version_dir = tmp.path().join("versions/1.8.9");
+    std::fs::write(version_dir.join("1.8.9.aot"), b"cache").unwrap();
+    std::fs::write(version_dir.join("1.8.9.unsigned.jar"), EMPTY_JAR).unwrap();
+    std::fs::write(version_dir.join("1.8.9.aot-agent.jar"), b"agent").unwrap();
+    // Trained on a 100-byte jar; the file on disk is EMPTY_JAR (22 bytes).
+    std::fs::write(
+        version_dir.join("1.8.9.aot.json"),
+        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar","unsigned_jar_size":100}"#,
+    )
+    .unwrap();
+
+    let stale = aot_status(&version_dir, "1.8.9", &runtimes)
+        .unwrap()
+        .unwrap_err();
+    assert!(stale.to_string().contains("重新训练"), "{stale}");
+    assert!(aot_cache(&version_dir, "1.8.9", &runtimes).is_none());
 }
 
 #[test]
@@ -201,7 +224,7 @@ fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
     std::fs::write(&agent, b"agent").unwrap();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
-        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar","unsigned_jar_size":22}"#,
     )
     .unwrap();
 
@@ -1426,9 +1449,12 @@ fn a_trained_lwjgl3_version_replays_its_cache_from_the_unsigned_jar() {
     )
     .unwrap();
     std::fs::write(version_dir.join("1.8.9.aot-agent.jar"), b"agent").unwrap();
+    let jar_size = std::fs::metadata(version_dir.join("1.8.9.unsigned.jar"))
+        .unwrap()
+        .len();
     std::fs::write(
         version_dir.join("1.8.9.aot.json"),
-        r#"{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar"}"#,
+        format!(r#"{{"java_major":28,"java_version":"28.0.1+1","unsigned_jar":"1.8.9.unsigned.jar","agent":"1.8.9.aot-agent.jar","unsigned_jar_size":{jar_size}}}"#),
     )
     .unwrap();
 
