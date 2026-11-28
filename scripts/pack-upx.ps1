@@ -34,6 +34,15 @@ if (-not $upx) {
     throw "upx.exe not found in $archive"
 }
 
+# The build cache can restore an executable that an earlier run already packed,
+# and UPX refuses to pack a file twice. A packed binary carries the `UPX0` and
+# `UPX1` section headers, so detect those and leave the file alone.
+$image = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($target))
+if ($image.Contains('UPX0') -and $image.Contains('UPX1')) {
+    Write-Host "UPX: $Path is already packed, skipping"
+    return
+}
+
 $before = (Get-Item -LiteralPath $target).Length
 & $upx.FullName --best --lzma $target
 if ($LASTEXITCODE -ne 0) {

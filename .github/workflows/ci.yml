@@ -55,8 +55,27 @@ jobs:
           toolchain: 1.100.0
           components: rustfmt, clippy
 
-      - name: Cache Rust build
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Registry and bin caches only. This action drops the build artifacts
+          # of every package whose manifest lives inside the workspace root,
+          # which is exactly what the `vendor/` path patches are, so a target
+          # directory saved by it can never be reused by the next run.
+          cache-targets: false
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          # Rolling key: every run saves a fresh entry, so the restored target
+          # directory always contains what the previous run built. The prefix
+          # only covers dependency inputs (lockfile, vendored manifests,
+          # toolchain) so a restore never crosses a dependency change.
+          key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-
+            rust-target-${{ runner.os }}-${{ github.job }}-
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -95,8 +114,19 @@ jobs:
         with:
           toolchain: 1.100.0
 
-      - name: Cache Rust build
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-
+            rust-target-${{ runner.os }}-${{ github.job }}-
 
       - name: Install ALSA headers
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev

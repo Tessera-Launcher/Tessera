@@ -37,8 +37,19 @@ jobs:
         with:
           toolchain: 1.100.0
 
-      - name: Cache Rust build
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-
+            rust-target-${{ runner.os }}-${{ github.job }}-
 
       - name: Install ALSA headers
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
@@ -66,8 +77,19 @@ jobs:
           toolchain: 1.100.0
           components: rustfmt, clippy
 
-      - name: Cache Rust build
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-
+            rust-target-${{ runner.os }}-${{ github.job }}-
 
       - name: Verify tag matches Cargo version
         shell: pwsh
