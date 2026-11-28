@@ -244,6 +244,7 @@ fn remote(id: &str, kind: &str) -> RemoteVersion {
 
 fn downloader() -> App {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
+    aria2_ready(&mut app);
     app.open_download();
     app.handle_install_event(InstallEvent::Versions(vec![
         remote("1.20.1", "release"),
@@ -254,4 +255,11 @@ fn downloader() -> App {
 
 fn type_search(app: &mut App, text: &str) {
     app.set_download_query(text);
+}
+
+/// Pretend the download engine is installed, the way `refresh_aria2` reports it
+/// after probing `<data>/依赖/aria2`.
+fn aria2_ready(app: &mut App) {
+    app.aria2.path = Some(PathBuf::from("/deps/aria2/aria2c"));
+    app.aria2.installed = Some(crate::aria2::VERSION.to_string());
 }

@@ -69,6 +69,16 @@ impl App {
         self.refresh_aria2();
     }
 
+    /// Whether the download engine is on disk.
+    ///
+    /// Both the install and the repair worker move every byte through
+    /// `aria2c`, so this is what decides whether the download page has anything
+    /// to offer. [`Self::refresh_aria2`] owns the answer: it probes at startup and
+    /// after the card installs a new build, so this never touches the disk twice.
+    pub fn aria2_ready(&self) -> bool {
+        self.aria2.path.is_some()
+    }
+
     /// Re-probe the installed binary. One `--version` run, nothing else.
     pub fn refresh_aria2(&mut self) {
         let Some(path) = crate::aria2::installed(&self.dependencies) else {

@@ -4,7 +4,7 @@ use super::*;
 
 /// The sidebar's pages, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Page {
+pub(crate) enum Page {
     Home,
     Accounts,
     Download,
@@ -116,7 +116,10 @@ impl Page {
 impl Launcher {
     /// Switch screens from the sidebar. Clicking the active page is a no-op so
     /// it never resets the screen's own state (a running install, a picker).
-    fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+    ///
+    /// `pub(crate)` because a screen can also send the player to another page:
+    /// the download page does it when the reason it is unusable lives elsewhere.
+    pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         // Leaving the login overlay by switching pages cancels that flow; every
         // other page keeps its state, which is the point of a sidebar.
         if self.state.screen == Screen::Login {

@@ -5,6 +5,7 @@ use super::*;
 /// A picker whose "全部" list contains a real snapshot cycle.
 fn tree_picker() -> App {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
+    aria2_ready(&mut app);
     app.open_download();
     app.handle_install_event(InstallEvent::Versions(vec![
         remote("1.21.8", "release"),
@@ -106,8 +107,42 @@ fn uninstall_plan_only_exists_while_a_confirmation_is_pending() {
 #[test]
 fn opening_the_picker_asks_for_the_version_list() {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
+    aria2_ready(&mut app);
     app.open_download();
     assert_eq!(app.screen, Screen::Download);
+    assert_eq!(app.download.stage, DownloadStage::LoadingVersions);
+    assert!(has_fetch_versions(&app));
+}
+
+#[test]
+fn the_download_list_stays_shut_without_the_engine() {
+    // Every install is one `aria2c` run, so without the binary the page has
+    // nothing to offer — the Modrinth page's rule for a non-Fabric instance.
+    let mut app = App::new("/mc", "/acc", vec![], vec![]);
+    app.open_download();
+    assert_eq!(app.screen, Screen::Download);
+    assert_eq!(app.download.stage, DownloadStage::Unavailable);
+    assert!(
+        app.download
+            .blocked
+            .as_deref()
+            .is_some_and(|reason| reason.contains("aria2")),
+        "{:?}",
+        app.download.blocked
+    );
+    // There is no list to fill, so there is nothing to fetch.
+    assert!(app.download.all.is_empty());
+    assert!(!has_fetch_versions(&app));
+
+    // The button the page used to offer cannot start anything either.
+    app.start_install();
+    assert!(!app.install_running);
+    assert_eq!(app.download.stage, DownloadStage::Unavailable);
+
+    // With the engine installed, the same call lands on the picker.
+    aria2_ready(&mut app);
+    app.open_download();
+    assert!(app.download.blocked.is_none());
     assert_eq!(app.download.stage, DownloadStage::LoadingVersions);
     assert!(has_fetch_versions(&app));
 }
@@ -131,6 +166,7 @@ fn the_version_list_arrives_and_loaders_are_filtered_per_version() {
 
 fn mixed_picker() -> App {
     let mut app = App::new("/mc", "/acc", vec![], vec![]);
+    aria2_ready(&mut app);
     app.open_download();
     app.handle_install_event(InstallEvent::Versions(vec![
         remote("1.20.1", "release"),

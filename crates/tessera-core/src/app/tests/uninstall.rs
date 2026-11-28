@@ -346,7 +346,9 @@ fn the_exit_code_of_a_game_session_is_reported() {
     assert_eq!(app.status, "1.20.1 已退出");
     // The line names the process, so two runs of one version are told apart.
     assert!(
-        app.log.iter().any(|line| line == "1.20.1（pid 4242）已退出"),
+        app.log
+            .iter()
+            .any(|line| line == "1.20.1（pid 4242）已退出"),
         "{:?}",
         app.log
     );

@@ -10,11 +10,72 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         match self.state.download.stage {
+            DownloadStage::Unavailable => self.download_unavailable(cx).into_any_element(),
             DownloadStage::Picking | DownloadStage::LoadingVersions => {
                 self.download_picker(window, cx).into_any_element()
             }
             _ => self.download_progress(cx).into_any_element(),
         }
+    }
+
+    /// The download page when the engine is missing.
+    ///
+    /// Every install and every repair is one `aria2c` run, so a version list here
+    /// would be a 安装 button that cannot work. Same shape as the Modrinth page
+    /// without a Fabric instance: say why, and point at the fix.
+    fn download_unavailable(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::colors(cx);
+        let status = self.state.status.clone();
+        let reason = self
+            .state
+            .download
+            .blocked
+            .clone()
+            .unwrap_or_else(|| "还没安装 aria2c，下载列表不可用".to_string());
+        let mut actions = div().h_flex().gap(px(space::SM));
+        if self.state.aria2.build.is_some() {
+            actions = actions.child(primary_button(
+                "安装 aria2",
+                cx,
+                |this: &mut Launcher, cx| {
+                    this.state.start_aria2_install();
+                    this.navigate(crate::sidebar::Page::Runtimes, cx);
+                },
+            ));
+        }
+        actions = actions.child(button("返回主页", cx, |this: &mut Launcher, cx| {
+            this.state.show_main();
+            this.refresh(cx);
+        }));
+
+        let body = div()
+            .v_flex()
+            .gap(px(space::MD))
+            .p(px(space::LG))
+            .child(
+                div()
+                    .text_size(px(font::BODY))
+                    .text_color(rgb(colors.status_warning))
+                    .child(reason),
+            )
+            .child(
+                div()
+                    .text_size(px(font::CAPTION))
+                    .text_color(rgb(colors.text_secondary))
+                    .child("下载和修复都由 aria2 执行；装好之后这个页面会照常显示版本列表。"),
+            )
+            .child(actions);
+
+        div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap(px(space::MD))
+            .child(screen_title(colors, "下载"))
+            .child(div().w(px(520.0)).child(panel_fit(colors, "不可用", body)))
+            .child(div().flex_1())
+            .child(footer_bar(colors, &status))
+            .into_any_element()
     }
 
     fn filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

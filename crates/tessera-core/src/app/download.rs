@@ -57,6 +57,8 @@ impl VersionFilter {
 pub enum DownloadStage {
     /// Waiting for the mirror's version list.
     LoadingVersions,
+    /// The download engine is missing, so there is no list to show.
+    Unavailable,
     Picking,
     Installing,
     Done,
@@ -159,6 +161,9 @@ pub struct DownloadUi {
     pub repairing: Option<String>,
     /// The result shown once a repair finishes.
     pub repair: Option<RepairSummary>,
+    /// Why the page cannot be used at all, when the download engine is missing.
+    /// `None` whenever [`DownloadStage::Unavailable`] is not the stage.
+    pub blocked: Option<String>,
     fetching: bool,
 }
 
@@ -181,6 +186,7 @@ impl Default for DownloadUi {
             summary: None,
             repairing: None,
             repair: None,
+            blocked: None,
             fetching: false,
         }
     }
@@ -326,6 +332,25 @@ impl App {
         self.set_source(self.source.next());
     }
 
+    /// Why the download page cannot be used, when the engine is missing.
+    ///
+    /// `None` when aria2 is installed. The reason is user-facing and names the
+    /// page the binary is one click away on, because the picker is not a place
+    /// where anything can be done about it.
+    pub fn download_blocked(&self) -> Option<String> {
+        if self.aria2_ready() {
+            return None;
+        }
+        Some(if self.aria2.build.is_some() {
+            format!(
+                "还没安装 aria2c，下载列表暂时不可用。先在依赖页安装 aria2 {}",
+                crate::aria2::VERSION
+            )
+        } else {
+            "还没安装 aria2c，而且当前平台没有固定构建，下载列表暂时不可用".to_string()
+        })
+    }
+
     /// Open the picker and ask the main loop to fetch the version list.
     /// Show the download page, keeping what it already holds.
     ///
@@ -341,6 +366,17 @@ impl App {
             return;
         }
         self.screen = Screen::Download;
+        // Every install — and every repair — is one `aria2c` run, so the list
+        // without the engine is a picker whose 安装 button cannot work. The page
+        // says that instead of offering versions, the same way the Modrinth page
+        // refuses an instance that is not Fabric.
+        if let Some(reason) = self.download_blocked() {
+            self.download.blocked = Some(reason.clone());
+            self.download.stage = DownloadStage::Unavailable;
+            self.status = reason;
+            return;
+        }
+        self.download.blocked = None;
         // Never loaded, or the last fetch failed: the list is what the page is
         // for, so ask for it. A request still in flight is left alone.
         if self.download.all.is_empty() && !self.download.fetching {
@@ -424,10 +460,20 @@ impl App {
             self.status = "已有安装正在进行".to_string();
             return;
         }
-        let Some(version) = self.download.picked_version() else {
+        // The picker cannot be reached without the engine, but a front-end (or a
+        // stale window) can still press the button on a page that no longer has
+        // a working download path.
+        if let Some(reason) = self.download_blocked() {
+            self.download.blocked = Some(reason.clone());
+            self.download.stage = DownloadStage::Unavailable;
+            self.status = reason.clone();
+            self.log(reason);
+            return;
+        }
+        let Some(version) = self.download.picked_version().map(|v| v.id.clone()) else {
             return;
         };
-        let version = version.id.clone();
+        self.download.blocked = None;
         let loader = self.download.picked_loader();
         self.install_running = true;
         self.download.stage = DownloadStage::Installing;
