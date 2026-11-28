@@ -1,11 +1,11 @@
 //! Voluntary AOT-cache training for vanilla versions.
 //!
 //! Minecraft runs on a JDK with Project Leyden's AOT cache. Training launches
-//! the game once with `-XX:AOTCacheOutput`, records class loading, and — when
-//! the JVM exits — assembles a cache next to the version jar. A later launch
-//! maps that cache instead of reading thousands of class files from jars; the
-//! metadata beside it records the exact JVM build, and `launch` only uses the
-//! cache while that same build is installed.
+//! the game once with `-XX:AOTMode=record`, records class loading into an AOT
+//! configuration, and then assembles a cache next to the version jar. A later
+//! launch maps that cache instead of reading thousands of class files from
+//! jars; the metadata beside it records the exact JVM build, and `launch` only
+//! uses the cache while that same build is installed.
 //!
 //! Training is started by the player (the button next to 启动), never by an
 //! install: the cache is large, it has to be rebuilt after a Java upgrade, and
@@ -19,15 +19,18 @@
 //! guess at that, and guessing wrong throws the code away. The launcher asks
 //! instead, and only ever kills the game when the player cancels.
 //!
-//! Quitting the game is not the end of the worker. The JVM forks a second
-//! process that compiles the recorded code and writes the cache, and waits for
-//! it; on a modest CPU that is minutes of work after the window is gone. The
-//! JVM announces it on stdout, which is what the launcher reports and what
-//! `ASSEMBLY_TIMEOUT` is measured from.
+//! Quitting the game is not the end of the worker. The launcher then starts a
+//! second JVM that compiles the recorded code and writes the cache; on a modest
+//! CPU that is minutes of work after the window is gone. `ASSEMBLY_TIMEOUT` is
+//! measured from that second JVM's start. Running the assembly ourselves, rather
+//! than relying on the JVM's `-XX:AOTCacheOutput` child process, keeps training
+//! working on Windows: HotSpot launches that child through a narrow command
+//! line, which cannot represent the non-ASCII data paths Tessera uses.
 //!
 //! A new cache is written to `<version>.aot.new` and only replaces the previous
-//! one once the JVM has exited and the file is complete. A cancelled or failed
-//! run therefore leaves a working cache alone instead of deleting it up front.
+//! one once the assembly JVM has exited and the file is complete. A cancelled
+//! or failed run therefore leaves a working cache alone instead of deleting it
+//! up front.
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -52,21 +55,12 @@ const MENU_MARKERS: [&str; 3] = [
     "OpenAL initialized",
     "[tessera] window up",
 ];
-/// The JVM prints one of these when the game's main loop has ended and it is
-/// about to fork the process that assembles the cache. They arrive on stdout,
-/// which the worker already drains for the menu markers.
-const ASSEMBLY_START_MARKERS: [&str; 2] = [
-    "Temporary AOTConfiguration recorded",
-    "Launching child process",
-];
 /// How often the assembly phase reports its elapsed time.
 const ASSEMBLY_REPORT: Duration = Duration::from_secs(5);
 /// Hard cap for the cache-assembly phase.
 ///
 /// The game itself has no cap: it runs until the player closes it. The clock
-/// starts when the JVM says it is assembling, not when the game process exits:
-/// the parent waits for its forked assembler, so a wait that only starts at
-/// exit would never cover the work it is meant to bound.
+/// starts when the launcher starts the assembly JVM, after the game has exited.
 const ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// What the training worker reports.
@@ -91,7 +85,7 @@ pub enum Event {
     },
     Assembling {
         version: String,
-        /// Seconds since the JVM announced that it was assembling the cache.
+        /// Seconds since the launcher started assembling the cache.
         elapsed_secs: u64,
     },
     Finished {
@@ -223,18 +217,22 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         total,
     });
 
-    args.insert(0, format!("-XX:AOTCacheOutput={}", staging.display()));
+    // Record class loading and compiled code into a configuration. The
+    // assembly that turns it into a cache is a separate JVM we start ourselves
+    // after the game exits; see the module docs for why this is not left to
+    // `-XX:AOTCacheOutput`.
     args.insert(
-        1,
+        0,
+        format!("-XX:AOTConfiguration={}", staging_config.display()),
+    );
+    args.insert(1, "-XX:AOTMode=record".to_string());
+    args.insert(
+        2,
         format!("-Xlog:class+load=info:file={}", class_log.display()),
     );
-    // JEP 544 writes compiled code into this same cache. No flag is needed: the
-    // ergonomics of `-XX:AOTCacheOutput` turn code caching on, and replay always
-    // picks the code up. Logging the assembly tells us whether the run actually
-    // produced code or only classes.
-    args.insert(2, format!("-Xlog:aot=info:file={}", aot_log.display()));
-    args.insert(3, format!("-javaagent:{}", agent.display()));
-    args.insert(4, "-Dtessera.aot.preload=1".to_string());
+    args.insert(3, format!("-Xlog:aot=info:file={}", aot_log.display()));
+    args.insert(4, format!("-javaagent:{}", agent.display()));
+    args.insert(5, "-Dtessera.aot.preload=1".to_string());
     if cancel.load(Ordering::Relaxed) {
         return Err(Error::process("启动器退出，AOT 训练已取消"));
     }
@@ -247,23 +245,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // The JVM forks a second JVM to assemble the cache. Giving the game
-        // its own process group means a cancel can take both down instead of
-        // orphaning an assembler that keeps writing after the window is gone.
-        command.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        // `java.exe` is a console binary. Without this flag Windows gives it a
-        // fresh console window next to the launcher even though both of its
-        // stdio streams are redirected. The game's own window is unaffected.
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    isolate_process(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| Error::process(format!("无法启动 AOT 训练：{error}")))?;
@@ -271,14 +253,12 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     // 1.0–1.5.2 do not write one at all: their progress only shows up on
     // stdout, which used to be discarded.
     let menu_line = Arc::new(AtomicBool::new(false));
-    let assembly_line = Arc::new(AtomicBool::new(false));
     if let Some(stdout) = child.stdout.take() {
         let menu_line = menu_line.clone();
-        let assembly_line = assembly_line.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(stdout);
-            // Keep draining to EOF even after the markers: an unread pipe fills
+            // Keep draining to EOF even after the marker: an unread pipe fills
             // up and the game would block in the middle of drawing its menu.
             for line in reader.lines().map_while(|line| line.ok()) {
                 if !menu_line.load(Ordering::Relaxed)
@@ -286,33 +266,25 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
                 {
                     menu_line.store(true, Ordering::Relaxed);
                 }
-                if !assembly_line.load(Ordering::Relaxed) && is_assembly_start(&line) {
-                    assembly_line.store(true, Ordering::Relaxed);
-                }
             }
         });
     }
 
     let mut last_report = Instant::now();
     let mut menu_seen: Option<Instant> = None;
-    let mut assembly_started: Option<Instant> = None;
-    let mut last_assembly_report: Option<Instant> = None;
     let mut class_log_tail = ClassLogTail::default();
     let mut game_log_tail = TextTail::default();
-    let mut last_loaded: usize;
     // Only the player ends the game run: the longer the game stays up, the more
     // classes and compiled code the cache collects, and no clock in the
-    // launcher can tell when they have seen enough. The cache assembly that
-    // follows has its own cap, measured from the JVM's own announcement.
+    // launcher can tell when they have seen enough. The assembly that follows
+    // has its own cap.
     loop {
         if cancel.load(Ordering::Relaxed) {
             terminate_and_reap(&mut child);
             return Err(Error::process("启动器退出，AOT 训练已取消"));
         }
         let loaded = class_log_tail.count(&class_log);
-        last_loaded = loaded;
         if menu_seen.is_none()
-            && assembly_started.is_none()
             && (menu_line.load(Ordering::Relaxed)
                 || game_log_tail.contains(&game_log, "Sound engine started"))
         {
@@ -323,34 +295,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
                 total,
             });
         }
-        if assembly_started.is_none() && assembly_line.load(Ordering::Relaxed) {
-            let started = Instant::now();
-            assembly_started = Some(started);
-            last_assembly_report = Some(started);
-            let _ = sender.send(Event::Assembling {
-                version: version.to_string(),
-                elapsed_secs: 0,
-            });
-        } else if let Some(started) = assembly_started {
-            let now = Instant::now();
-            if last_assembly_report.is_none_or(|last| now - last >= ASSEMBLY_REPORT) {
-                last_assembly_report = Some(now);
-                let _ = sender.send(Event::Assembling {
-                    version: version.to_string(),
-                    elapsed_secs: started.elapsed().as_secs(),
-                });
-            }
-            if now - started > ASSEMBLY_TIMEOUT {
-                terminate_and_reap(&mut child);
-                return Err(Error::process(format!(
-                    "组装 AOT 缓存超过 {} 分钟，已停止训练",
-                    ASSEMBLY_TIMEOUT.as_secs() / 60
-                )));
-            }
-        }
-        // The assembler takes over the progress readout; a class count that is
-        // no longer moving must not overwrite its status.
-        if assembly_started.is_none() && last_report.elapsed() >= Duration::from_millis(200) {
+        if last_report.elapsed() >= Duration::from_millis(200) {
             last_report = Instant::now();
             let _ = sender.send(Event::Progress {
                 version: version.to_string(),
@@ -366,11 +311,73 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    // The parent JVM waits for its assembler, so reaching here means the
-    // assembly is over (or failed). The cache-assembly JVM is launched with the
-    // same `-Xlog:...:file=` option and truncates the class log, so use the
-    // count captured before termination.
-    let loaded = last_loaded;
+    let loaded = class_log_tail.count(&class_log);
+    // The training JVM records a configuration; assembling it into a cache is
+    // our job. Waiting on the JVM to do that itself breaks on Windows because
+    // HotSpot launches its assembly child through a narrow command line.
+    if !staging_config.is_file() {
+        let detail = aot_failure_detail(&aot_log);
+        let _ = fs::remove_file(&class_log);
+        return Err(Error::process(format!(
+            "训练结束但没有生成 AOT 配置（{detail}）"
+        )));
+    }
+    // Start a fresh assembly log for the second JVM.
+    let _ = fs::remove_file(&aot_log);
+    let _ = sender.send(Event::Assembling {
+        version: version.to_string(),
+        elapsed_secs: 0,
+    });
+
+    let mut assembly = Command::new(&prepared.command.exe);
+    assembly
+        .args([
+            "-XX:AOTMode=create".to_string(),
+            format!("-XX:AOTConfiguration={}", staging_config.display()),
+            format!("-XX:AOTCache={}", staging.display()),
+            format!("-Xlog:aot=info:file={}", aot_log.display()),
+        ])
+        .current_dir(&prepared.command.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    isolate_process(&mut assembly);
+    let mut assembler = assembly
+        .spawn()
+        .map_err(|error| Error::process(format!("无法启动 AOT 缓存组装：{error}")))?;
+    let started = Instant::now();
+    let mut last_assembly_report = started;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            terminate_and_reap(&mut assembler);
+            let _ = fs::remove_file(&staging);
+            let _ = fs::remove_file(&staging_config);
+            let _ = fs::remove_file(&class_log);
+            return Err(Error::process("启动器退出，AOT 训练已取消"));
+        }
+        let now = Instant::now();
+        if now - last_assembly_report >= ASSEMBLY_REPORT {
+            last_assembly_report = now;
+            let _ = sender.send(Event::Assembling {
+                version: version.to_string(),
+                elapsed_secs: started.elapsed().as_secs(),
+            });
+        }
+        if now - started > ASSEMBLY_TIMEOUT {
+            terminate_and_reap(&mut assembler);
+            return Err(Error::process(format!(
+                "组装 AOT 缓存超过 {} 分钟，已停止训练",
+                ASSEMBLY_TIMEOUT.as_secs() / 60
+            )));
+        }
+        match assembler.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(error) => return Err(Error::process(format!("无法等待 AOT 组装进程：{error}"))),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     let code_entries = aot_code_entries(&aot_log);
     let _ = fs::remove_file(&staging_config);
     if !staging.is_file() || staging.metadata().map(|meta| meta.len()).unwrap_or(0) == 0 {
@@ -615,11 +622,22 @@ fn signal_group(child: &Child, signal: &str) {
     }
 }
 
-/// Whether this stdout line is the JVM saying it is assembling the cache.
-fn is_assembly_start(line: &str) -> bool {
-    ASSEMBLY_START_MARKERS
-        .iter()
-        .any(|marker| line.contains(marker))
+/// Gives a child JVM its own process group and keeps its console hidden.
+fn isolate_process(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        // Cancelling training must take the JVM's own helpers down too.
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // `java.exe` is a console binary. Without this Windows allocates a
+        // visible console window even though its stdio streams are redirected.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 /// The assembly log's last error, for the failure message.
@@ -661,19 +679,6 @@ mod tests {
         terminate_and_reap(&mut child);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(child.try_wait().unwrap().is_some(), "the child was reaped");
-    }
-
-    #[test]
-    fn the_assembly_marker_is_recognised_on_the_jvm_output() {
-        assert!(is_assembly_start(
-            "Temporary AOTConfiguration recorded: /x/26.3.aot.config"
-        ));
-        assert!(is_assembly_start(
-            "Launching child process /java to assemble AOT cache /x/26.3.aot using configuration /x/26.3.aot.config"
-        ));
-        assert!(!is_assembly_start(
-            "[20:04:00] [Render thread/INFO]: Stopping!"
-        ));
     }
 
     #[test]
