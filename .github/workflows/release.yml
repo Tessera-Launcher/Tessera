@@ -42,8 +42,9 @@ jobs:
         with:
           cache-targets: false
 
-      - name: Cache Rust build artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Rust build artifacts
+        id: rust-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
           key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
@@ -56,6 +57,12 @@ jobs:
 
       - name: Test core
         run: cargo test -p tessera-core --locked
+
+      - name: Save Rust build artifacts
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.rust-target.outputs.cache-primary-key }}
 
   release:
     name: Windows release
@@ -82,8 +89,9 @@ jobs:
         with:
           cache-targets: false
 
-      - name: Cache Rust build artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Rust build artifacts
+        id: rust-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
           key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
@@ -127,6 +135,12 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked -p tessera-gui
+
+      - name: Save Rust build artifacts
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.rust-target.outputs.cache-primary-key }}
 
       - name: Pack the executable with UPX
         shell: pwsh

@@ -64,8 +64,9 @@ jobs:
           # directory saved by it can never be reused by the next run.
           cache-targets: false
 
-      - name: Cache Rust build artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Rust build artifacts
+        id: rust-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
           # Rolling key: every run saves a fresh entry, so the restored target
@@ -85,6 +86,15 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked -p tessera-gui
+
+      - name: Save Rust build artifacts
+        # Rolling keys add a new entry per run, so only the default branch may
+        # write: pull requests restore them but never grow the cache quota.
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.rust-target.outputs.cache-primary-key }}
 
       - name: Pack the executable with UPX
         shell: pwsh
@@ -119,8 +129,9 @@ jobs:
         with:
           cache-targets: false
 
-      - name: Cache Rust build artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Rust build artifacts
+        id: rust-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
           key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
@@ -133,6 +144,13 @@ jobs:
 
       - name: Test core
         run: cargo test -p tessera-core --locked
+
+      - name: Save Rust build artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.rust-target.outputs.cache-primary-key }}
 
   supply-chain:
     name: Supply chain
