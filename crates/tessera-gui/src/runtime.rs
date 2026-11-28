@@ -80,10 +80,10 @@ impl Launcher {
         for request in self.state.take_ui_requests() {
             changed = true;
             match request {
-                UiRequest::Copy(text) => {
+                UiRequest::Copy { text, warning } => {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
-                        let _ = sender.send(copy_to_clipboard(&text));
+                        let _ = sender.send((copy_to_clipboard(&text), warning));
                     });
                     self.tasks.watch(
                         TaskKind::Clipboard,
@@ -171,6 +171,35 @@ impl Launcher {
                     let rx = java::spawn_list();
                     self.tasks
                         .watch(TaskKind::JavaList, rx, deliver_java, java_done);
+                }
+                Effect::PrepareLaunchCommand { dir, credentials } => {
+                    let rx = launch::spawn_command(
+                        self.state.root.clone(),
+                        dir,
+                        credentials,
+                        self.state.launch_options.clone(),
+                    );
+                    self.tasks
+                        .watch(TaskKind::LaunchCommand, rx, deliver_command, command_done);
+                }
+                Effect::ExportLaunchScript {
+                    dir,
+                    credentials,
+                    path,
+                } => {
+                    let rx = launch::spawn_script(
+                        self.state.root.clone(),
+                        dir,
+                        credentials,
+                        self.state.launch_options.clone(),
+                        path,
+                    );
+                    self.tasks.watch(
+                        TaskKind::LaunchCommand,
+                        rx,
+                        deliver_script,
+                        command_done_script,
+                    );
                 }
                 Effect::InstallAria2 { build, proxy } => {
                     let rx = aria2::spawn_install(self.state.dependencies.clone(), build, proxy);
@@ -535,7 +564,49 @@ fn game_done(event: &launch::GameEvent) -> bool {
     )
 }
 
-fn clipboard_done(_: &Result<String, String>) -> bool {
+/// The token is a password for as long as it lives, so both outputs say so.
+const TOKEN_WARNING: &str = "启动命令含账户令牌，等同于密码；不要发给别人，用完清掉";
+
+fn deliver_command(launcher: &mut Launcher, event: launch::CommandEvent) {
+    match event {
+        launch::CommandEvent::Ready(command) => {
+            launcher.state.status = "启动命令已复制".to_string();
+            launcher.state.request_ui(UiRequest::Copy {
+                text: launch::format_command(&command),
+                warning: Some(TOKEN_WARNING.to_string()),
+            });
+        }
+        launch::CommandEvent::Failed(reason) => {
+            launcher.state.status = "启动命令组装失败".to_string();
+            launcher.state.log(format!("无法组装启动命令：{reason}"));
+        }
+    }
+}
+
+fn deliver_script(launcher: &mut Launcher, event: launch::ScriptEvent) {
+    match event {
+        launch::ScriptEvent::Ready(path) => {
+            launcher.state.status = "启动脚本已导出".to_string();
+            launcher
+                .state
+                .log(format!("已导出 {}，警告：{TOKEN_WARNING}", path.display()));
+        }
+        launch::ScriptEvent::Failed(reason) => {
+            launcher.state.status = "启动脚本导出失败".to_string();
+            launcher.state.log(format!("无法导出启动脚本：{reason}"));
+        }
+    }
+}
+
+fn command_done_script(_: &launch::ScriptEvent) -> bool {
+    true
+}
+
+fn command_done(_: &launch::CommandEvent) -> bool {
+    true
+}
+
+fn clipboard_done(_: &(Result<String, String>, Option<String>)) -> bool {
     true
 }
 
@@ -610,9 +681,17 @@ fn deliver_game(launcher: &mut Launcher, event: launch::GameEvent) {
     launcher.state.handle_game_event(event);
 }
 
-fn deliver_clipboard(launcher: &mut Launcher, result: Result<String, String>) {
+fn deliver_clipboard(
+    launcher: &mut Launcher,
+    (result, warning): (Result<String, String>, Option<String>),
+) {
     match result {
-        Ok(tool) => launcher.state.log(format!("已复制（{tool}）")),
+        // The warning and the confirmation are one line on purpose: a separate
+        // line would print before the copy it is about.
+        Ok(tool) => match warning {
+            Some(warning) => launcher.state.log(format!("已复制，警告：{warning}")),
+            None => launcher.state.log(format!("已复制（{tool}）")),
+        },
         Err(error) => launcher.state.log(error),
     }
 }

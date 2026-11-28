@@ -275,6 +275,159 @@ pub enum GameEvent {
     },
 }
 
+/// What the command-line worker reports.
+#[derive(Debug)]
+pub enum CommandEvent {
+    /// The command this launch would run, token included. Formatting happens in
+    /// the front-end, which knows whether it is for the clipboard or a script.
+    Ready(Command),
+    /// Nothing to hand out: the version chain or the JVM could not be resolved.
+    Failed(String),
+}
+
+/// What the script worker reports.
+#[derive(Debug)]
+pub enum ScriptEvent {
+    /// Written and made runnable; the path is what the log shows.
+    Ready(PathBuf),
+    Failed(String),
+}
+
+/// The file name the save dialog suggests, per platform.
+pub const SCRIPT_NAME: &str = if cfg!(windows) {
+    "启动.cmd"
+} else {
+    "启动.sh"
+};
+
+/// The suffix a script needs when the chosen name has none.
+pub const SCRIPT_EXT: &str = if cfg!(windows) { "cmd" } else { "sh" };
+
+/// Assemble the launch command without starting anything.
+///
+/// Same work as [`spawn_game`] up to the spawn — which is why it also runs on a
+/// worker: [`prepare`] probes the JVM and stats the classpath.
+pub fn spawn_command(
+    root: PathBuf,
+    version_dir: String,
+    credentials: Credentials,
+    options: Options,
+) -> Receiver<CommandEvent> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let event = match prepare(&root, &version_dir, &credentials, &options) {
+            Ok(prepared) => CommandEvent::Ready(prepared.command),
+            Err(error) => CommandEvent::Failed(error.to_string()),
+        };
+        let _ = sender.send(event);
+    });
+    receiver
+}
+
+/// One line that a terminal can run as-is.
+///
+/// It carries whatever the real launch would carry, the account token included:
+/// the point is to hand a player the exact command their launcher ran.
+pub fn format_command(command: &Command) -> String {
+    let mut line = String::new();
+    #[cfg(windows)]
+    line.push_str("cd /d ");
+    #[cfg(not(windows))]
+    line.push_str("cd ");
+    line.push_str(&quote(&command.cwd.display().to_string()));
+    line.push_str(" && ");
+    line.push_str(&quote(&command.exe.display().to_string()));
+    for arg in &command.args {
+        line.push(' ');
+        line.push_str(&quote(arg));
+    }
+    line
+}
+
+/// Assemble the command and write it to `path` as a script.
+///
+/// Same work as [`spawn_command`], and the same reason to be off the UI thread.
+pub fn spawn_script(
+    root: PathBuf,
+    version_dir: String,
+    credentials: Credentials,
+    options: Options,
+    path: PathBuf,
+) -> Receiver<ScriptEvent> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let event = match prepare(&root, &version_dir, &credentials, &options) {
+            Ok(prepared) => match write_script(&prepared.command, &path) {
+                Ok(()) => ScriptEvent::Ready(path),
+                Err(error) => ScriptEvent::Failed(error.to_string()),
+            },
+            Err(error) => ScriptEvent::Failed(error.to_string()),
+        };
+        let _ = sender.send(event);
+    });
+    receiver
+}
+
+/// Write the same command as a script next to the version.
+///
+/// Same argv and same token as [`format_command`]; the difference is that a
+/// script keeps the game attached to a console, which is what a player chasing
+/// a crash wants to see.
+pub fn write_script(command: &Command, path: &Path) -> Result<()> {
+    std::fs::write(path, format_script(command))
+        .map_err(|error| Error::io(format!("无法写入 {}", path.display()), error))?;
+    crate::fsutil::mark_executable(path);
+    Ok(())
+}
+
+fn format_script(command: &Command) -> String {
+    let mut script = String::new();
+    #[cfg(windows)]
+    script.push_str("@echo off\r\n");
+    #[cfg(not(windows))]
+    script.push_str("#!/bin/sh\n");
+
+    script.push_str("cd ");
+    #[cfg(windows)]
+    script.push_str("/d ");
+    script.push_str(&quote(&command.cwd.display().to_string()));
+    #[cfg(windows)]
+    script.push_str("\r\n");
+    #[cfg(not(windows))]
+    script.push('\n');
+
+    script.push_str(&quote(&command.exe.display().to_string()));
+    for arg in &command.args {
+        script.push(' ');
+        script.push_str(&quote(arg));
+    }
+    script.push('\n');
+
+    #[cfg(windows)]
+    {
+        // The window is the whole point: without this it closes on a crash
+        // before the stack trace can be read.
+        script.push_str("pause\r\n");
+    }
+    script
+}
+
+/// Quote one argument for the shell the line is meant for.
+#[cfg(windows)]
+fn quote(text: &str) -> String {
+    // `"` cannot appear in a Windows path and the token is base64url, so
+    // wrapping is enough; `cmd` has no usable `"` escape anyway.
+    format!("\"{text}\"")
+}
+
+/// Quote one argument for the shell the line is meant for.
+#[cfg(not(windows))]
+fn quote(text: &str) -> String {
+    // POSIX: a run ends at the next `'`, so a literal one has to be spliced in
+    // from outside the quotes.
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Detach the game from the launcher's process group and session.
 ///
 /// Closing the launcher (or the terminal it was started from) must not take a
@@ -406,4 +559,81 @@ pub fn offline_uuid(name: &str) -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_single_quote_in_a_path_cannot_break_out() {
+        assert_eq!(quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn the_line_is_a_cd_prefix_and_one_quoted_word_per_argument() {
+        let command = Command {
+            exe: PathBuf::from("/jdk/bin/java"),
+            args: vec!["-cp".to_string(), "a b:c".to_string()],
+            cwd: PathBuf::from("/data/游戏"),
+        };
+        assert_eq!(
+            format_command(&command),
+            "cd '/data/游戏' && '/jdk/bin/java' '-cp' 'a b:c'"
+        );
+    }
+
+    #[test]
+    fn a_script_is_a_cd_line_then_the_command() {
+        let command = Command {
+            exe: PathBuf::from("/jdk/bin/java"),
+            args: vec!["-cp".to_string(), "a b:c".to_string()],
+            cwd: PathBuf::from("/data/游戏"),
+        };
+        let script = format_script(&command);
+        let expected = if cfg!(windows) {
+            "@echo off\r\ncd /d \"/data/游戏\"\r\n\"/jdk/bin/java\" \"-cp\" \"a b:c\"\n"
+        } else {
+            "#!/bin/sh\ncd '/data/游戏'\n'/jdk/bin/java' '-cp' 'a b:c'\n"
+        };
+        assert!(script.starts_with(expected), "{script:?}");
+    }
+
+    #[test]
+    fn a_written_script_lands_where_it_was_asked_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SCRIPT_NAME);
+        let command = Command {
+            exe: PathBuf::from("/jdk/bin/java"),
+            args: vec!["-Dx=a b".to_string()],
+            cwd: tmp.path().to_path_buf(),
+        };
+        write_script(&command, &path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("-Dx=a b\"'") || written.contains("'-Dx=a b'"),
+            "{written}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "the script has to be runnable");
+        }
+    }
+
+    #[test]
+    fn quoting_leaves_no_unquoted_space() {
+        // One word per argument, whatever it contains.
+        for text in ["plain", "with space", "-Dfoo=bar baz", "$HOME;rm -rf /"] {
+            let quoted = quote(text);
+            assert!(
+                quoted.starts_with('\'') || quoted.starts_with('"'),
+                "{quoted}"
+            );
+            assert!(quoted.ends_with('\'') || quoted.ends_with('"'), "{quoted}");
+        }
+    }
 }

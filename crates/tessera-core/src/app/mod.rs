@@ -87,6 +87,17 @@ pub enum Effect {
         dir: String,
         credentials: launch::Credentials,
     },
+    /// Assemble the launch command for the clipboard, without launching.
+    PrepareLaunchCommand {
+        dir: String,
+        credentials: launch::Credentials,
+    },
+    /// Write the same command to `path` as a runnable script.
+    ExportLaunchScript {
+        dir: String,
+        credentials: launch::Credentials,
+        path: PathBuf,
+    },
     /// Train the AOT cache for the vanilla version the player asked for.
     TrainAot {
         dir: String,
@@ -125,7 +136,13 @@ pub enum Effect {
 /// front-end can implement every effect while ignoring these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiRequest {
-    Copy(String),
+    /// Put `text` on the clipboard. `warning` is folded into the one log line
+    /// the copy reports, because a separate line would arrive before the copy
+    /// it describes.
+    Copy {
+        text: String,
+        warning: Option<String>,
+    },
     OpenBrowser(String),
     /// Show a directory in the desktop's file manager.
     OpenFolder(PathBuf),
@@ -204,6 +221,8 @@ pub enum TaskKind {
     Game,
     /// A clipboard write.
     Clipboard,
+    /// Assembling a launch command for the clipboard.
+    LaunchCommand,
     /// The audio worker, which never reports a terminal event.
     Music,
     /// Walking one version directory to report its size.
@@ -234,6 +253,7 @@ impl TaskKind {
             TaskKind::Aot => "AOT 训练",
             TaskKind::Game => "游戏进程",
             TaskKind::Clipboard => "剪贴板",
+            TaskKind::LaunchCommand => "启动命令",
             TaskKind::Music => "音频",
             TaskKind::Measure => "目录大小",
             TaskKind::ModSearch => "Modrinth 搜索",
@@ -1003,6 +1023,7 @@ impl App {
             TaskKind::Versions
             | TaskKind::Sweep
             | TaskKind::Clipboard
+            | TaskKind::LaunchCommand
             | TaskKind::Music
             | TaskKind::Measure
             | TaskKind::ModRemove => {}
@@ -1163,6 +1184,87 @@ impl App {
             Account::SignedOut => {
                 self.log("没有账户：先选一种登录方式");
                 self.open_login();
+            }
+        }
+    }
+
+    /// Copy the command line that would launch the selected version.
+    ///
+    /// No refresh round trip: the command is for debugging, and the token the
+    /// credentials already hold is the one the next launch would use anyway.
+    /// An expired token is refused instead of copied — it would only get the
+    /// player as far as the server list.
+    pub fn request_copy_launch_command(&mut self) {
+        let Some((dir, credentials)) = self.command_target() else {
+            return;
+        };
+        self.status = "正在组装启动命令…".to_string();
+        self.request(Effect::PrepareLaunchCommand { dir, credentials });
+    }
+
+    /// Write the launch command of the selected version to `path`.
+    ///
+    /// A script is the same data as the clipboard line, only written down: the
+    /// player can run it, edit it, or keep it next to the crash they are
+    /// chasing. `path` is whatever the desktop's save dialog returned.
+    pub fn request_export_launch_script(&mut self, mut path: PathBuf) {
+        let Some((dir, credentials)) = self.command_target() else {
+            return;
+        };
+        // A save dialog that was handed only a name returns one without a
+        // suffix; the file is useless to a shell that cannot see what it is.
+        if path.extension().is_none() {
+            path.set_extension(launch::SCRIPT_EXT);
+        }
+        self.status = "正在导出启动脚本…".to_string();
+        self.request(Effect::ExportLaunchScript {
+            dir,
+            credentials,
+            path,
+        });
+    }
+
+    /// The version and identity a command or a script would use.
+    ///
+    /// No refresh round trip: both are for debugging, and the token already on
+    /// disk is the one the next launch would use anyway. An expired one is
+    /// refused instead — it would only get as far as the server list.
+    fn command_target(&mut self) -> Option<(String, launch::Credentials)> {
+        if self.refreshing.is_some() {
+            self.status = "正在刷新登录令牌，请稍候".to_string();
+            return None;
+        }
+        let Some(version) = self.selected_version().cloned() else {
+            self.log("没有选中的版本");
+            return None;
+        };
+        if !version.has_profile {
+            self.log(format!(
+                "无法组装命令：versions/{0}/{0}.json 不存在（安装可能中断）",
+                version.dir
+            ));
+            return None;
+        }
+        match &self.account {
+            Account::SignedIn { file, .. } => {
+                match launch::Credentials::from_account_file_if_fresh(file) {
+                    Ok(credentials) => Some((version.dir, credentials)),
+                    Err(error) => {
+                        self.status = "令牌不可用".to_string();
+                        self.log(format!(
+                            "无法组装命令：{error}；先启动一次游戏或在账户页重新登录"
+                        ));
+                        None
+                    }
+                }
+            }
+            Account::Offline { name, .. } => {
+                Some((version.dir, launch::Credentials::offline(name)))
+            }
+            Account::SignedOut => {
+                self.log("没有账户：先选一种登录方式");
+                self.open_login();
+                None
             }
         }
     }

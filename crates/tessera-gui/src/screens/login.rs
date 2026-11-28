@@ -190,7 +190,10 @@ impl Launcher {
                                 .child(button("复制链接", cx, {
                                     let url = url.clone();
                                     move |this: &mut Launcher, cx| {
-                                        this.state.request_ui(UiRequest::Copy(url.clone()));
+                                        this.state.request_ui(UiRequest::Copy {
+                                            text: url.clone(),
+                                            warning: None,
+                                        });
                                         this.refresh(cx);
                                     }
                                 }))
@@ -204,7 +207,10 @@ impl Launcher {
                                 .child(button("复制代码", cx, {
                                     let code = user_code.clone();
                                     move |this: &mut Launcher, cx| {
-                                        this.state.request_ui(UiRequest::Copy(code.clone()));
+                                        this.state.request_ui(UiRequest::Copy {
+                                            text: code.clone(),
+                                            warning: None,
+                                        });
                                         this.refresh(cx);
                                     }
                                 })),

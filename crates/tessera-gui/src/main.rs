@@ -568,11 +568,31 @@ fn titlebar_menu_popup(
                 this.refresh(cx);
             },
         )),
-        // 运行 and 帮助 are still labels with nothing behind them. Say so in
-        // the menu instead of opening an empty rectangle.
-        TitlebarMenu::Run | TitlebarMenu::Help => {
-            popup.child(titlebar_menu_note("暂无可用项", colors))
-        }
+        TitlebarMenu::Run => popup
+            .child(titlebar_menu_row(
+                "titlebar-menu-copy-command",
+                "复制启动命令(C)…",
+                colors,
+                cx,
+                |this, cx| {
+                    this.titlebar_menu = None;
+                    this.state.request_copy_launch_command();
+                    this.refresh(cx);
+                },
+            ))
+            .child(titlebar_menu_row(
+                "titlebar-menu-export-script",
+                "导出启动脚本(E)…",
+                colors,
+                cx,
+                |this, cx| {
+                    this.titlebar_menu = None;
+                    this.export_script(cx);
+                },
+            )),
+        // 帮助 is still a label with nothing behind it. Say so in the menu
+        // instead of opening an empty rectangle.
+        TitlebarMenu::Help => popup.child(titlebar_menu_note("暂无可用项", colors)),
     };
     popup
 }
@@ -628,6 +648,17 @@ impl Launcher {
                 self.refresh(cx);
                 return true;
             }
+            (Some(TitlebarMenu::Run), 'C') => {
+                self.titlebar_menu = None;
+                self.state.request_copy_launch_command();
+                self.refresh(cx);
+                return true;
+            }
+            (Some(TitlebarMenu::Run), 'E') => {
+                self.titlebar_menu = None;
+                self.export_script(cx);
+                return true;
+            }
             _ => {}
         }
         let menu = match letter {
@@ -639,6 +670,48 @@ impl Launcher {
         };
         self.toggle_titlebar_menu(menu, cx);
         true
+    }
+
+    /// 运行 → 导出启动脚本(E)…
+    ///
+    /// Asks the desktop for a place to put it: the file is the player's, and
+    /// only they know whether it belongs next to the instance, on the desktop,
+    /// or beside the crash report they are about to write.
+    fn export_script(&mut self, cx: &mut Context<Self>) {
+        let Some(version) = self.state.selected_version() else {
+            self.state.log("没有选中的版本");
+            cx.notify();
+            return;
+        };
+        let directory = self.state.root.join("versions").join(&version.dir);
+        let prompt = cx.prompt_for_new_path(&directory, Some(launch::SCRIPT_NAME));
+        cx.spawn(async move |this, cx| {
+            let answer = match prompt.await {
+                Ok(answer) => answer,
+                Err(_) => return,
+            };
+            match answer {
+                Ok(Some(path)) => {
+                    let _ = this.update(cx, |this, cx| this.export_script_to(path, cx));
+                }
+                // Cancelled: nothing to say, the dialog already said it.
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.state.log(format!("无法打开保存对话框：{error}"));
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The save dialog picked `path`; the worker writes as soon as it has the
+    /// command.
+    fn export_script_to(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.state.request_export_launch_script(path);
+        self.refresh(cx);
     }
 
     /// 文件 → 打开数据目录(O)…
