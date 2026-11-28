@@ -28,8 +28,10 @@ jobs:
           New-Item -ItemType Directory -Force $dir | Out-Null
           $config = Join-Path $dir '26.3.aot.new.config'
           $cache = Join-Path $dir '26.3.aot.new'
-          $classLog = Join-Path $dir 'class.log'
-          $aotLog = Join-Path $dir 'aot.log'
+          $logDir = Join-Path $env:RUNNER_TEMP 'logs'
+          New-Item -ItemType Directory -Force $logDir | Out-Null
+          $classLog = Join-Path $logDir 'class.log'
+          $aotLog = Join-Path $logDir 'aot.log'
           Write-Host "dir: $dir"
 
           & $env:JAVA_EXE '-XX:AOTMode=record' "-XX:AOTConfiguration=$config" "-Xlog:class+load=info:file=$classLog" "-Xlog:aot=info:file=$aotLog" -version
@@ -43,4 +45,5 @@ jobs:
           if (-not (Test-Path -LiteralPath $aotLog)) { throw 'create produced no aot log' }
 
           Get-ChildItem -LiteralPath $dir | Format-Table Name, Length
+          Get-ChildItem -LiteralPath $logDir | Format-Table Name, Length
           Get-Content -LiteralPath $aotLog -Tail 5
