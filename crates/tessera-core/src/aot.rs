@@ -342,6 +342,10 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     let mut assembly = Command::new(&prepared.command.exe);
     assembly
         .args(assembly_jvm_options(&prepared.command.args))
+        // The training JVM has the preloader agent, which puts
+        // `java.instrument` in its module graph. The create JVM disables
+        // agents, so add the module explicitly instead of loading the agent.
+        .args(["--add-modules", "java.instrument"])
         .args([
             "-XX:AOTMode=create".to_string(),
             format!("-XX:AOTConfiguration={}", staging_config_rel.display()),
