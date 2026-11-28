@@ -269,8 +269,12 @@ pub enum GameEvent {
     /// Nothing was started; `reason` is user-facing.
     Failed { reason: String },
     /// The process ended (or waiting on it failed).
+    ///
+    /// `pid` is the process the exit belongs to, so a log line can say which run
+    /// it was when a player has launched the version more than once.
     Exited {
         dir: String,
+        pid: u32,
         status: std::io::Result<std::process::ExitStatus>,
     },
 }
@@ -507,13 +511,15 @@ pub fn spawn_game(
         detach(&mut command);
         match command.spawn() {
             Ok(mut child) => {
+                let pid = child.id();
                 let _ = sender.send(GameEvent::Started {
                     dir: version_dir.clone(),
-                    pid: child.id(),
+                    pid,
                 });
                 let status = child.wait();
                 let _ = sender.send(GameEvent::Exited {
                     dir: version_dir,
+                    pid,
                     status,
                 });
             }

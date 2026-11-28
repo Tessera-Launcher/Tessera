@@ -34,9 +34,9 @@ struct IntegrityState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileState {
-    size: u64,
-    sha1: Option<String>,
+pub(crate) struct FileState {
+    pub(crate) size: u64,
+    pub(crate) sha1: Option<String>,
 }
 
 /// What the repair worker reports.
@@ -153,7 +153,7 @@ async fn repair(
     for entry in &plan.entries {
         let path = root.join(&entry.path);
         if is_jar(&entry.path) {
-            if let Some(record) = state.files.get(&key(&entry.path)) {
+            if let Some(record) = state.files.get(&state_key(&entry.path)) {
                 if !matches_record(&path, record) {
                     bad.push(entry.clone());
                 }
@@ -161,7 +161,7 @@ async fn repair(
                 // No post-install baseline. Trust a jar that is present and
                 // record its current hash; a missing jar still needs repair.
                 if let Some(record) = current_record(&path) {
-                    state.files.insert(key(&entry.path), record);
+                    state.files.insert(state_key(&entry.path), record);
                 } else {
                     bad.push(entry.clone());
                 }
@@ -255,7 +255,7 @@ async fn repair(
         }
         let path = root.join(&entry.path);
         if !path.is_file() {
-            jar_failed.insert(key(&entry.path));
+            jar_failed.insert(state_key(&entry.path));
             continue;
         }
         // A failed or skipped aria2 transfer must not be blessed below. Jars
@@ -263,12 +263,12 @@ async fn repair(
         // the right check; normalization runs only after it passes.
         if !matches_plan(&path, entry) {
             report.log(format!("下载后校验失败：{}", entry.path.display()));
-            jar_failed.insert(key(&entry.path));
+            jar_failed.insert(state_key(&entry.path));
             continue;
         }
         if let Err(problem) = crate::jar::normalize(&path) {
             report.log(format!("jar 修复失败：{}：{problem}", entry.path.display()));
-            jar_failed.insert(key(&entry.path));
+            jar_failed.insert(state_key(&entry.path));
         }
     }
 
@@ -287,7 +287,7 @@ async fn repair(
     for entry in &bad {
         let path = root.join(&entry.path);
         if is_jar(&entry.path) {
-            if jar_failed.contains(&key(&entry.path)) || current_record(&path).is_none() {
+            if jar_failed.contains(&state_key(&entry.path)) || current_record(&path).is_none() {
                 still_bad.push(entry.clone());
             }
         } else if !matches_plan(&path, entry) {
@@ -435,12 +435,13 @@ async fn plan_for_installed(
     Ok((plan, base))
 }
 
-fn is_jar(path: &Path) -> bool {
+pub(crate) fn is_jar(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
 }
 
-fn key(path: &Path) -> String {
+/// The key a destination has in the integrity state, independent of platform.
+pub(crate) fn state_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -455,7 +456,7 @@ fn current_record(path: &Path) -> Option<FileState> {
     })
 }
 
-fn matches_record(path: &Path, record: &FileState) -> bool {
+pub(crate) fn matches_record(path: &Path, record: &FileState) -> bool {
     let Some(actual) = current_record(path) else {
         return false;
     };
@@ -466,7 +467,7 @@ fn matches_record(path: &Path, record: &FileState) -> bool {
             .is_none_or(|expected| actual.sha1.as_deref() == Some(expected))
 }
 
-fn matches_plan(path: &Path, entry: &mdt::plan::PlanEntry) -> bool {
+pub(crate) fn matches_plan(path: &Path, entry: &mdt::plan::PlanEntry) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
     };
@@ -492,7 +493,7 @@ fn record_jars(
             continue;
         }
         if let Some(record) = current_record(&root.join(&entry.path)) {
-            state.files.insert(key(&entry.path), record);
+            state.files.insert(state_key(&entry.path), record);
         }
     }
     Ok(())
@@ -522,6 +523,31 @@ pub fn record_install_jars(root: &Path, plan: &mdt::plan::DownloadPlan) -> Resul
     save_state(&version_dir.join(STATE_FILE), &state)
 }
 
+/// The final (post-normalize, post-patch) state of every jar a finished install
+/// recorded, merged across version directories.
+///
+/// The integrity state is per version, but the libraries and assets it covers are
+/// shared by every version: installing Fabric after vanilla must know what the
+/// vanilla install already proved before it downloads the same jars again. When
+/// two versions disagree about one path the first record wins — the two only
+/// differ if something outside the launcher rewrote a shared jar, and the plan's
+/// own hash is then what the caller falls back to.
+pub(crate) fn installed_jars(root: &Path) -> BTreeMap<String, FileState> {
+    let mut records = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(root.join("versions")) else {
+        return records;
+    };
+    for entry in entries.flatten() {
+        let Some(state) = load_state(&entry.path().join(STATE_FILE)) else {
+            continue;
+        };
+        for (path, file) in state.files {
+            records.entry(path).or_insert(file);
+        }
+    }
+    records
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,7 +556,7 @@ mod tests {
     fn jar_predicates_and_keys_are_safe() {
         assert!(is_jar(Path::new("a/b.JAR")));
         assert!(!is_jar(Path::new("a/b.json")));
-        assert_eq!(key(Path::new("versions/x/a.jar")), "versions/x/a.jar");
+        assert_eq!(state_key(Path::new("versions/x/a.jar")), "versions/x/a.jar");
     }
 
     #[test]

@@ -265,19 +265,52 @@ pub fn spawn_install(
                 patch = Some(asset);
             }
 
-            if fastutil_added || mods_added {
+            // `libraries/` and `assets/` are shared by every version, so a
+            // second install of the same Minecraft version — vanilla first, then
+            // Fabric — would move the same hundreds of megabytes again. Entries
+            // an earlier install already finished are dropped from the list here;
+            // `plan` keeps them, because the jar pass below and the integrity
+            // record it writes still cover the whole install.
+            let mut fetch = plan.clone();
+            let skipped = drop_present(&mut fetch, client.root_dir());
+            if skipped > 0 {
+                let _ = sender.send(InstallEvent::Log(format!(
+                    "已下载，跳过：{skipped} 个文件"
+                )));
+            }
+
+            if fastutil_added || mods_added || skipped > 0 {
                 // MDT writes the aria2 list before returning the plan, so the
-                // extra entries have to be written back before aria2 reads it.
-                plan.write(client.root_dir(), &list_dir)
+                // extra entries and the dropped ones have to be written back
+                // before aria2 reads it.
+                fetch
+                    .write(client.root_dir(), &list_dir)
                     .await
                     .map_err(|error| Error::internal(format!("无法写入下载清单：{error}")))?;
             }
             if fastutil_added {
                 let _ = sender.send(InstallEvent::Log("1.8.9 依赖：fastutil 8.5.18".to_string()));
             }
-            let files = plan.entries.len();
-            let total_bytes = plan.total_bytes();
-            let list = plan.path(&list_dir);
+            let files = fetch.entries.len();
+            let total_bytes = fetch.total_bytes();
+            let list = fetch.path(&list_dir);
+
+            // The patch is applied to a raw client jar and checks itself against
+            // that base. Re-applying it to the already patched jar the previous
+            // install left behind would fail that check, so it only matters when
+            // this run actually replaces `versions/<id>/<id>.jar`.
+            let client_entry = PathBuf::from("versions")
+                .join(&fetch.id)
+                .join(format!("{}.jar", fetch.id));
+            let patch = patch.filter(|_| {
+                let refreshed = fetch.entries.iter().any(|entry| entry.path == client_entry);
+                if !refreshed {
+                    let _ = sender.send(InstallEvent::Log(
+                        "1.8.9 补丁：客户端 jar 已打过补丁，跳过".to_string(),
+                    ));
+                }
+                refreshed
+            });
 
             // The patch lives under `data/缓存`, not the game tree, so its aria2
             // entry is appended after MDT wrote the game-file entries. aria2
@@ -318,8 +351,11 @@ pub fn spawn_install(
             )));
 
             // One verification, here: the list carries no checksum, so this is the
-            // only place a file is judged.
-            let failed = plan.verify(client.root_dir()).await;
+            // only place a file that was downloaded is judged. The skipped files
+            // were judged when they were skipped (`drop_present`), against the
+            // same two sources: the plan's hash, or the hash an earlier install
+            // recorded for the file it finished with.
+            let failed = fetch.verify(client.root_dir()).await;
             if !failed.is_empty() {
                 let _ = sender.send(InstallEvent::Log(format!(
                     "校验：{} 个文件缺失或哈希不符",
@@ -329,7 +365,7 @@ pub fn spawn_install(
                     let _ = sender.send(InstallEvent::Log(format!("  {}", entry.path.display())));
                 }
                 return Err(Error::network(format!(
-                    "校验未通过：{} 个文件（可重试安装，已完成的会跳过）",
+                    "校验未通过：{} 个文件缺失或哈希不符。请在版本列表里右键这个版本，选择「修复…」，只重下这些文件",
                     failed.len()
                 )));
             }
@@ -577,6 +613,49 @@ fn push_mod(plan: &mut mdt::plan::DownloadPlan, file: ModFile) -> bool {
         sha1: file.sha1,
     });
     true
+}
+
+/// Drop the entries whose destination already holds the right file.
+///
+/// Returns how many were dropped. This is not an optimization for a re-install of
+/// the same version: `libraries/` and `assets/` live in the game root, so every
+/// install of the same Minecraft version — the vanilla one and each loader on top
+/// of it — names the same files. Downloading them again would cost the full size
+/// of the game for nothing.
+fn drop_present(plan: &mut mdt::plan::DownloadPlan, root: &std::path::Path) -> usize {
+    let records = crate::repair::installed_jars(root);
+    let before = plan.entries.len();
+    plan.entries
+        .retain(|entry| !already_present(root, entry, &records));
+    before - plan.entries.len()
+}
+
+/// Whether `entry`'s destination is already the file the entry describes.
+///
+/// The plan's hash answers for assets and indexes, and for a jar nothing has
+/// touched. A jar that an install normalized (signature and sealing stripped, the
+/// 1.8.9 client patched) deliberately no longer hashes to Mojang's value, so the
+/// final hash that install recorded in `.tessera-integrity.json` is the only thing
+/// that can prove it — the same record a repair uses.
+fn already_present(
+    root: &std::path::Path,
+    entry: &mdt::plan::PlanEntry,
+    records: &std::collections::BTreeMap<String, crate::repair::FileState>,
+) -> bool {
+    let path = root.join(&entry.path);
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return false;
+    };
+    // An empty file is a truncated download, not a finished one.
+    if !metadata.is_file() || metadata.len() == 0 {
+        return false;
+    }
+    if crate::repair::is_jar(&entry.path) {
+        if let Some(record) = records.get(&crate::repair::state_key(&entry.path)) {
+            return crate::repair::matches_record(&path, record);
+        }
+    }
+    crate::repair::matches_plan(&path, entry)
 }
 
 /// Latest loader build for one Minecraft version.
@@ -939,6 +1018,97 @@ mod tests {
             .unwrap();
         zip.finish().unwrap();
         assert_eq!(language_code(root, "new", "26.3"), "zh_cn");
+    }
+
+    /// A second install of the same Minecraft version shares `libraries/` and
+    /// `assets/` with the first one, so it must not download them again.
+    ///
+    /// A shared jar is the hard case: install strips signatures, so the file on
+    /// disk never hashes to the value the plan names. What proves it is the
+    /// record the finished install wrote, next to its own version JSON.
+    #[test]
+    fn a_second_install_skips_the_shared_files_it_already_has() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // An asset: the plan's own hash is the check.
+        let asset = root.join("assets/objects/3d/asset");
+        std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        std::fs::write(&asset, b"asset bytes").unwrap();
+        let asset_sha1 = crate::fsutil::sha1_file(&asset).unwrap();
+
+        // A shared library jar, already normalized by the vanilla install: its
+        // bytes no longer hash to Mojang's SHA-1, only the record does.
+        let jar = root.join("libraries/net/example/lib.jar");
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, b"normalized jar").unwrap();
+        let jar_sha1 = crate::fsutil::sha1_file(&jar).unwrap();
+        let jar_size = std::fs::metadata(&jar).unwrap().len();
+        let state = root.join("versions/1.21.1/.tessera-integrity.json");
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        std::fs::write(
+            &state,
+            serde_json::json!({
+                "version": 1,
+                "files": {
+                    "libraries/net/example/lib.jar": {
+                        "size": jar_size,
+                        "sha1": jar_sha1,
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut plan = mdt::plan::DownloadPlan::new(
+            "1.21.1+fabric0.16.10".to_string(),
+            vec![
+                mdt::plan::PlanEntry {
+                    url: "https://example/asset".into(),
+                    path: PathBuf::from("assets/objects/3d/asset"),
+                    size: std::fs::metadata(&asset).unwrap().len(),
+                    sha1: Some(asset_sha1),
+                },
+                // Mojang's hash, which the normalized copy on disk does not have.
+                mdt::plan::PlanEntry {
+                    url: "https://example/lib.jar".into(),
+                    path: PathBuf::from("libraries/net/example/lib.jar"),
+                    size: jar_size,
+                    sha1: Some("0".repeat(40)),
+                },
+                // Not on disk: still has to be downloaded.
+                mdt::plan::PlanEntry::new(
+                    "https://example/missing.jar",
+                    "libraries/net/example/missing.jar",
+                    10,
+                ),
+                // Present but wrong: a truncated asset is not a finished one.
+                mdt::plan::PlanEntry {
+                    url: "https://example/truncated".into(),
+                    path: PathBuf::from("assets/objects/3d/truncated"),
+                    size: 100,
+                    sha1: Some("1".repeat(40)),
+                },
+            ],
+        );
+        let truncated = root.join("assets/objects/3d/truncated");
+        std::fs::create_dir_all(truncated.parent().unwrap()).unwrap();
+        std::fs::write(&truncated, b"short").unwrap();
+
+        assert_eq!(drop_present(&mut plan, root), 2);
+        let left: Vec<String> = plan
+            .entries
+            .iter()
+            .map(|entry| entry.path.display().to_string())
+            .collect();
+        assert_eq!(
+            left,
+            vec![
+                "libraries/net/example/missing.jar".to_string(),
+                "assets/objects/3d/truncated".to_string(),
+            ]
+        );
     }
 
     #[test]

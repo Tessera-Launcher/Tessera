@@ -1426,8 +1426,8 @@ impl App {
                 self.status = "启动失败".to_string();
                 self.log(format!("启动失败：{reason}"));
             }
-            GameEvent::Exited { dir, status } => match status {
-                Ok(status) => self.handle_game_exit(&dir, status),
+            GameEvent::Exited { dir, pid, status } => match status {
+                Ok(status) => self.handle_game_exit(&dir, pid, status),
                 Err(error) => {
                     self.status = format!("{dir} 的退出状态未知");
                     self.log(format!("无法等待游戏进程：{error}"));
@@ -1440,14 +1440,14 @@ impl App {
     ///
     /// Sent by [`launch::spawn_game`]'s worker when the child exits, so a crash
     /// 2 seconds in is visible here instead of looking like a launch that worked.
-    pub fn handle_game_exit(&mut self, dir: &str, status: std::process::ExitStatus) {
+    pub fn handle_game_exit(&mut self, dir: &str, pid: u32, status: std::process::ExitStatus) {
         // The session wrote its own logs, options and saves; the size shown in the
         // details pane is no longer the one that was cached.
         self.size_cache = None;
         match status.code() {
             Some(0) => {
                 self.status = format!("{dir} 已退出");
-                self.log(format!("{dir} 已退出"));
+                self.log(format!("{dir}（pid {pid}）已退出"));
             }
             Some(code) => {
                 self.status = format!("{dir} 异常退出（{code}）");

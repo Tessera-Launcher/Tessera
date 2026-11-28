@@ -342,11 +342,16 @@ fn a_size_is_only_reported_once_a_worker_measured_it() {
 #[test]
 fn the_exit_code_of_a_game_session_is_reported() {
     let mut app = app();
-    app.handle_game_exit("1.20.1", exit_status(0));
+    app.handle_game_exit("1.20.1", 4242, exit_status(0));
     assert_eq!(app.status, "1.20.1 已退出");
-    assert!(app.log.iter().any(|line| line.contains("1.20.1 已退出")));
+    // The line names the process, so two runs of one version are told apart.
+    assert!(
+        app.log.iter().any(|line| line == "1.20.1（pid 4242）已退出"),
+        "{:?}",
+        app.log
+    );
 
-    app.handle_game_exit("1.20.1", exit_status(3));
+    app.handle_game_exit("1.20.1", 4242, exit_status(3));
     assert_eq!(app.status, "1.20.1 异常退出（3）");
     assert!(
         app.log
