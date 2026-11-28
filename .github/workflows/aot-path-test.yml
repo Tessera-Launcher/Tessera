@@ -16,8 +16,8 @@ jobs:
         run: |
           $zip = Join-Path $env:RUNNER_TEMP 'jdk28.zip'
           Invoke-WebRequest -Uri 'https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B26-ea-beta/OpenJDK-jre_x64_windows_hotspot_28_26-ea.zip' -OutFile $zip
-          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP '依赖') -Force
-          $java = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP '依赖') -Recurse -Filter java.exe | Select-Object -First 1
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'jdk28') -Force
+          $java = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP 'jdk28') -Recurse -Filter java.exe | Select-Object -First 1
           if (-not $java) { throw 'java.exe not found' }
           "JAVA_EXE=$($java.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
