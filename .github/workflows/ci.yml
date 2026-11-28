@@ -109,6 +109,97 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  linux:
+    name: Linux build
+    # The glibc floor of a binary is decided by the machine that links it:
+    # ubuntu-latest (24.04, glibc 2.39) produces a binary that cannot start on
+    # Ubuntu 22.04 or Debian 12. Pin the oldest distribution that is still
+    # worth supporting instead; the check at the end of the job enforces it.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.100.0
+          components: clippy
+
+      - name: Install system libraries
+        # The dynamic link surface of the binary, measured with objdump -p:
+        # libasound, libxcb, libxkbcommon(+x11), fontconfig and freetype.
+        # Vulkan/EGL drivers, libwayland and libx11 are resolved with dlopen at
+        # runtime, so they are intentionally not build dependencies.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+
+      - name: Restore Rust build artifacts
+        id: rust-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-target-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'vendor/**/Cargo.toml', 'rust-toolchain.toml') }}-
+            rust-target-${{ runner.os }}-${{ github.job }}-
+
+      - name: Lint with clippy
+        # The Windows runner never compiles the `cfg(target_os = "linux")` code
+        # paths, so this is the only place they get linted.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build release binary
+        run: cargo build --release --locked -p tessera-gui
+
+      - name: Save Rust build artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.rust-target.outputs.cache-primary-key }}
+
+      - name: Verify the glibc baseline
+        # Keep the promise the runner choice above makes. A dependency bump that
+        # links against a newer glibc symbol fails the job instead of shipping a
+        # binary that refuses to start on the oldest supported distribution.
+        run: |
+          set -euo pipefail
+          floor="$(objdump -T target/release/tessera | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          echo "highest glibc symbol version: $floor"
+          newest="$(printf '%s\n' "$floor" "GLIBC_2.35" | sort -V | tail -1)"
+          if [ "$newest" != "GLIBC_2.35" ]; then
+            echo "::error::target/release/tessera needs $floor, above the GLIBC_2.35 baseline"
+            exit 1
+          fi
+
+      - name: Upload Linux build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Tessera-Linux-x64
+          path: target/release/tessera
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+
   core-tests:
     name: Core tests
     runs-on: ubuntu-latest
