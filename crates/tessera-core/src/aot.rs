@@ -338,6 +338,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
 
     let mut assembly = Command::new(&prepared.command.exe);
     assembly
+        .args(assembly_jvm_options(&prepared.command.args))
         .args([
             "-XX:AOTMode=create".to_string(),
             format!("-XX:AOTConfiguration={}", staging_config_rel.display()),
@@ -539,6 +540,32 @@ fn aot_work_name(version_dir: &Path) -> String {
     hex::encode(&hasher.finalize()[..8])
 }
 
+/// Copy the JVM options that decide AOT compatibility from the training run.
+///
+/// The configuration records whether compressed oops were available. ZGC
+/// disables them, so an assembly JVM started without the game's GC flags
+/// rejects the configuration with "saved state of UseCompressedOops (0) is
+/// different from runtime (1)". Keep the heap and `-XX:` options before `-cp`;
+/// the class path, agents and game arguments do not belong on this command.
+fn assembly_jvm_options(args: &[String]) -> Vec<String> {
+    let end = args
+        .iter()
+        .position(|arg| arg == "-cp" || arg == "-classpath")
+        .unwrap_or(args.len());
+    args[..end]
+        .iter()
+        .filter(|arg| {
+            arg.starts_with("-Xmx")
+                || arg.starts_with("-Xms")
+                || arg.starts_with("-Xmn")
+                || arg.starts_with("-Xss")
+                || arg.starts_with("-XX:")
+        })
+        .filter(|arg| !arg.starts_with("-Xlog"))
+        .cloned()
+        .collect()
+}
+
 /// How many classes the classpath could contribute, so the bar has a ceiling.
 fn classpath_classes(args: &[String]) -> usize {
     let Some(classpath) = args
@@ -692,6 +719,30 @@ mod tests {
         terminate_and_reap(&mut child);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(child.try_wait().unwrap().is_some(), "the child was reaped");
+    }
+
+    #[test]
+    fn the_assembly_keeps_the_training_gc_and_heap_options() {
+        let args = vec![
+            "-Djava.library.path=ignored".to_string(),
+            "-XX:+UnlockDiagnosticVMOptions".to_string(),
+            "-XX:+UseZGC".to_string(),
+            "-XX:+ZAdaptiveHeapSizing".to_string(),
+            "-Xmx4096M".to_string(),
+            "-javaagent:ignored.jar".to_string(),
+            "-cp".to_string(),
+            "game.jar".to_string(),
+            "net.minecraft.client.main.Main".to_string(),
+        ];
+        assert_eq!(
+            assembly_jvm_options(&args),
+            [
+                "-XX:+UnlockDiagnosticVMOptions",
+                "-XX:+UseZGC",
+                "-XX:+ZAdaptiveHeapSizing",
+                "-Xmx4096M",
+            ]
+        );
     }
 
     #[test]
