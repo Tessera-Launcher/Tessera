@@ -548,15 +548,13 @@ fn aot_work_name(version_dir: &Path) -> String {
 /// The configuration records whether compressed oops were available. ZGC
 /// disables them, so an assembly JVM started without the game's GC flags
 /// rejects the configuration with "saved state of UseCompressedOops (0) is
-/// different from runtime (1)". Keep the heap and `-XX:` options before `-cp`;
-/// the class path, agents and game arguments do not belong on this command.
+/// different from runtime (1)".
+///
+/// Profile JVM arguments put `-cp` *before* the launcher appends its forced GC
+/// and heap flags, so scan the whole command line; only the matching options
+/// are copied, never the class path or game arguments.
 fn assembly_jvm_options(args: &[String]) -> Vec<String> {
-    let end = args
-        .iter()
-        .position(|arg| arg == "-cp" || arg == "-classpath")
-        .unwrap_or(args.len());
-    args[..end]
-        .iter()
+    args.iter()
         .filter(|arg| {
             arg.starts_with("-Xmx")
                 || arg.starts_with("-Xms")
@@ -736,16 +734,20 @@ mod tests {
 
     #[test]
     fn the_assembly_keeps_the_training_gc_and_heap_options() {
+        // This is the order the launcher produces: the profile's `-cp` comes
+        // before the forced GC policy and heap size are appended.
         let args = vec![
             "-Djava.library.path=ignored".to_string(),
             "-XX:+UnlockDiagnosticVMOptions".to_string(),
+            "-cp".to_string(),
+            "game.jar".to_string(),
             "-XX:+UseZGC".to_string(),
             "-XX:+ZAdaptiveHeapSizing".to_string(),
             "-Xmx4096M".to_string(),
             "-javaagent:ignored.jar".to_string(),
-            "-cp".to_string(),
-            "game.jar".to_string(),
             "net.minecraft.client.main.Main".to_string(),
+            "--username".to_string(),
+            "Steve".to_string(),
         ];
         assert_eq!(
             assembly_jvm_options(&args),
