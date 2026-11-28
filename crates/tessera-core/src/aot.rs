@@ -167,7 +167,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         return Ok(());
     }
 
-    // Forced Java 28 EA: no fallback to 25, because the cache is JVM-bound.
+    // Java 28 EA only: the cache is bound to the JVM build that wrote it.
     let java = match java::installed_runtimes(runtimes)
         .into_iter()
         .find(|runtime| runtime.major == java::FEATURE)
@@ -267,7 +267,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         .map_err(|error| Error::process(format!("无法启动 AOT 训练：{error}")))?;
     // The game's own log file is the marker source for modern versions, but
     // 1.0–1.5.2 do not write one at all: their progress only shows up on
-    // stdout, which used to be discarded.
+    // stdout, which has to be drained.
     let menu_line = Arc::new(AtomicBool::new(false));
     if let Some(stdout) = child.stdout.take() {
         let menu_line = menu_line.clone();
@@ -448,8 +448,8 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
 
 /// Incremental substring watcher for a log the JVM is still writing.
 ///
-/// The menu marker arrives once, but the loop polls until it does; reading the
-/// whole `latest.log` every time grew more expensive the longer the game took.
+/// The menu marker arrives once, but the loop polls until it does, so only the
+/// bytes appended since the last poll are read.
 #[derive(Default)]
 struct TextTail {
     file: Option<File>,
@@ -489,8 +489,13 @@ impl TextTail {
             return true;
         }
         // Keep enough tail that a marker split across two reads is still seen.
+        // Move the cut forward to a character boundary so a multi-byte
+        // character is never split; keeping a few extra bytes is harmless.
         if self.carry.len() > needle.len() {
-            let keep = self.carry.len() - (needle.len() - 1).min(self.carry.len());
+            let mut keep = self.carry.len() - (needle.len() - 1);
+            while !self.carry.is_char_boundary(keep) {
+                keep += 1;
+            }
             self.carry.drain(..keep);
         }
         false
@@ -499,9 +504,8 @@ impl TextTail {
 
 /// Incremental reader for `-Xlog:class+load=info:file=…`.
 ///
-/// The log grows to tens of thousands of lines. Re-reading the whole file every
-/// 100 ms was quadratic work; this keeps one handle, seeks to the last offset and
-/// only parses newly appended bytes. A partial line is kept until its newline
+/// The log grows to tens of thousands of lines, so this keeps one handle, seeks
+/// to the last offset and only parses newly appended bytes. A partial line is kept until its newline
 /// arrives so a count is never split across two reads.
 #[derive(Default)]
 struct ClassLogTail {
@@ -696,21 +700,31 @@ fn aot_code_entries(path: &Path) -> usize {
 }
 
 /// Stop the training JVM and the assembler it forked.
+///
+/// On Unix the group gets SIGTERM first, so the JVM can shut down cleanly, and
+/// SIGKILL after a short grace period. Windows has no such step: `taskkill /F`
+/// is the only way to stop the tree, so it is sent straight away.
 fn terminate_and_reap(child: &mut Child) {
-    signal_group(child, "-TERM");
-    // Give the JVM a moment to shut down cleanly, then stop waiting on it.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
+    #[cfg(unix)]
+    {
+        signal_group(child, "-TERM");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        signal_group(child, "-KILL");
     }
-    signal_group(child, "-KILL");
+    #[cfg(not(unix))]
+    signal_group(child, "/F");
     let _ = child.wait();
 }
 
 /// Signal the process group created for the training JVM.
+///
+/// `signal` is a `kill` signal on Unix and ignored elsewhere.
 fn signal_group(child: &Child, signal: &str) {
     let pid = child.id().to_string();
     #[cfg(unix)]
@@ -731,7 +745,7 @@ fn signal_group(child: &Child, signal: &str) {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = signal;
+        let _ = (signal, &pid);
         let _ = child.kill();
     }
 }
@@ -905,6 +919,20 @@ mod tests {
         std::fs::write(&path, "starting\nSound engine").unwrap();
         assert!(!tail.contains(&path, "Sound engine started"));
         std::fs::write(&path, "starting\nSound engine started\n").unwrap();
+        assert!(tail.contains(&path, "Sound engine started"));
+    }
+
+    #[test]
+    fn the_game_log_tail_survives_non_ascii_text_around_the_cut() {
+        // Chinese player names and mod messages are common in latest.log. The
+        // tail keeps a byte window of the decoded text, and that window must
+        // not be cut inside a multi-byte character.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("latest.log");
+        let mut tail = TextTail::default();
+        std::fs::write(&path, format!("a{}", "中".repeat(10))).unwrap();
+        assert!(!tail.contains(&path, "Sound engine started"));
+        std::fs::write(&path, format!("a{}\nSound engine started\n", "中".repeat(10))).unwrap();
         assert!(tail.contains(&path, "Sound engine started"));
     }
 
