@@ -76,6 +76,7 @@ jobs:
         with:
           name: Tessera-Windows-x64
           path: target/release/tessera.exe
+          archive: false
           retention-days: 14
           if-no-files-found: error
 
