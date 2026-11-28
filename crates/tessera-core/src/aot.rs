@@ -23,14 +23,19 @@
 //! second JVM that compiles the recorded code and writes the cache; on a modest
 //! CPU that is minutes of work after the window is gone. `ASSEMBLY_TIMEOUT` is
 //! measured from that second JVM's start. Running the assembly ourselves, rather
-//! than relying on the JVM's `-XX:AOTCacheOutput` child process, keeps training
-//! working on Windows: HotSpot launches that child through a narrow command
-//! line, which cannot represent the non-ASCII data paths Tessera uses.
+//! than relying on the JVM's `-XX:AOTCacheOutput` child process, keeps the two
+//! phases under one set of paths.
 //!
-//! A new cache is written to `<version>.aot.new` and only replaces the previous
-//! one once the assembly JVM has exited and the file is complete. A cancelled
-//! or failed run therefore leaves a working cache alone instead of deleting it
-//! up front.
+//! HotSpot resolves `-XX:AOTConfiguration`, `-XX:AOTCache` and `-Xlog:file=`
+//! through the process code page on Windows. The default data directories use
+//! 游戏 and 依赖, so an absolute path arrives at the JVM as `??` and the option
+//! fails. Every JVM-facing AOT file therefore lives under an ASCII-only path
+//! relative to the version directory, which is the JVM's working directory.
+//!
+//! A new cache is assembled under an ASCII scratch directory inside the
+//! version folder and only replaces the previous cache once the assembly JVM
+//! has exited and the file is complete. A cancelled or failed run therefore
+//! leaves a working cache alone instead of deleting it up front.
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -44,6 +49,7 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, Result};
 use crate::java;
 use crate::launch;
+use sha2::{Digest, Sha256};
 
 /// Lines that mean the game reached its menu.
 ///
@@ -175,26 +181,11 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
 
     let version_dir = root.join("versions").join(version);
     let cache = version_dir.join(format!("{version}.aot"));
-    // A training run writes here and only replaces `cache` once the JVM has
-    // exited and the file is complete, so a failed run leaves a working cache
-    // in place.
-    let staging = version_dir.join(format!("{version}.aot.new"));
-    let staging_config = version_dir.join(format!("{version}.aot.new.config"));
     let meta_path = version_dir.join(format!("{version}.aot.json"));
-    let class_log = version_dir.join("logs").join("aot-classload.log");
-    let aot_log = version_dir.join("logs").join("aot-cache.log");
     let game_log = version_dir.join("logs").join("latest.log");
-    let _ = fs::remove_file(&staging);
-    let _ = fs::remove_file(&staging_config);
-    let _ = fs::remove_file(&class_log);
-    let _ = fs::remove_file(&aot_log);
     // A previous run's log would make the "Sound engine started" marker look
     // present immediately, terminating the training run before it began.
     let _ = fs::remove_file(&game_log);
-    if let Some(parent) = class_log.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| Error::io(format!("无法创建 {}", parent.display()), error))?;
-    }
 
     let training_jar = version_dir.join(format!("{version}.jar"));
     let agent = version_dir.join(format!("{version}.aot-agent.jar"));
@@ -209,6 +200,22 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         java.java.clone(),
         java.major,
     )?;
+
+    // The JVM runs with the version directory as its cwd. Keep every file whose
+    // path is handed to the JVM under an ASCII-only relative directory there.
+    let work_rel = Path::new(".tessera-aot").join(aot_work_name(&version_dir));
+    let work_abs = prepared.command.cwd.join(&work_rel);
+    let _ = fs::remove_dir_all(&work_abs);
+    fs::create_dir_all(&work_abs)
+        .map_err(|error| Error::io(format!("无法创建 {}", work_abs.display()), error))?;
+    let staging_rel = work_rel.join("session.aot.new");
+    let staging_config_rel = work_rel.join("session.aot.new.config");
+    let class_log_rel = work_rel.join("class.log");
+    let aot_log_rel = work_rel.join("aot.log");
+    let staging = work_abs.join("session.aot.new");
+    let staging_config = work_abs.join("session.aot.new.config");
+    let class_log = work_abs.join("class.log");
+    let aot_log = work_abs.join("aot.log");
     let mut args = prepared.command.args.clone();
     let total = classpath_classes(&args);
     let _ = sender.send(Event::Progress {
@@ -223,14 +230,14 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     // `-XX:AOTCacheOutput`.
     args.insert(
         0,
-        format!("-XX:AOTConfiguration={}", staging_config.display()),
+        format!("-XX:AOTConfiguration={}", staging_config_rel.display()),
     );
     args.insert(1, "-XX:AOTMode=record".to_string());
     args.insert(
         2,
-        format!("-Xlog:class+load=info:file={}", class_log.display()),
+        format!("-Xlog:class+load=info:file={}", class_log_rel.display()),
     );
-    args.insert(3, format!("-Xlog:aot=info:file={}", aot_log.display()));
+    args.insert(3, format!("-Xlog:aot=info:file={}", aot_log_rel.display()));
     args.insert(4, format!("-javaagent:{}", agent.display()));
     args.insert(5, "-Dtessera.aot.preload=1".to_string());
     if cancel.load(Ordering::Relaxed) {
@@ -333,9 +340,9 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     assembly
         .args([
             "-XX:AOTMode=create".to_string(),
-            format!("-XX:AOTConfiguration={}", staging_config.display()),
-            format!("-XX:AOTCache={}", staging.display()),
-            format!("-Xlog:aot=info:file={}", aot_log.display()),
+            format!("-XX:AOTConfiguration={}", staging_config_rel.display()),
+            format!("-XX:AOTCache={}", staging_rel.display()),
+            format!("-Xlog:aot=info:file={}", aot_log_rel.display()),
         ])
         .current_dir(&prepared.command.cwd)
         .stdin(Stdio::null())
@@ -395,8 +402,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     let _ = fs::remove_file(&cache);
     fs::rename(&staging, &cache)
         .map_err(|error| Error::io(format!("无法替换 {}", cache.display()), error))?;
-    let _ = fs::remove_file(&class_log);
-    let _ = fs::remove_file(&aot_log);
+    let _ = fs::remove_dir_all(&work_abs);
 
     let meta = serde_json::json!({
         "java_major": java.major,
@@ -524,6 +530,13 @@ impl ClassLogTail {
         }
         self.loaded
     }
+}
+
+/// A stable ASCII directory name for one version's AOT scratch files.
+fn aot_work_name(version_dir: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(version_dir.to_string_lossy().as_bytes());
+    hex::encode(&hasher.finalize()[..8])
 }
 
 /// How many classes the classpath could contribute, so the bar has a ceiling.

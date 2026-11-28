@@ -16,6 +16,18 @@ use super::manifest::{client_jar, features, merge_chain, resolve_argument, subst
 use super::natives::{ascii_natives_mirror, find_natives, lwjgl_needs_ascii_natives};
 use super::{Command, Credentials, Launch, Options};
 
+/// HotSpot resolves a few JVM-level paths through the process code page on
+/// Windows. When the file sits under the JVM's cwd, hand it a relative path: the
+/// default data directories contain 游戏/依赖, and an absolute one would reach
+/// the JVM as `??`. Anything outside the cwd, or with non-ASCII components,
+/// keeps its absolute form.
+fn jvm_ascii_path<'a>(path: &'a Path, cwd: &Path) -> &'a Path {
+    match path.strip_prefix(cwd) {
+        Ok(relative) if relative.to_str().is_some_and(|text| text.is_ascii()) => relative,
+        _ => path,
+    }
+}
+
 /// Whether `id` is a 1.8.x release (`1.8`, `1.8.9`, `1.8.9-pre1`).
 pub(super) fn is_1_8(id: &str) -> bool {
     id.strip_prefix("1.8")
@@ -432,7 +444,8 @@ pub(super) fn prepare_inner(
         }
     }
     if let Some(selection) = &aot {
-        args.insert(0, format!("-XX:AOTCache={}", selection.cache.display()));
+        let cache = jvm_ascii_path(&selection.cache, &game_dir);
+        args.insert(0, format!("-XX:AOTCache={}", cache.display()));
         args.insert(1, format!("-javaagent:{}", selection.agent.display()));
     }
 

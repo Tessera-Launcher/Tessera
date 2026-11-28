@@ -226,7 +226,7 @@ fn a_finished_training_run_pins_the_launch_to_its_own_jvm_and_cache() {
             .command
             .args
             .iter()
-            .any(|arg| arg == &format!("-XX:AOTCache={}", cache.display())),
+            .any(|arg| arg == "-XX:AOTCache=1.8.9.aot"),
         "{:?}",
         launch.command.args
     );
@@ -1578,8 +1578,7 @@ fn a_trained_lwjgl3_version_replays_its_cache_from_the_unsigned_jar() {
     let args = &launch.command.args;
     assert_eq!(launch.lwjgl3.as_deref(), Some("3.4.3"));
     assert!(
-        args.iter()
-            .any(|arg| arg == &format!("-XX:AOTCache={}", version_dir.join("1.8.9.aot").display())),
+        args.iter().any(|arg| arg == "-XX:AOTCache=1.8.9.aot"),
         "{args:?}"
     );
     assert!(
