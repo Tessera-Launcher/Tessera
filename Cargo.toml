@@ -53,13 +53,18 @@ opt-level = 3
 #   the app in step, including the ones gpui-component draws for menus and
 #   fields.
 #
-# The Windows platform crate is vendored for one local change:
+# The Windows platform crate is vendored for two local changes:
 #
 # - DirectWrite only looked for the requested fallback families in the system
 #   font collection. Embedded faces live in the app's custom collection, so the
 #   Unifont fallback was never mapped and DirectWrite replaced Chinese text
 #   with Microsoft YaHei. The patched builder searches both collections and
 #   attaches the collection that supplied each family to its mapping.
+# - DirectWrite does not use embedded bitmap strikes and rasterizes at a
+#   fractional subpixel origin, so the pixel faces lost their hard edges on
+#   Windows. App-provided faces are now rasterized with swash instead: exact
+#   strikes where they exist, hinted outlines otherwise, whole-pixel origins,
+#   and the same glyph shadow the other platforms draw.
 [patch.crates-io]
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

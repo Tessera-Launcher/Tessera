@@ -2,13 +2,21 @@ use std::{
     borrow::Cow,
     ffi::{c_uint, c_void},
     mem::ManuallyDrop,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
 use collections::HashMap;
 use gpui_util::{ResultExt, maybe};
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::SmallVec;
+use swash::{
+    scale::{
+        Render, ScaleContext, Source, StrikeWith,
+        image::{Content, Image},
+    },
+    zeno::{Format, Vector},
+};
 use windows::{
     Win32::{
         Foundation::*,
@@ -31,6 +39,11 @@ struct FontInfo {
     features: IDWriteTypography,
     fallbacks: Option<IDWriteFontFallback>,
     font_collection: IDWriteFontCollection1,
+    /// Bytes of an app-provided face. DirectWrite does not use embedded bitmap
+    /// strikes, so these glyphs are rasterized with swash instead.
+    embedded_font: Option<Arc<[u8]>>,
+    /// Shadow distance as a fraction of the em; see [`shadow_em`].
+    shadow_em: f32,
 }
 
 pub(crate) struct DirectWriteTextSystem {
@@ -65,6 +78,13 @@ struct DirectWriteState {
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
     layout_line_scratch: Vec<u16>,
+    /// App-provided faces, keyed by every family name in their name table.
+    custom_fonts: HashMap<String, Arc<[u8]>>,
+    /// Shared scaler for swash rasterization of app-provided faces.
+    swash_scale_context: Mutex<ScaleContext>,
+    /// A glyph is measured and rasterized back to back; keeping the rendered
+    /// image between the two calls avoids parsing and scaling it twice.
+    pending_glyph_images: Mutex<HashMap<RenderGlyphParams, swash::scale::image::Image>>,
 }
 
 impl DirectWriteTextSystem {
@@ -116,6 +136,9 @@ impl DirectWriteTextSystem {
                 font_to_font_id: HashMap::default(),
                 font_info_cache: HashMap::default(),
                 layout_line_scratch: Vec::new(),
+                custom_fonts: HashMap::default(),
+                swash_scale_context: Mutex::new(ScaleContext::new()),
+                pending_glyph_images: Mutex::new(HashMap::default()),
             }),
         })
     }
@@ -205,7 +228,7 @@ impl DirectWriteState {
         font: &Font,
     ) -> Option<FontId> {
         let select_font = |this: &mut DirectWriteState, font: &Font| -> Option<FontId> {
-            let info = [&this.custom_font_collection, &this.system_font_collection]
+            let mut info = [&this.custom_font_collection, &this.system_font_collection]
                 .into_iter()
                 .find_map(|font_collection| unsafe {
                     DirectWriteState::make_font_from_font_collection(
@@ -216,6 +239,10 @@ impl DirectWriteState {
                         &components.system_ui_font_name,
                     )
                 })?;
+
+            if let Some(bytes) = this.custom_fonts.get(&info.font_family_h.to_string()) {
+                info.embedded_font = Some(bytes.clone());
+            }
 
             let font_id = FontId(this.fonts.len());
             let font_face_key = info.font_face.cast::<IUnknown>().unwrap().as_raw().addr();
@@ -251,29 +278,33 @@ impl DirectWriteState {
         fonts: Vec<Cow<'static, [u8]>>,
     ) -> Result<()> {
         for font_data in fonts {
-            match font_data {
-                Cow::Borrowed(data) => unsafe {
-                    let font_file = components
-                        .in_memory_loader
-                        .CreateInMemoryFontFileReference(
-                            &components.factory,
-                            data.as_ptr().cast(),
-                            data.len() as _,
-                            None,
-                        )?;
-                    components.builder.AddFontFile(&font_file)?;
-                },
-                Cow::Owned(data) => unsafe {
-                    let font_file = components
-                        .in_memory_loader
-                        .CreateInMemoryFontFileReference(
-                            &components.factory,
-                            data.as_ptr().cast(),
-                            data.len() as _,
-                            None,
-                        )?;
-                    components.builder.AddFontFile(&font_file)?;
-                },
+            let bytes: Arc<[u8]> = match font_data {
+                Cow::Borrowed(data) => Arc::from(data),
+                Cow::Owned(data) => Arc::from(data),
+            };
+            unsafe {
+                let font_file = components
+                    .in_memory_loader
+                    .CreateInMemoryFontFileReference(
+                        &components.factory,
+                        bytes.as_ptr().cast(),
+                        bytes.len() as _,
+                        None,
+                    )?;
+                components.builder.AddFontFile(&font_file)?;
+            }
+            // DirectWrite does not use embedded bitmap strikes, so remember the
+            // face by family name and rasterize those glyphs with swash later.
+            if let Ok(face) = ttf_parser::Face::parse(&bytes, 0) {
+                for name in face.names() {
+                    if matches!(
+                        name.name_id,
+                        ttf_parser::name_id::FAMILY | ttf_parser::name_id::TYPOGRAPHIC_FAMILY
+                    ) && let Some(family) = name.to_string()
+                    {
+                        self.custom_fonts.insert(family, bytes.clone());
+                    }
+                }
             }
         }
         let set = unsafe { components.builder.CreateFontSet()? };
@@ -419,6 +450,8 @@ impl DirectWriteState {
                     features: direct_write_features,
                     fallbacks,
                     font_collection: collection.clone(),
+                    embedded_font: None,
+                    shadow_em: shadow_em(&font_family_h.to_string()),
                 };
                 Some(font_info)
             });
@@ -792,6 +825,10 @@ impl DirectWriteState {
         components: &DirectWriteComponents,
         params: &RenderGlyphParams,
     ) -> Result<Bounds<DevicePixels>> {
+        if let Some(bytes) = self.embedded_font_bytes(params) {
+            return self.embedded_raster_bounds(params, &bytes);
+        }
+
         let color_layers = if params.is_emoji {
             self.color_layers(components, params)
                 .context("Failed to measure color glyph layers")
@@ -828,6 +865,184 @@ impl DirectWriteState {
         Ok(union.unwrap_or_default())
     }
 
+    /// Bytes of the app-provided face that `params` refers to, if any.
+    fn embedded_font_bytes(&self, params: &RenderGlyphParams) -> Option<Arc<[u8]>> {
+        self.fonts
+            .get(params.font_id.0)
+            .and_then(|font| font.embedded_font.clone())
+    }
+
+    /// Measures an app-provided glyph with the same rasterizer Linux uses.
+    ///
+    /// DirectWrite ignores embedded bitmap strikes and rasterizes outlines at a
+    /// fractional subpixel origin, which loses the hard pixel edges these faces
+    /// are designed around. Swash can select the exact bitmap strike and is fed
+    /// a zero offset, matching [`cosmic_text_system`] on the other platforms.
+    fn embedded_raster_bounds(
+        &self,
+        params: &RenderGlyphParams,
+        bytes: &[u8],
+    ) -> Result<Bounds<DevicePixels>> {
+        let image = self.render_embedded_glyph(params, bytes)?;
+        let shadow = self.embedded_shadow_offset(params, image.content).0.max(0);
+        let mut bounds = Bounds {
+            origin: point(
+                DevicePixels::from(image.placement.left),
+                DevicePixels::from(-image.placement.top),
+            ),
+            size: size(
+                DevicePixels::from(image.placement.width),
+                DevicePixels::from(image.placement.height),
+            ),
+        };
+        // The shadow copy extends right and down, so only the tile grows; its
+        // origin, which is what the quad is placed by, does not.
+        bounds.size.width.0 += shadow;
+        bounds.size.height.0 += shadow;
+        if !bounds.is_zero() {
+            self.pending_glyph_images
+                .lock()
+                .insert(params.clone(), image);
+        }
+        Ok(bounds)
+    }
+
+    fn render_embedded_glyph(&self, params: &RenderGlyphParams, bytes: &[u8]) -> Result<Image> {
+        let font = swash::FontRef::from_index(bytes, 0).context("embedded font has no face")?;
+        let pixel_size = f32::from(params.font_size);
+        let mut scale_context = self.swash_scale_context.lock();
+        let mut scaler = scale_context
+            .builder(font)
+            .size(pixel_size * params.scale_factor)
+            .hint(true)
+            .build();
+
+        let sources: &[Source] = if params.is_emoji {
+            &[
+                Source::ColorOutline(0),
+                Source::ColorBitmap(StrikeWith::BestFit),
+                Source::Outline,
+            ]
+        } else {
+            &[Source::Bitmap(StrikeWith::ExactSize), Source::Outline]
+        };
+
+        let mut renderer = Render::new(sources);
+        let subpixel_offset = Vector::new(0., 0.);
+        if params.subpixel_rendering {
+            renderer
+                .format(Format::subpixel_bgra())
+                .offset(subpixel_offset);
+        } else {
+            renderer.format(Format::Alpha).offset(subpixel_offset);
+        }
+
+        let glyph_id: u16 = params.glyph_id.0.try_into()?;
+        renderer
+            .render(&mut scaler, glyph_id)
+            .context("unable to render embedded glyph via swash")
+    }
+
+    /// Distance from a glyph to its shadow copy, in device pixels.
+    fn embedded_shadow_offset(&self, params: &RenderGlyphParams, content: Content) -> DevicePixels {
+        if !matches!(content, Content::Mask) {
+            return DevicePixels(0);
+        }
+        let shadow_em = self
+            .fonts
+            .get(params.font_id.0)
+            .map_or(0.0, |font| font.shadow_em);
+        let em = f32::from(params.font_size) * params.scale_factor;
+        DevicePixels((em * shadow_em).round() as i32)
+    }
+
+    fn rasterize_embedded_glyph(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+        bytes: &[u8],
+    ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
+        let cached = { self.pending_glyph_images.lock().remove(params) };
+        let mut image = match cached {
+            Some(image) => image,
+            None => self.render_embedded_glyph(params, bytes)?,
+        };
+        let bitmap_size = glyph_bounds.size;
+        match image.content {
+            Content::Color | Content::SubpixelMask => {
+                // The renderer expects BGRA for colour glyphs.
+                for pixel in image.data.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                }
+                Ok((bitmap_size, image.data))
+            }
+            Content::Mask => {
+                let mask = self.compose_embedded_shadow(params, image.content, &image, bitmap_size);
+                if params.subpixel_rendering {
+                    let expanded = mask.iter().flat_map(|&a| [a, a, a, a]).collect();
+                    Ok((bitmap_size, expanded))
+                } else {
+                    Ok((bitmap_size, mask))
+                }
+            }
+        }
+    }
+
+    /// Lays the glyph into an alpha tile and stamps its shadow copy under it.
+    fn compose_embedded_shadow(
+        &self,
+        params: &RenderGlyphParams,
+        content: Content,
+        image: &Image,
+        bitmap_size: Size<DevicePixels>,
+    ) -> Vec<u8> {
+        let width = bitmap_size.width.0.max(0) as usize;
+        let height = bitmap_size.height.0.max(0) as usize;
+        let shadow = self.embedded_shadow_offset(params, content).0.max(0) as usize;
+        let source_width = (image.placement.width as usize).min(width);
+        let source_height = (image.placement.height as usize).min(height);
+        let mut tile = vec![0; width * height];
+
+        for y in 0..source_height {
+            let row = y * source_width;
+            let target = y * width;
+            let Some(source) = image.data.get(row..row + source_width) else {
+                break;
+            };
+            tile[target..target + source_width].copy_from_slice(source);
+        }
+
+        if shadow == 0 {
+            return tile;
+        }
+
+        for y in 0..source_height {
+            let row = y * source_width;
+            let Some(source) = image.data.get(row..row + source_width) else {
+                break;
+            };
+            let target_y = y + shadow;
+            if target_y >= height {
+                break;
+            }
+            for (x, &alpha) in source.iter().enumerate() {
+                let alpha = alpha / 4;
+                let (Some(target_x), false) = (x.checked_add(shadow), alpha == 0) else {
+                    continue;
+                };
+                if target_x >= width {
+                    break;
+                }
+                let pixel = &mut tile[target_y * width + target_x];
+                let glyph = *pixel as u32;
+                let shadow = alpha as u32;
+                let over = glyph + shadow - glyph * shadow / 255;
+                *pixel = over.min(255) as u8;
+            }
+        }
+        tile
+    }
+
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
         let font_info = &self.fonts[font_id.0];
         let codepoints = ch as u32;
@@ -849,6 +1064,10 @@ impl DirectWriteState {
     ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
         if glyph_bounds.size.width.0 == 0 || glyph_bounds.size.height.0 == 0 {
             anyhow::bail!("glyph bounds are empty");
+        }
+
+        if let Some(bytes) = self.embedded_font_bytes(params) {
+            return self.rasterize_embedded_glyph(params, glyph_bounds, &bytes);
         }
 
         let bitmap_data = if params.is_emoji {
@@ -1813,6 +2032,19 @@ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 
 fn is_line_separator(character: char) -> bool {
     matches!(character, '\u{2028}' | '\u{2029}')
+}
+
+/// Where a face's shadow copy sits, as a fraction of the em.
+///
+/// This mirrors the swash rasterizer used on the other platforms: the 8 px
+/// pixel face gets a full Minecraft unit, while Unifont's 16 px grid gets half
+/// a unit because its glyph is drawn at half the size.
+fn shadow_em(family: &str) -> f32 {
+    if family.contains("Unifont") {
+        0.5 / 8.0
+    } else {
+        1.0 / 8.0
+    }
 }
 
 #[cfg(test)]
