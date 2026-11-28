@@ -15,7 +15,7 @@
 //! that starts a process, and it does so on a worker thread: preparing a launch
 //! probes the JVM and stats the classpath, which must not happen in the UI loop.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
 use crate::error::{Error, Result};
@@ -35,6 +35,44 @@ pub use java::{
     uses_launchwrapper, LaunchPath, LAUNCHWRAPPER, LAUNCH_JAVA, LEGACY_MAIN,
 };
 pub use manifest::{references, References};
+
+/// Express `path` relative to `cwd` when the relative form is ASCII.
+///
+/// HotSpot's AOT and logging options use the process code page for paths on
+/// Windows, so an absolute path containing 游戏 or 依赖 reaches the JVM as
+/// `??`. Relative paths stay ASCII, including the `..` components needed for
+/// the shared libraries directory.
+pub(crate) fn relative_ascii_path(path: &Path, cwd: &Path) -> PathBuf {
+    fn relative(path: &Path, base: &Path) -> Option<PathBuf> {
+        let path_components: Vec<Component> = path.components().collect();
+        let base_components: Vec<Component> = base.components().collect();
+        let mut common = 0;
+        while common < path_components.len()
+            && common < base_components.len()
+            && path_components[common] == base_components[common]
+        {
+            common += 1;
+        }
+        if common == 0 {
+            return None;
+        }
+        let mut result = PathBuf::new();
+        for _ in common..base_components.len() {
+            result.push("..");
+        }
+        for component in &path_components[common..] {
+            result.push(component.as_os_str());
+        }
+        if result.as_os_str().is_empty() {
+            result.push(".");
+        }
+        Some(result)
+    }
+
+    relative(path, cwd)
+        .filter(|relative| relative.to_str().is_some_and(|text| text.is_ascii()))
+        .unwrap_or_else(|| path.to_path_buf())
+}
 
 /// Who the game should think is playing.
 #[derive(Debug, Clone, PartialEq, Eq)]

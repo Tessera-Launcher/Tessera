@@ -220,7 +220,13 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     let class_log = work_abs.join("class.log");
     let aot_log = work_abs.join("aot.log");
     let mut args = prepared.command.args.clone();
-    let total = classpath_classes(&args);
+    // HotSpot records the class path in the AOT configuration and resolves it
+    // again when the cache is assembled. Absolute paths run through the process
+    // code page, where 游戏 becomes `??`; keep every entry relative to the JVM
+    // cwd and ASCII when possible. The same string is passed to the assembly
+    // JVM so the class paths match.
+    let classpath = relative_classpath_argument(&mut args, &prepared.command.cwd);
+    let total = classpath_classes(&args, &prepared.command.cwd);
     let _ = sender.send(Event::Progress {
         version: version.to_string(),
         loaded: 0,
@@ -340,8 +346,13 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
     });
 
     let mut assembly = Command::new(&prepared.command.exe);
+    assembly.args(assembly_jvm_options(&prepared.command.args));
+    if let Some(classpath) = &classpath {
+        // The create JVM checks the command line's class path against the one
+        // recorded in the configuration, so give it the exact same string.
+        assembly.args(["-cp", classpath]);
+    }
     assembly
-        .args(assembly_jvm_options(&prepared.command.args))
         // The training JVM has the preloader agent, which puts
         // `java.instrument` in its module graph. The create JVM disables
         // agents, so add the module explicitly instead of loading the agent.
@@ -418,6 +429,7 @@ fn train(training: &Training, sender: &Sender<Event>, cancel: &AtomicBool) -> Re
         "unsigned_jar": training_jar.file_name().and_then(|name| name.to_str()),
         "agent": agent.file_name().and_then(|name| name.to_str()),
         "code_entries": code_entries,
+        "classpath_relative": true,
     });
     let body = serde_json::to_vec(&meta).map_err(|error| Error::internal(error.to_string()))?;
     crate::fsutil::write_atomic(&meta_path, &body, false)
@@ -602,8 +614,28 @@ fn module_option_takes_value(option: &str) -> bool {
     )
 }
 
+/// Rewrites the last `-cp`/`-classpath` value to ASCII paths relative to the
+/// JVM's working directory, and returns the new value.
+fn relative_classpath_argument(args: &mut [String], cwd: &Path) -> Option<String> {
+    let index = args
+        .iter()
+        .rposition(|arg| arg == "-cp" || arg == "-classpath")?;
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let rewritten = args[index + 1]
+        .split(separator)
+        .map(|entry| {
+            crate::launch::relative_ascii_path(Path::new(entry), cwd)
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(&separator.to_string());
+    args[index + 1] = rewritten.clone();
+    Some(rewritten)
+}
+
 /// How many classes the classpath could contribute, so the bar has a ceiling.
-fn classpath_classes(args: &[String]) -> usize {
+fn classpath_classes(args: &[String], cwd: &Path) -> usize {
     let Some(classpath) = args
         .windows(2)
         .rev()
@@ -617,7 +649,13 @@ fn classpath_classes(args: &[String]) -> usize {
         .split(separator)
         .filter(|entry| entry.ends_with(".jar"))
         .map(|entry| {
-            let Ok(file) = File::open(entry) else {
+            let path = Path::new(entry);
+            let path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd.join(path)
+            };
+            let Ok(file) = File::open(path) else {
                 return 0;
             };
             let Ok(mut archive) = zip::ZipArchive::new(file) else {
@@ -831,9 +869,30 @@ mod tests {
     }
 
     #[test]
+    fn classpath_entries_become_relative_to_the_jvm_cwd() {
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        let cwd = Path::new("/game/versions/1.8.9");
+        let mut args = vec![
+            "-cp".to_string(),
+            format!(
+                "/game/versions/1.8.9/1.8.9.jar{separator}/game/libraries/a.jar{separator}/outside/b.jar"
+            ),
+        ];
+        let rewritten = relative_classpath_argument(&mut args, cwd).unwrap();
+        assert_eq!(
+            rewritten,
+            format!("1.8.9.jar{separator}../../libraries/a.jar{separator}../../../outside/b.jar")
+        );
+        assert_eq!(args[1], rewritten);
+    }
+
+    #[test]
     fn a_classpath_without_jars_has_no_candidate_classes() {
         assert_eq!(
-            classpath_classes(&["-cp".to_string(), "/tmp/missing.jar".to_string()]),
+            classpath_classes(
+                &["-cp".to_string(), "/tmp/missing.jar".to_string()],
+                Path::new("/"),
+            ),
             0
         );
     }

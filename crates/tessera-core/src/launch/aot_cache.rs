@@ -18,6 +18,8 @@ pub(super) struct AotSelection {
     pub(super) java_major: u32,
     pub(super) unsigned_jar: PathBuf,
     pub(super) agent: PathBuf,
+    /// The cache recorded its class path relative to the version directory.
+    pub(super) classpath_relative: bool,
 }
 
 pub(super) fn aot_cache(
@@ -62,6 +64,9 @@ struct AotMeta {
     java_version: String,
     unsigned_jar: String,
     agent: String,
+    /// Caches trained by older launchers recorded absolute class paths.
+    #[serde(default)]
+    classpath_relative: bool,
 }
 
 fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> AotLookup {
@@ -102,5 +107,6 @@ fn aot_lookup(version_dir: &Path, version_dir_name: &str, runtimes: &Path) -> Ao
         java_major: meta.java_major,
         unsigned_jar,
         agent,
+        classpath_relative: meta.classpath_relative,
     })
 }

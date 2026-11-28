@@ -21,11 +21,18 @@ use super::{Command, Credentials, Launch, Options};
 /// default data directories contain 游戏/依赖, and an absolute one would reach
 /// the JVM as `??`. Anything outside the cwd, or with non-ASCII components,
 /// keeps its absolute form.
-fn jvm_ascii_path<'a>(path: &'a Path, cwd: &Path) -> &'a Path {
-    match path.strip_prefix(cwd) {
-        Ok(relative) if relative.to_str().is_some_and(|text| text.is_ascii()) => relative,
-        _ => path,
-    }
+fn jvm_ascii_path(path: &Path, cwd: &Path) -> PathBuf {
+    crate::launch::relative_ascii_path(path, cwd)
+}
+
+/// The class path in the form the AOT cache was trained with.
+fn ascii_relative_classpath(classpath: &[PathBuf], cwd: &Path) -> String {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    classpath
+        .iter()
+        .map(|path| jvm_ascii_path(path, cwd).display().to_string())
+        .collect::<Vec<_>>()
+        .join(&separator.to_string())
 }
 
 /// Whether `id` is a 1.8.x release (`1.8`, `1.8.9`, `1.8.9-pre1`).
@@ -303,6 +310,16 @@ pub(super) fn prepare_inner(
         .unwrap_or_else(|| "legacy".to_string());
     let assets_root = root.join("assets");
     let game_dir = version_dir.clone();
+    // New caches record their class path relative to this directory (and ASCII
+    // where possible); the replay command has to present the exact same string.
+    let classpath_string = if aot
+        .as_ref()
+        .is_some_and(|selection| selection.classpath_relative)
+    {
+        ascii_relative_classpath(&classpath, &game_dir)
+    } else {
+        classpath_string
+    };
 
     let mut vars: HashMap<&str, String> = HashMap::new();
     vars.insert("auth_player_name", creds.username.clone());
