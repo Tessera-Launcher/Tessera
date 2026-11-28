@@ -307,7 +307,7 @@ pub(crate) fn choice_row(
         move |this, cx| action(this, cx)
     });
     div()
-        .id(format!("choice-{title}"))
+        .id(crate::focus::widget_id(cx, &format!("choice-{title}")))
         .cursor_pointer()
         .hover(move |style| style.bg(rgb(colors.hover)))
         .v_flex()
@@ -366,7 +366,7 @@ pub(crate) fn checkbox(
         move |this, cx| action(this, cx)
     });
     div()
-        .id(format!("checkbox-{label}"))
+        .id(crate::focus::widget_id(cx, &format!("checkbox-{label}")))
         .h_flex()
         .items_center()
         .gap(px(space::MD))
@@ -466,7 +466,7 @@ fn action_button(
         ),
     };
     let mut button = div()
-        .id(label.to_string())
+        .id(crate::focus::widget_id(cx, label))
         .h_flex()
         // A button keeps its size; only the status text next to it gives way.
         .flex_shrink_0()

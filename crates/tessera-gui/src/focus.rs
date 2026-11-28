@@ -31,6 +31,8 @@ struct Queue {
     items: Vec<Item>,
     /// Registration cursor for the frame currently being rendered.
     cursor: usize,
+    /// Element-id cursor for the frame currently being rendered.
+    widgets: usize,
     /// The item Tab has selected, or `None` before the first Tab / after a click.
     active: Option<usize>,
 }
@@ -46,9 +48,27 @@ pub(crate) fn begin(cx: &mut Context<Launcher>, screen_changed: bool) {
     let queue = cx.global_mut::<Queue>();
     queue.items.clear();
     queue.cursor = 0;
+    queue.widgets = 0;
     if screen_changed {
         queue.active = None;
     }
+}
+
+/// A unique element id for one widget of this frame.
+///
+/// Interactivity is keyed by element id, so two widgets that happen to share a
+/// label — the two 下载 buttons on the 依赖 page, every 刷新 in a list — would
+/// otherwise share one id and only the first of them would react to the mouse.
+/// The suffix is the widget's position in the frame, which is stable for as long
+/// as the layout is.
+pub(crate) fn widget_id(cx: &mut Context<Launcher>, label: &str) -> String {
+    if !cx.has_global::<Queue>() {
+        cx.set_global(Queue::default());
+    }
+    let queue = cx.global_mut::<Queue>();
+    let index = queue.widgets;
+    queue.widgets += 1;
+    format!("{label}#{index}")
 }
 
 /// Register one focus stop and return whether it is the active one.
