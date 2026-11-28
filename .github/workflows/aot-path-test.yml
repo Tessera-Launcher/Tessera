@@ -1,0 +1,46 @@
+name: AOT path test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download Windows JDK 28
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'jdk28.zip'
+          Invoke-WebRequest -Uri 'https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B26-ea-beta/OpenJDK-jre_x64_windows_hotspot_28_26-ea.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP '依赖') -Force
+          $java = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP '依赖') -Recurse -Filter java.exe | Select-Object -First 1
+          if (-not $java) { throw 'java.exe not found' }
+          "JAVA_EXE=$($java.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Record and assemble under a non-ASCII path
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP '游戏\versions\26.3'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $config = Join-Path $dir '26.3.aot.new.config'
+          $cache = Join-Path $dir '26.3.aot.new'
+          $classLog = Join-Path $dir 'class.log'
+          $aotLog = Join-Path $dir 'aot.log'
+          Write-Host "dir: $dir"
+
+          & $env:JAVA_EXE '-XX:AOTMode=record' "-XX:AOTConfiguration=$config" "-Xlog:class+load=info:file=$classLog" "-Xlog:aot=info:file=$aotLog" -version
+          if ($LASTEXITCODE -ne 0) { throw "record failed with $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $config)) { throw 'record produced no configuration' }
+
+          Remove-Item -LiteralPath $aotLog -Force
+          & $env:JAVA_EXE '-XX:AOTMode=create' "-XX:AOTConfiguration=$config" "-XX:AOTCache=$cache" "-Xlog:aot=info:file=$aotLog"
+          if ($LASTEXITCODE -ne 0) { throw "create failed with $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $cache)) { throw 'create produced no cache' }
+          if (-not (Test-Path -LiteralPath $aotLog)) { throw 'create produced no aot log' }
+
+          Get-ChildItem -LiteralPath $dir | Format-Table Name, Length
+          Get-Content -LiteralPath $aotLog -Tail 5
