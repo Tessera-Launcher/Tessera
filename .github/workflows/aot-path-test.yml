@@ -11,6 +11,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Download Windows JDK 28
         shell: pwsh
         run: |
@@ -28,6 +33,8 @@ jobs:
           New-Item -ItemType Directory -Force $cwd | Out-Null
           Set-Location -LiteralPath $cwd
           New-Item -ItemType Directory -Force 'aot-work' | Out-Null
+          New-Item -ItemType Directory -Force 'libs' | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'crates/tessera-core/assets/aot-preloader.jar') -Destination 'libs/test.jar'
           $config = 'aot-work/26.3.aot.new.config'
           $cache = 'aot-work/26.3.aot.new'
           $classLog = 'aot-work/class.log'
@@ -35,7 +42,7 @@ jobs:
           Write-Host "cwd: $((Get-Location).Path)"
           Write-Host "java: $env:JAVA_EXE"
 
-          & $env:JAVA_EXE '-XX:AOTMode=record' "-XX:AOTConfiguration=$config" "-Xlog:class+load=info:file=$classLog" "-Xlog:aot=info:file=$aotLog" -version
+          & $env:JAVA_EXE '-XX:AOTMode=record' "-XX:AOTConfiguration=$config" '-cp' 'libs/test.jar' "-Xlog:class+load=info:file=$classLog" "-Xlog:aot=info:file=$aotLog" -version
           if ($LASTEXITCODE -ne 0) { throw "record failed with $LASTEXITCODE" }
           if (-not (Test-Path -LiteralPath $config)) { throw 'record produced no configuration' }
 
