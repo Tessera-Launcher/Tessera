@@ -21,18 +21,19 @@ jobs:
           if (-not $java) { throw 'java.exe not found' }
           "JAVA_EXE=$($java.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Record and assemble under a non-ASCII path
+      - name: Record and assemble with relative AOT paths
         shell: pwsh
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP '游戏\versions\26.3'
-          New-Item -ItemType Directory -Force $dir | Out-Null
-          $config = Join-Path $dir '26.3.aot.new.config'
-          $cache = Join-Path $dir '26.3.aot.new'
-          $logDir = Join-Path $env:RUNNER_TEMP 'logs'
-          New-Item -ItemType Directory -Force $logDir | Out-Null
-          $classLog = Join-Path $logDir 'class.log'
-          $aotLog = Join-Path $logDir 'aot.log'
-          Write-Host "dir: $dir"
+          $cwd = Join-Path $env:RUNNER_TEMP '游戏'
+          New-Item -ItemType Directory -Force $cwd | Out-Null
+          Set-Location -LiteralPath $cwd
+          New-Item -ItemType Directory -Force 'aot-work' | Out-Null
+          $config = 'aot-work/26.3.aot.new.config'
+          $cache = 'aot-work/26.3.aot.new'
+          $classLog = 'aot-work/class.log'
+          $aotLog = 'aot-work/aot.log'
+          Write-Host "cwd: $((Get-Location).Path)"
+          Write-Host "java: $env:JAVA_EXE"
 
           & $env:JAVA_EXE '-XX:AOTMode=record' "-XX:AOTConfiguration=$config" "-Xlog:class+load=info:file=$classLog" "-Xlog:aot=info:file=$aotLog" -version
           if ($LASTEXITCODE -ne 0) { throw "record failed with $LASTEXITCODE" }
@@ -44,6 +45,5 @@ jobs:
           if (-not (Test-Path -LiteralPath $cache)) { throw 'create produced no cache' }
           if (-not (Test-Path -LiteralPath $aotLog)) { throw 'create produced no aot log' }
 
-          Get-ChildItem -LiteralPath $dir | Format-Table Name, Length
-          Get-ChildItem -LiteralPath $logDir | Format-Table Name, Length
+          Get-ChildItem -LiteralPath 'aot-work' | Format-Table Name, Length
           Get-Content -LiteralPath $aotLog -Tail 5
