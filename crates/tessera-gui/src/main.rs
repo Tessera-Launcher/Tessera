@@ -478,7 +478,7 @@ fn titlebar_menu(
     open: bool,
     cx: &mut Context<Launcher>,
     action: impl Fn(&mut Launcher, &mut Context<Launcher>) + 'static,
-) -> impl IntoElement {
+) -> Stateful<Div> {
     div()
         .id(id)
         .h_full()
@@ -602,14 +602,21 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let open = self.titlebar_menu == Some(menu);
-        let mut entry = div().relative().h_full().child(titlebar_menu(
-            id,
-            label,
-            colors,
-            open,
-            cx,
-            move |this, cx| this.toggle_titlebar_menu(menu, cx),
-        ));
+        let mut entry = div().relative().h_full().child(
+            titlebar_menu(id, label, colors, open, cx, move |this, cx| {
+                this.toggle_titlebar_menu(menu, cx)
+            })
+            // Windows-style menu tracking: once one menu is open, entering a
+            // neighbouring menu button switches to that menu without a click.
+            .on_mouse_move(cx.listener(
+                move |this: &mut Launcher, _event, _window, cx| {
+                    if this.titlebar_menu.is_some() && this.titlebar_menu != Some(menu) {
+                        this.titlebar_menu = Some(menu);
+                        cx.notify();
+                    }
+                },
+            )),
+        );
         if open {
             // Deferred: the menu hangs over the page below, not under it in
             // paint order.
